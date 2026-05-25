@@ -1,5 +1,6 @@
 import logging
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,7 +11,9 @@ from orchestrator.core.settings import settings
 from orchestrator.db.models import AuditLog, Run, StateTransition, Task
 from orchestrator.services.agent_registry import AgentRegistry
 from orchestrator.services.artifacts import ArtifactStore
+from orchestrator.services.discord import DiscordNotifier
 from orchestrator.services.github_adapter import GitHubAdapter
+from orchestrator.services.google_chat import GoogleChatNotifier
 from workflows.state_machine import StateMachine, WorkflowEvent
 
 logger = logging.getLogger(__name__)
@@ -274,6 +277,7 @@ class OrchestrationService:
                 {"issue_number": issue_number},
             )
 
+        self._notify_after_qa(task, run_id, rerun=False)
         self.db.commit()
         return EventResult(
             task_id=task.id,
@@ -282,6 +286,158 @@ class OrchestrationService:
             message="plan approved; dev agent started"
             if previous == "Todo"
             else "dev agent continued",
+        )
+
+    def run_qa_for_github_issue(
+        self,
+        issue_number: int,
+        title: str,
+        body: str,
+        issue_url: str,
+        issue_labels: list[str] | None = None,
+    ) -> EventResult | dict[str, str]:
+        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        if task is None:
+            return self._skip_qa_command(issue_number, "task not found; run plan and develop first")
+
+        task.title = title
+        task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
+        task.github_issue_url = issue_url
+
+        if task.state != "In Progress":
+            next_command = (
+                settings.reqa_command
+                if task.state in {"System QA", "Human QA"}
+                else settings.develop_command
+            )
+            return self._skip_qa_command(
+                issue_number,
+                f"task is in `{task.state}`; QA can run only from `In Progress`",
+                task.id,
+                next_command,
+            )
+
+        previous = task.state
+        decision = self.state_machine.decide(task.state, WorkflowEvent.DEV_COMPLETE.value)
+        run_id: str | None = None
+        if decision.requires_agent:
+            run_id = self._run_agent(task, decision.requires_agent)
+
+        task.state = decision.to_state.value
+        self._record_transition(
+            task.id,
+            previous,
+            task.state,
+            f"system QA requested by {settings.qa_command}",
+            "system",
+        )
+        self._audit(
+            task.id,
+            run_id,
+            "qa.completed",
+            {"issue_number": issue_number, "issue_url": issue_url},
+        )
+
+        if settings.github_token:
+            GitHubAdapter(settings.github_token).create_issue_comment(
+                settings.github_owner,
+                settings.github_repo,
+                issue_number,
+                self._build_qa_comment(task, previous),
+            )
+            GitHubAdapter(settings.github_token).create_issue_comment(
+                settings.github_owner,
+                settings.github_repo,
+                issue_number,
+                self._build_human_qa_comment(task, rerun=False),
+            )
+            self._audit(
+                task.id,
+                run_id,
+                "github.qa_commented",
+                {"issue_number": issue_number},
+            )
+
+        self.db.commit()
+        return EventResult(
+            task_id=task.id,
+            previous_state=previous,
+            current_state=task.state,
+            message="qa passed; task moved to System QA",
+        )
+
+    def rerun_qa_for_github_issue(
+        self,
+        issue_number: int,
+        title: str,
+        body: str,
+        issue_url: str,
+        issue_labels: list[str] | None = None,
+    ) -> EventResult | dict[str, str]:
+        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        if task is None:
+            return self._skip_qa_command(
+                issue_number,
+                "task not found; run plan and develop first",
+                next_command=settings.plan_command,
+            )
+
+        task.title = title
+        task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
+        task.github_issue_url = issue_url
+
+        if task.state != "System QA":
+            next_command = settings.qa_command if task.state == "In Progress" else settings.develop_command
+            return self._skip_qa_command(
+                issue_number,
+                f"task is in `{task.state}`; re-QA can run only from `System QA`",
+                task.id,
+                next_command,
+            )
+
+        previous = task.state
+        run_id = self._run_agent(task, "qa")
+        self._record_transition(
+            task.id,
+            previous,
+            task.state,
+            f"system QA rerun requested by {settings.reqa_command}",
+            "system",
+        )
+        self._audit(
+            task.id,
+            run_id,
+            "qa.rerun_completed",
+            {"issue_number": issue_number, "issue_url": issue_url},
+        )
+
+        if settings.github_token:
+            GitHubAdapter(settings.github_token).create_issue_comment(
+                settings.github_owner,
+                settings.github_repo,
+                issue_number,
+                self._build_qa_comment(task, previous, rerun=True),
+            )
+            GitHubAdapter(settings.github_token).create_issue_comment(
+                settings.github_owner,
+                settings.github_repo,
+                issue_number,
+                self._build_human_qa_comment(task, rerun=True),
+            )
+            self._audit(
+                task.id,
+                run_id,
+                "github.qa_rerun_commented",
+                {"issue_number": issue_number},
+            )
+
+        self._notify_after_qa(task, run_id, rerun=True)
+        self.db.commit()
+        return EventResult(
+            task_id=task.id,
+            previous_state=previous,
+            current_state=task.state,
+            message="qa rerun passed; task remains in System QA",
         )
 
     def handle_manual_event(self, payload: ManualEvent) -> EventResult:
@@ -478,6 +634,27 @@ class OrchestrationService:
         self.db.commit()
         return {"status": "ignored", "reason": reason}
 
+    def _skip_qa_command(
+        self,
+        issue_number: int,
+        reason: str,
+        task_id: str | None = None,
+        next_command: str | None = None,
+    ) -> dict[str, str]:
+        if settings.github_token:
+            GitHubAdapter(settings.github_token).create_issue_comment(
+                settings.github_owner,
+                settings.github_repo,
+                issue_number,
+                self._build_qa_not_ready_comment(
+                    reason,
+                    task_id,
+                    next_command or settings.develop_command,
+                ),
+            )
+        self.db.commit()
+        return {"status": "ignored", "reason": reason}
+
     def _build_plan_comment(self, task: Task) -> str:
         goal = self._extract_section(task.body, "목표")
         scope = self._extract_bullets(task.body, "작업 범위")
@@ -508,7 +685,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## AI Plan: {task.title}",
+                f"## {self._plan_title(task)}",
                 "",
                 f"Task ID: `{task_id}`",
                 "",
@@ -578,6 +755,18 @@ class OrchestrationService:
                     return label.removeprefix("type: ").strip()
         return "unspecified"
 
+    def _issue_type_label(self, issue_type: str) -> str:
+        return {
+            "beFeature": "BE feature",
+            "feFeature": "FE feature",
+            "apiConnect": "API connect",
+            "bugfix": "bugfix",
+            "hotfix": "hotfix",
+            "infra": "infra",
+            "config": "config",
+            "docs": "docs",
+        }.get(issue_type, issue_type or "unspecified")
+
     def _extract_issue_number(self, markdown: str) -> str:
         metadata = self._extract_section(markdown, "Harness Metadata")
         for line in metadata:
@@ -606,7 +795,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## AI Plan already exists: {task.title}",
+                f"## 🏗️ AI Plan already exists: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
@@ -628,7 +817,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## Development Started: {task.title}",
+                f"## 🛠️ Development Started: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
@@ -666,7 +855,7 @@ class OrchestrationService:
         lines = [
             "<!-- ai-harness-generated -->",
             "",
-            "## Development Not Started",
+            "## 🛠️ Development Not Started",
             "",
         ]
         if task_id:
@@ -681,6 +870,290 @@ class OrchestrationService:
                 "### Next Command",
                 "```markdown",
                 settings.plan_command,
+                "```",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _build_qa_comment(self, task: Task, previous_state: str, rerun: bool = False) -> str:
+        qa_summary = self._build_qa_summary_lines(task.id)
+        title = "♻️ 🔎 System QA Re-QA Passed" if rerun else "🔎 System QA Passed"
+        return "\n".join(
+            [
+                "<!-- ai-harness-generated -->",
+                "",
+                f"## {title}: {task.title}",
+                "",
+                f"Task ID: `{task.id}`",
+                "",
+                "### State",
+                f"- previous: `{previous_state}`",
+                f"- current: `{task.state}`",
+                "",
+                *qa_summary,
+                "",
+                "### QA Artifacts",
+                f"- `artifacts/{task.id}/qa/qa-report.md`",
+                f"- `artifacts/{task.id}/qa/qa-checklist.md`",
+                "",
+                "### Next Step",
+                "- 바로 다음 Human QA 요청 댓글의 체크리스트를 기준으로 사람이 직접 검증하세요.",
+            ]
+        )
+
+    def _build_qa_summary_lines(self, task_id: str) -> list[str]:
+        report_path = settings.artifact_root / task_id / "qa" / "qa-report.md"
+        if not report_path.exists():
+            return [
+                "### QA 결과",
+                "- QA report file was not found. Check the artifact path below.",
+            ]
+
+        report_lines = report_path.read_text(encoding="utf-8").splitlines()
+        metadata: dict[str, str] = {}
+        checklist: list[str] = []
+        command = "not recorded"
+        output = "not recorded"
+        in_stdout = False
+        in_checklist = False
+
+        for line in report_lines:
+            stripped = line.strip()
+            if stripped == "## 검증 체크리스트":
+                in_checklist = True
+                continue
+            if stripped.startswith("## Command:"):
+                command = stripped.removeprefix("## Command:").strip()
+                in_checklist = False
+                continue
+            if in_checklist and stripped.startswith("## "):
+                in_checklist = False
+                continue
+            if in_checklist and stripped.startswith("- ["):
+                checklist.append(stripped)
+                continue
+            if stripped.startswith("- ") and ": `" in stripped and stripped.endswith("`"):
+                key, value = stripped.removeprefix("- ").split(": `", 1)
+                metadata[key] = value.removesuffix("`")
+                continue
+            if stripped.startswith("- ") and ": " in stripped:
+                key, value = stripped.removeprefix("- ").split(": ", 1)
+                metadata[key] = value
+                continue
+            if stripped == "### stdout":
+                in_stdout = True
+                continue
+            if stripped.startswith("### ") and stripped != "### stdout":
+                in_stdout = False
+                continue
+            if in_stdout and stripped and stripped != "```text" and stripped != "```":
+                output = stripped
+
+        summary = [
+            "### QA 결과",
+            f"- result: `{metadata.get('result', 'unknown')}`",
+            f"- branch: `{metadata.get('branch', 'unknown')}`",
+            f"- command: `{command}`",
+            f"- output: `{output}`",
+            "",
+            "### 검증 항목",
+        ]
+        summary.extend(checklist[:20] or ["- No checklist entries were recorded."])
+        if len(checklist) > 20:
+            summary.append(f"- ...and {len(checklist) - 20} more checks in `qa-report.md`")
+        return summary
+
+    def _build_human_qa_lines(self, task_id: str) -> list[str]:
+        report_path = settings.artifact_root / task_id / "qa" / "qa-report.md"
+        if not report_path.exists():
+            return [
+                "### Human QA 권장 체크",
+                "- QA report file was not found. Check the artifact path below.",
+            ]
+
+        report_lines = report_path.read_text(encoding="utf-8").splitlines()
+        checklist: list[str] = []
+        in_section = False
+        for line in report_lines:
+            stripped = line.strip()
+            if stripped == "## Human QA 체크리스트":
+                in_section = True
+                continue
+            if in_section and stripped.startswith("## "):
+                break
+            if in_section and stripped.startswith("- ["):
+                checklist.append(stripped)
+
+        return [
+            "### Human QA 권장 체크",
+            *(checklist[:10] or ["- 사람이 화면과 동작을 직접 확인하세요."]),
+        ]
+
+    def _extract_human_qa_items(self, task_id: str) -> list[str]:
+        lines = self._build_human_qa_lines(task_id)
+        items: list[str] = []
+        for line in lines:
+            if line.startswith("- [ ] "):
+                items.append(line.removeprefix("- [ ] "))
+        return items
+
+    def _plan_title(self, task: Task) -> str:
+        if self._extract_section(task.body, "Human Replan Request"):
+            return f"♻️ 🏗️ AI Re-Plan: {task.title}"
+        return f"🏗️ AI Plan: {task.title}"
+
+    def _qa_requested_at(self) -> str:
+        return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y.%m.%d %H:%M:%S")
+
+    def _build_human_qa_comment(self, task: Task, rerun: bool) -> str:
+        return "\n".join(
+            [
+                "<!-- ai-harness-generated -->",
+                "",
+                self._build_human_qa_message(task, rerun, github_comment=True),
+            ]
+        )
+
+    def _build_human_qa_message(self, task: Task, rerun: bool, github_comment: bool) -> str:
+        title_prefix = "♻️ 🧑‍💻 Human QA Re-QA 요청" if rerun else "🧑‍💻 Human QA 요청"
+        title = f"{title_prefix}: {task.title}"
+        title_line = f"## {title}" if github_comment else title
+        issue_type = self._extract_issue_type(task.body)
+        branch_name = self._branch_name_for_task(task)
+        human_qa_items = self._extract_human_qa_items(task.id)
+        numbered_items = [
+            f"{index}. {item}" for index, item in enumerate(human_qa_items[:7], start=1)
+        ]
+        return "\n".join(
+            [
+                title_line,
+                "",
+                f"* 작업 내용: {task.title}",
+                f"* 작업 타입: {self._issue_type_label(issue_type)}",
+                f"* 브랜치 명: {branch_name}",
+                f"* QA 요청 시각: {self._qa_requested_at()}",
+                "",
+                "System QA는 통과했습니다.",
+                "이제 화면에서 아래 항목을 직접 확인해주세요.",
+                "",
+                *(numbered_items or ["1. 화면과 주요 동작을 직접 확인해주세요."]),
+                "",
+                "확인 URL:",
+                "http://localhost:3000/signup",
+                "",
+                "GitHub Issue:",
+                task.github_issue_url or "",
+            ]
+        )
+
+    def _build_qa_notification_message(self, task: Task, rerun: bool) -> str:
+        return self._build_human_qa_message(task, rerun, github_comment=False)
+
+    def _notify_after_qa(self, task: Task, run_id: str | None, rerun: bool) -> None:
+        if not settings.allow_external_notifications:
+            self._audit(
+                task.id,
+                run_id,
+                "external_notifications.skipped",
+                {"reason": "ALLOW_EXTERNAL_NOTIFICATIONS is false", "rerun": rerun},
+            )
+            return
+
+        message = self._build_qa_notification_message(task, rerun)
+        self._notify_google_chat_after_qa(task, run_id, rerun, message)
+        self._notify_discord_after_qa(task, run_id, rerun, message)
+
+    def _notify_google_chat_after_qa(
+        self, task: Task, run_id: str | None, rerun: bool, message: str
+    ) -> None:
+        notifier = GoogleChatNotifier(settings.google_chat_webhook_url)
+        if not notifier.is_configured():
+            self._audit(
+                task.id,
+                run_id,
+                "google_chat.qa_notification_skipped",
+                {"reason": "GOOGLE_CHAT_WEBHOOK_URL is not configured"},
+            )
+            return
+
+        try:
+            notifier.send_text(message)
+        except Exception as exc:  # noqa: BLE001 - notification failure must not fail QA
+            logger.warning(
+                "google chat QA notification failed",
+                extra={"task_id": task.id, "run_id": run_id, "error": str(exc)},
+            )
+            self._audit(
+                task.id,
+                run_id,
+                "google_chat.qa_notification_failed",
+                {"error": str(exc)},
+            )
+            return
+
+        self._audit(
+            task.id,
+            run_id,
+            "google_chat.qa_notified",
+            {"rerun": rerun},
+        )
+
+    def _notify_discord_after_qa(
+        self, task: Task, run_id: str | None, rerun: bool, message: str
+    ) -> None:
+        notifier = DiscordNotifier(settings.discord_webhook_url)
+        if not notifier.is_configured():
+            self._audit(
+                task.id,
+                run_id,
+                "discord.qa_notification_skipped",
+                {"reason": "DISCORD_WEBHOOK_URL is not configured"},
+            )
+            return
+
+        try:
+            notifier.send_text(message)
+        except Exception as exc:  # noqa: BLE001 - notification failure must not fail QA
+            logger.warning(
+                "discord QA notification failed",
+                extra={"task_id": task.id, "run_id": run_id, "error": str(exc)},
+            )
+            self._audit(
+                task.id,
+                run_id,
+                "discord.qa_notification_failed",
+                {"error": str(exc)},
+            )
+            return
+
+        self._audit(
+            task.id,
+            run_id,
+            "discord.qa_notified",
+            {"rerun": rerun},
+        )
+
+    def _build_qa_not_ready_comment(
+        self, reason: str, task_id: str | None, next_command: str
+    ) -> str:
+        lines = [
+            "<!-- ai-harness-generated -->",
+            "",
+            "## 🔎 System QA Not Started",
+            "",
+        ]
+        if task_id:
+            lines.extend([f"Task ID: `{task_id}`", ""])
+        lines.extend(
+            [
+                "Cannot run QA yet.",
+                "",
+                "### Reason",
+                f"- {reason}",
+                "",
+                "### Next Command",
+                "```markdown",
+                next_command,
                 "```",
             ]
         )

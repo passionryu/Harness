@@ -182,6 +182,18 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    if command == settings.reqa_command:
+        try:
+            return OrchestrationService(db).rerun_qa_for_github_issue(
+                issue_number=issue_number,
+                title=issue_title,
+                body=issue_body,
+                issue_url=issue_url,
+                issue_labels=issue_labels,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     if command != settings.replan_command:
         return {"status": "ignored", "reason": "not an ai-harness issue command"}
 

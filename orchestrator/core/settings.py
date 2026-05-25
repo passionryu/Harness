@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     replan_command: str = "@ai-harness replan"
     develop_command: str = "@ai-harness develop"
     qa_command: str = "@ai-harness qa"
+    reqa_command: str = "@ai-harness re-qa"
+    allow_external_notifications: bool = False
+    google_chat_webhook_url: str | None = None
+    discord_webhook_url: str | None = None
 
 
 @lru_cache

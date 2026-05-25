@@ -9,6 +9,7 @@ from git import Repo
 
 import orchestrator.api.routes as routes
 import orchestrator.services.orchestration as orchestration
+import agents.qa_agent as qa_agent
 from orchestrator.main import app
 
 
@@ -527,6 +528,229 @@ def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monk
     assert result["previous_state"] == "In Progress"
     assert result["current_state"] == "In Progress"
     assert result["message"] == "dev agent continued"
+
+
+def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "plan_command", "@ai-harness plan")
+    monkeypatch.setattr(routes.settings, "develop_command", "@ai-harness develop")
+    monkeypatch.setattr(routes.settings, "qa_command", "@ai-harness qa")
+    monkeypatch.setattr(routes.settings, "reqa_command", "@ai-harness re-qa")
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "github_token", "test-token")
+    monkeypatch.setattr(orchestration.settings, "allow_external_notifications", True)
+    monkeypatch.setattr(
+        orchestration.settings,
+        "google_chat_webhook_url",
+        "https://chat.googleapis.com/test-webhook",
+    )
+    monkeypatch.setattr(
+        qa_agent,
+        "_run_command",
+        lambda command, cwd, timeout_seconds: (0, "signup page smoke checks passed", ""),
+    )
+    captured_comments: list[str] = []
+    captured_chat_messages: list[str] = []
+    captured_discord_messages: list[str] = []
+
+    class FakeGitHubAdapter:
+        def __init__(self, token: str):
+            self.token = token
+
+        def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> None:
+            captured_comments.append(body)
+
+    class FakeGoogleChatNotifier:
+        def __init__(self, webhook_url: str | None):
+            self.webhook_url = webhook_url
+
+        def is_configured(self) -> bool:
+            return bool(self.webhook_url)
+
+        def send_text(self, text: str) -> None:
+            captured_chat_messages.append(text)
+
+    class FakeDiscordNotifier:
+        def __init__(self, webhook_url: str | None):
+            self.webhook_url = webhook_url
+
+        def is_configured(self) -> bool:
+            return bool(self.webhook_url)
+
+        def send_text(self, text: str) -> None:
+            captured_discord_messages.append(text)
+
+    monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
+    monkeypatch.setattr(orchestration, "GoogleChatNotifier", FakeGoogleChatNotifier)
+    monkeypatch.setattr(orchestration, "DiscordNotifier", FakeDiscordNotifier)
+    monkeypatch.setattr(
+        orchestration.settings,
+        "discord_webhook_url",
+        "https://discord.com/api/webhooks/test/token",
+    )
+
+    target_repo = tmp_path / "studyHub"
+    target_repo.mkdir()
+    repo = Repo.init(target_repo)
+    (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
+    (target_repo / "apps/web").mkdir(parents=True)
+    (target_repo / "apps/web/package.json").write_text(
+        json.dumps({"name": "@studyhub/web", "private": True, "scripts": {}}),
+        encoding="utf-8",
+    )
+    repo.index.add(["README.md"])
+    repo.index.commit("Initial commit")
+    monkeypatch.setattr(orchestration.settings, "target_repo_path", target_repo)
+
+    issue_number = uuid4().int % 1_000_000_000
+    issue = {
+        "number": issue_number,
+        "title": "[FE] 회원 가입 기능 구현",
+        "body": "회원가입 화면을 추가한다.",
+        "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        "labels": [{"name": "type: feFeature"}],
+    }
+
+    with TestClient(app) as client:
+        for command in ["@ai-harness plan", "@ai-harness develop"]:
+            payload = {"action": "created", "issue": issue, "comment": {"body": command}}
+            body = json.dumps(payload).encode("utf-8")
+            response = client.post(
+                "/webhooks/github",
+                content=body,
+                headers={
+                    "X-GitHub-Event": "issue_comment",
+                    "X-Hub-Signature-256": _signature(secret, body),
+                    "Content-Type": "application/json",
+                },
+            )
+            assert response.status_code == 200
+
+        qa_payload = {"action": "created", "issue": issue, "comment": {"body": "@ai-harness qa"}}
+        qa_body = json.dumps(qa_payload).encode("utf-8")
+        qa_response = client.post(
+            "/webhooks/github",
+            content=qa_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, qa_body),
+                "Content-Type": "application/json",
+            },
+        )
+
+        duplicate_qa_response = client.post(
+            "/webhooks/github",
+            content=qa_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, qa_body),
+                "Content-Type": "application/json",
+            },
+        )
+
+        reqa_payload = {
+            "action": "created",
+            "issue": issue,
+            "comment": {"body": "@ai-harness re-qa"},
+        }
+        reqa_body = json.dumps(reqa_payload).encode("utf-8")
+        reqa_response = client.post(
+            "/webhooks/github",
+            content=reqa_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, reqa_body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert qa_response.status_code == 200
+    result = qa_response.json()
+    assert result["previous_state"] == "In Progress"
+    assert result["current_state"] == "System QA"
+    assert result["message"] == "qa passed; task moved to System QA"
+    qa_dir = tmp_path / "artifacts" / result["task_id"] / "qa"
+    assert (qa_dir / "qa-report.md").exists()
+    assert (qa_dir / "qa-checklist.md").exists()
+    assert "test:signup 통과" in (qa_dir / "qa-report.md").read_text()
+    assert "## Human QA 체크리스트" in (qa_dir / "qa-report.md").read_text()
+    qa_comment = next(comment for comment in captured_comments if "🔎 System QA Passed" in comment)
+    human_qa_comment = next(comment for comment in captured_comments if "🧑‍💻 Human QA 요청" in comment)
+    assert "### QA 결과" in qa_comment
+    assert "- result: `pass`" in qa_comment
+    assert "- command: `pnpm --dir apps/web test:signup`" in qa_comment
+    assert "### 검증 항목" in qa_comment
+    assert "- [x] test:signup 통과" in qa_comment
+    assert "### Human QA 권장 체크" not in qa_comment
+    assert "* 작업 내용: [FE] 회원 가입 기능 구현" in human_qa_comment
+    assert "* 작업 타입: FE feature" in human_qa_comment
+    assert f"* 브랜치 명: feature(FE)-{issue_number}" in human_qa_comment
+    assert "* QA 요청 시각:" in human_qa_comment
+    assert "1. 브라우저에서 메인 화면에 접속했을 때 회원가입 진입 버튼 또는 링크가 보이는가" in human_qa_comment
+    assert duplicate_qa_response.status_code == 200
+    assert duplicate_qa_response.json() == {
+        "status": "ignored",
+        "reason": "task is in `System QA`; QA can run only from `In Progress`",
+    }
+    duplicate_qa_comment = next(
+        comment for comment in captured_comments if "🔎 System QA Not Started" in comment
+    )
+    assert "@ai-harness re-qa" in duplicate_qa_comment
+    assert reqa_response.status_code == 200
+    reqa_result = reqa_response.json()
+    assert reqa_result["previous_state"] == "System QA"
+    assert reqa_result["current_state"] == "System QA"
+    assert reqa_result["message"] == "qa rerun passed; task remains in System QA"
+    assert any("♻️ 🔎 System QA Re-QA Passed" in comment for comment in captured_comments)
+    assert any("♻️ 🧑‍💻 Human QA Re-QA 요청" in comment for comment in captured_comments)
+    assert len(captured_chat_messages) == 2
+    assert "🧑‍💻 Human QA 요청" in captured_chat_messages[0]
+    assert "♻️ 🧑‍💻 Human QA Re-QA 요청" in captured_chat_messages[1]
+    assert "System QA는 통과했습니다." in captured_chat_messages[1]
+    assert "1. 브라우저에서 메인 화면에 접속했을 때 회원가입 진입 버튼 또는 링크가 보이는가" in captured_chat_messages[1]
+    assert "확인 URL:\nhttp://localhost:3000/signup" in captured_chat_messages[1]
+    assert f"GitHub Issue:\n{issue['html_url']}" in captured_chat_messages[1]
+    assert len(captured_discord_messages) == 2
+    assert captured_discord_messages == captured_chat_messages
+
+
+def test_issue_comment_qa_command_without_development_is_ignored(monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "qa_command", "@ai-harness qa")
+    monkeypatch.setattr(orchestration.settings, "github_token", None)
+
+    issue_number = uuid4().int % 1_000_000_000
+    payload = {
+        "action": "created",
+        "issue": {
+            "number": issue_number,
+            "title": "[FE] 회원 가입 기능 구현",
+            "body": "회원가입 화면을 추가한다.",
+            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            "labels": [{"name": "type: feFeature"}],
+        },
+        "comment": {"body": "@ai-harness qa"},
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ignored",
+        "reason": "task not found; run plan and develop first",
+    }
 
 
 def test_issue_comment_ignores_commands_not_on_first_content_line(monkeypatch):

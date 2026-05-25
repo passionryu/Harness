@@ -7,6 +7,33 @@ from git import Repo
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
 from orchestrator.core.settings import settings
 
+HUMAN_QA_CHECKLIST = [
+    "브라우저에서 메인 화면에 접속했을 때 회원가입 진입 버튼 또는 링크가 보이는가",
+    "회원가입 진입 버튼을 클릭하면 `/signup` 화면으로 정상 이동하는가",
+    "이름, 이메일, 비밀번호, 전화번호, 관심 영역 입력 필드가 의도한 순서와 형태로 보이는가",
+    "모바일/데스크톱 화면에서 폼 레이아웃이 깨지거나 텍스트가 겹치지 않는가",
+    "필수 입력값을 비웠을 때 사용자가 이해할 수 있는 검증 메시지가 보이는가",
+    "잘못된 이메일 또는 너무 짧은 비밀번호 입력 시 제출이 막히는가",
+    "정상 입력 후 제출했을 때 현재 단계에 맞는 안내 또는 mock-safe 동작이 보이는가",
+    "로그인/메인 화면으로 돌아가는 흐름이 어색하지 않은가",
+]
+
+
+CHECK_NAME_KO = {
+    "target repository exists": "대상 저장소 존재",
+    "expected branch is checked out": "예상 브랜치 체크아웃 상태",
+    "test:signup script exists": "test:signup 스크립트 존재",
+    "test:signup passes": "test:signup 통과",
+}
+
+
+def _translate_check_name(name: str) -> str:
+    if name.startswith("artifact exists: "):
+        return f"산출물 존재: {name.removeprefix('artifact exists: ')}"
+    if name.startswith("signup file exists: "):
+        return f"회원가입 파일 존재: {name.removeprefix('signup file exists: ')}"
+    return CHECK_NAME_KO.get(name, name)
+
 
 def _extract_section(markdown: str, heading: str) -> list[str]:
     lines = markdown.splitlines()
@@ -163,8 +190,10 @@ class QAAgent:
 
         passed = all(passed for _, passed, _ in checks)
         checklist_lines = [
-            f"- [{'x' if passed else ' '}] {name} ({detail})" for name, passed, detail in checks
+            f"- [{'x' if passed else ' '}] {_translate_check_name(name)} ({detail})"
+            for name, passed, detail in checks
         ]
+        human_qa_lines = [f"- [ ] {item}" for item in HUMAN_QA_CHECKLIST]
 
         report = task_dir / "qa-report.md"
         report.write_text(
@@ -178,10 +207,13 @@ class QAAgent:
                     f"- current_branch: `{current_branch}`",
                     f"- result: {'pass' if passed else 'fail'}",
                     "",
-                    "## Checklist",
+                    "## 검증 체크리스트",
                     *checklist_lines,
                     "",
                     *(command_sections or ["## Commands", "", "- No command executed for this issue type."]),
+                    "",
+                    "## Human QA 체크리스트",
+                    *human_qa_lines,
                 ]
             ),
             encoding="utf-8",
@@ -191,9 +223,12 @@ class QAAgent:
         checklist.write_text(
             "\n".join(
                 [
-                    "# QA Checklist",
+                    "# QA 체크리스트",
                     "",
                     *checklist_lines,
+                    "",
+                    "## Human QA 체크리스트",
+                    *human_qa_lines,
                 ]
             ),
             encoding="utf-8",
