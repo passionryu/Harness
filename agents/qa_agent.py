@@ -1,0 +1,210 @@
+import json
+import subprocess
+from pathlib import Path
+
+from git import Repo
+
+from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
+from orchestrator.core.settings import settings
+
+
+def _extract_section(markdown: str, heading: str) -> list[str]:
+    lines = markdown.splitlines()
+    collected: list[str] = []
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## ") or stripped.startswith("### "):
+            marker = "## " if stripped.startswith("## ") else "### "
+            if in_section:
+                break
+            in_section = stripped.removeprefix(marker).strip() == heading
+            continue
+        if in_section and stripped:
+            collected.append(stripped)
+    return collected
+
+
+def _extract_metadata_value(markdown: str, key: str) -> str | None:
+    for line in _extract_section(markdown, "Harness Metadata"):
+        prefix = f"- {key}:"
+        if line.startswith(prefix):
+            return line.removeprefix(prefix).strip()
+    return None
+
+
+def _extract_issue_type(markdown: str) -> str:
+    labels = _extract_metadata_value(markdown, "labels") or ""
+    for label in [item.strip() for item in labels.split(",")]:
+        if label.startswith("type: "):
+            return label.removeprefix("type: ").strip()
+    return "unspecified"
+
+
+def _branch_prefix(issue_type: str) -> str:
+    return {
+        "beFeature": "feature(BE)",
+        "feFeature": "feature(FE)",
+        "apiConnect": "api-connect",
+        "bugfix": "bugfix",
+        "hotfix": "hotfix",
+        "infra": "infra",
+        "config": "config",
+        "docs": "docs",
+    }.get(issue_type, "task")
+
+
+def _branch_name(issue_type: str, issue_number: str) -> str:
+    number = issue_number if issue_number and issue_number != "unknown" else "no-issue"
+    return f"{_branch_prefix(issue_type)}-{number}"
+
+
+def _run_command(command: list[str], cwd: Path, timeout_seconds: int) -> tuple[int, str, str]:
+    completed = subprocess.run(
+        command,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
+    return completed.returncode, completed.stdout, completed.stderr
+
+
+def _package_has_script(package_json: Path, script_name: str) -> bool:
+    if not package_json.exists():
+        return False
+    data = json.loads(package_json.read_text(encoding="utf-8"))
+    return script_name in data.get("scripts", {})
+
+
+class QAAgent:
+    name = "qa"
+
+    def run(self, input_data: AgentInput) -> AgentResult:
+        task_dir = input_data.artifacts_root / input_data.task_id / "qa"
+        task_dir.mkdir(parents=True, exist_ok=True)
+
+        issue_type = _extract_issue_type(input_data.body)
+        issue_number = _extract_metadata_value(input_data.body, "issue_number") or "unknown"
+        branch_name = _branch_name(issue_type, issue_number)
+        repo_path = settings.target_repo_path.expanduser().resolve()
+
+        checks: list[tuple[str, bool, str]] = []
+        command_sections: list[str] = []
+
+        repo_exists = repo_path.exists()
+        checks.append(("target repository exists", repo_exists, str(repo_path)))
+
+        current_branch = "unknown"
+        if repo_exists:
+            repo = Repo(repo_path)
+            if branch_name in {head.name for head in repo.heads}:
+                repo.git.checkout(branch_name)
+            current_branch = repo.active_branch.name
+            checks.append(
+                (
+                    "expected branch is checked out",
+                    current_branch == branch_name,
+                    f"expected={branch_name}, actual={current_branch}",
+                )
+            )
+
+        plan_dir = input_data.artifacts_root / input_data.task_id / "plans"
+        dev_dir = input_data.artifacts_root / input_data.task_id / "dev"
+        required_artifacts = [
+            plan_dir / "architecture.md",
+            plan_dir / "edge-case-checklist.md",
+            dev_dir / "commit-plan.md",
+            dev_dir / "dev-status.md",
+            dev_dir / "implementation.patch",
+            dev_dir / "test-report.md",
+        ]
+        for artifact in required_artifacts:
+            checks.append((f"artifact exists: {artifact.name}", artifact.exists(), str(artifact)))
+
+        if issue_type == "feFeature":
+            signup_files = [
+                repo_path / "apps/web/app/signup/page.tsx",
+                repo_path / "apps/web/components/signup/signup-form.tsx",
+                repo_path / "apps/web/lib/signup-validation.ts",
+                repo_path / "apps/web/scripts/verify-signup-page.mjs",
+            ]
+            for path in signup_files:
+                checks.append((f"signup file exists: {path.name}", path.exists(), str(path)))
+
+            package_json = repo_path / "apps/web/package.json"
+            has_signup_test = _package_has_script(package_json, "test:signup")
+            checks.append(("test:signup script exists", has_signup_test, str(package_json)))
+            if has_signup_test:
+                exit_code, stdout, stderr = _run_command(
+                    ["pnpm", "--dir", "apps/web", "test:signup"],
+                    repo_path,
+                    input_data.timeout_seconds,
+                )
+                checks.append(("test:signup passes", exit_code == 0, f"exit_code={exit_code}"))
+                command_sections.extend(
+                    [
+                        "## Command: pnpm --dir apps/web test:signup",
+                        "",
+                        f"- exit_code: {exit_code}",
+                        "",
+                        "### stdout",
+                        "```text",
+                        stdout.strip() or "(empty)",
+                        "```",
+                        "",
+                        "### stderr",
+                        "```text",
+                        stderr.strip() or "(empty)",
+                        "```",
+                    ]
+                )
+
+        passed = all(passed for _, passed, _ in checks)
+        checklist_lines = [
+            f"- [{'x' if passed else ' '}] {name} ({detail})" for name, passed, detail in checks
+        ]
+
+        report = task_dir / "qa-report.md"
+        report.write_text(
+            "\n".join(
+                [
+                    "# System QA Report",
+                    "",
+                    f"- issue_type: `{issue_type}`",
+                    f"- issue_number: `{issue_number}`",
+                    f"- branch: `{branch_name}`",
+                    f"- current_branch: `{current_branch}`",
+                    f"- result: {'pass' if passed else 'fail'}",
+                    "",
+                    "## Checklist",
+                    *checklist_lines,
+                    "",
+                    *(command_sections or ["## Commands", "", "- No command executed for this issue type."]),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        checklist = task_dir / "qa-checklist.md"
+        checklist.write_text(
+            "\n".join(
+                [
+                    "# QA Checklist",
+                    "",
+                    *checklist_lines,
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        return AgentResult(
+            status=AgentStatus.SUCCESS if passed else AgentStatus.FAILED,
+            summary=f"QA {'passed' if passed else 'failed'} for {branch_name}.",
+            artifacts=[
+                ArtifactSpec("qa-report", Path(report)),
+                ArtifactSpec("qa-checklist", Path(checklist)),
+            ],
+            error=None if passed else "QA checks failed. See qa-report.md.",
+        )

@@ -1,0 +1,614 @@
+import hashlib
+import hmac
+import json
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi.testclient import TestClient
+from git import Repo
+
+import orchestrator.api.routes as routes
+import orchestrator.services.orchestration as orchestration
+from orchestrator.main import app
+
+
+def _signature(secret: str, body: bytes) -> str:
+    return "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+
+def test_github_plan_label_webhook_triggers_plan(tmp_path, monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "plan_trigger_label", "ai-plan-ready")
+    monkeypatch.setattr(routes.settings, "github_token", None)
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+
+    issue_number = uuid4().int % 1_000_000_000
+    payload = {
+        "action": "labeled",
+        "label": {"name": "ai-plan-ready"},
+        "issue": {
+            "number": issue_number,
+            "title": "[FE] 회원 가입 기능 구현",
+            "body": "회원가입 화면을 추가한다.",
+            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            "labels": [{"name": "ai-plan-ready"}],
+        },
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "issues",
+                "X-Hub-Signature-256": _signature(secret, body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["current_state"] == "Todo"
+    assert "plan generated" in result["message"]
+
+    artifact_root = Path(tmp_path / "artifacts" / result["task_id"] / "plans")
+    assert (artifact_root / "architecture.md").exists()
+    assert (artifact_root / "flow.md").exists()
+    assert (artifact_root / "edge-case-checklist.md").exists()
+    assert "Implementation Steps" in (artifact_root / "architecture.md").read_text()
+
+
+def test_github_webhook_rejects_invalid_signature(monkeypatch):
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", "test-secret")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/github",
+            content=b"{}",
+            headers={
+                "X-GitHub-Event": "issues",
+                "X-Hub-Signature-256": "sha256=bad",
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 401
+
+
+def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+
+    captured: dict[str, str] = {}
+
+    class FakeGitHubAdapter:
+        def __init__(self, token: str):
+            self.token = token
+
+        def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> None:
+            captured["body"] = body
+
+    monkeypatch.setattr(orchestration.settings, "github_token", "token")
+    monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "studyHub")
+    monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
+
+    from orchestrator.db.session import SessionLocal, create_db
+    from orchestrator.services.orchestration import OrchestrationService
+
+    issue_number = uuid4().int % 1_000_000_000
+    create_db()
+    with SessionLocal() as db:
+        service = OrchestrationService(db)
+        event = service.run_plan_for_github_issue(
+            issue_number=issue_number,
+            title="[FE] 회원 가입 기능 구현",
+            body="\n".join(
+                [
+                    "## 목표",
+                    "회원가입 화면을 추가한다.",
+                    "",
+                    "## 작업 범위",
+                    "- 회원가입 진입 버튼 또는 링크 추가",
+                    "- 회원가입 화면/페이지 생성",
+                    "",
+                    "## 완료 기준",
+                    "- 사용자가 회원가입 화면으로 이동할 수 있다.",
+                ]
+            ),
+            issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        )
+
+    assert event.message == "plan generated from GitHub issue trigger"
+    assert "### 구현 요약" in captured["body"]
+    assert "### 변경 대상" in captured["body"]
+    assert "### 구현 순서" in captured["body"]
+    assert "### 검증 기준" in captured["body"]
+    assert "### 미결정 사항" in captured["body"]
+
+
+def test_issue_comment_replan_command_forces_new_plan(tmp_path, monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "replan_command", "@ai-harness replan")
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "github_token", None)
+
+    issue_number = uuid4().int % 1_000_000_000
+    payload = {
+        "action": "created",
+        "issue": {
+            "number": issue_number,
+            "title": "[FE] 회원 가입 기능 구현",
+            "body": "\n".join(
+                [
+                    "## 목표",
+                    "회원가입 화면을 추가한다.",
+                    "",
+                    "## 작업 범위",
+                    "- 회원가입 화면/페이지 생성",
+                    "",
+                    "## 완료 기준",
+                    "- 사용자가 회원가입 화면으로 이동할 수 있다.",
+                ]
+            ),
+            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        },
+        "comment": {
+            "body": "\n".join(
+                [
+                    "@ai-harness replan",
+                    "",
+                    "- 회원가입은 별도 페이지가 아니라 모달로 만든다.",
+                    "- 전화번호 필드는 제외한다.",
+                ]
+            )
+        },
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert "plan generated" in result["message"]
+
+    architecture = (
+        tmp_path / "artifacts" / result["task_id"] / "plans" / "architecture.md"
+    ).read_text()
+    assert "Human Replan Request" in architecture
+    assert "모달로 만든다" in architecture
+    assert "전화번호 필드는 제외한다" in architecture
+
+
+def test_issue_comment_plan_command_triggers_initial_plan(tmp_path, monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "plan_command", "@ai-harness plan")
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "github_token", None)
+
+    issue_number = uuid4().int % 1_000_000_000
+    payload = {
+        "action": "created",
+        "issue": {
+            "number": issue_number,
+            "title": "[FE] 회원 가입 기능 구현",
+            "body": "회원가입 화면을 추가한다.",
+            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            "labels": [{"name": "type: feFeature"}],
+        },
+        "comment": {"body": "@ai-harness plan"},
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert "plan generated" in result["message"]
+    architecture = tmp_path / "artifacts" / result["task_id"] / "plans" / "architecture.md"
+    assert architecture.exists()
+    assert "## Issue Type\nfeFeature" in architecture.read_text()
+
+
+def test_plan_agent_uses_backend_feature_profile(tmp_path, monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "plan_command", "@ai-harness plan")
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "github_token", None)
+
+    issue_number = uuid4().int % 1_000_000_000
+    payload = {
+        "action": "created",
+        "issue": {
+            "number": issue_number,
+            "title": "[BE] 스터디 생성 API 구현",
+            "body": "\n".join(
+                [
+                    "### 목표",
+                    "사용자가 스터디를 생성할 수 있는 API를 만든다.",
+                    "",
+                    "### 완료 기준",
+                    "- 스터디 생성 API가 정상 응답한다.",
+                    "- 서버 빌드가 통과한다.",
+                ]
+            ),
+            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            "labels": [{"name": "type: beFeature"}],
+        },
+        "comment": {"body": "@ai-harness plan"},
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    architecture = (
+        tmp_path / "artifacts" / result["task_id"] / "plans" / "architecture.md"
+    ).read_text()
+    assert "## Issue Type\nbeFeature" in architecture
+    assert "apps/server/modules/application 하위 usecase" in architecture
+    assert "트랜잭션 경계와 repository port를 확정한다." in architecture
+
+
+def test_issue_comment_plan_command_skips_duplicate_successful_plan(tmp_path, monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "plan_command", "@ai-harness plan")
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+
+    captured_comments: list[str] = []
+
+    class FakeGitHubAdapter:
+        def __init__(self, token: str):
+            self.token = token
+
+        def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> None:
+            captured_comments.append(body)
+
+    monkeypatch.setattr(orchestration.settings, "github_token", "token")
+    monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "studyHub")
+    monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
+
+    issue_number = uuid4().int % 1_000_000_000
+    payload = {
+        "action": "created",
+        "issue": {
+            "number": issue_number,
+            "title": "[FE] 회원 가입 기능 구현",
+            "body": "회원가입 화면을 추가한다.",
+            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        },
+        "comment": {"body": "@ai-harness plan"},
+    }
+
+    with TestClient(app) as client:
+        body = json.dumps(payload).encode("utf-8")
+        first_response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, body),
+                "Content-Type": "application/json",
+            },
+        )
+        second_response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert "plan generated" in first_response.json()["message"]
+    assert second_response.json()["message"] == "plan already completed; skipped duplicate trigger"
+    assert len(captured_comments) == 2
+    assert "AI Plan already exists" in captured_comments[-1]
+    assert "@ai-harness replan" in captured_comments[-1]
+
+
+def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "plan_command", "@ai-harness plan")
+    monkeypatch.setattr(routes.settings, "develop_command", "@ai-harness develop")
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "github_token", None)
+    target_repo = tmp_path / "studyHub"
+    target_repo.mkdir()
+    repo = Repo.init(target_repo)
+    (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
+    (target_repo / "apps/web").mkdir(parents=True)
+    (target_repo / "apps/web/package.json").write_text(
+        json.dumps({"name": "@studyhub/web", "private": True, "scripts": {}}),
+        encoding="utf-8",
+    )
+    repo.index.add(["README.md"])
+    repo.index.commit("Initial commit")
+    monkeypatch.setattr(orchestration.settings, "target_repo_path", target_repo)
+
+    issue_number = uuid4().int % 1_000_000_000
+    expected_branch = f"feature(FE)-{issue_number}"
+    issue = {
+        "number": issue_number,
+        "title": "[FE] 회원 가입 기능 구현",
+        "body": "회원가입 화면을 추가한다.",
+        "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        "labels": [{"name": "type: feFeature"}],
+    }
+
+    with TestClient(app) as client:
+        plan_payload = {"action": "created", "issue": issue, "comment": {"body": "@ai-harness plan"}}
+        plan_body = json.dumps(plan_payload).encode("utf-8")
+        plan_response = client.post(
+            "/webhooks/github",
+            content=plan_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, plan_body),
+                "Content-Type": "application/json",
+            },
+        )
+
+        develop_payload = {
+            "action": "created",
+            "issue": issue,
+            "comment": {"body": "@ai-harness develop"},
+        }
+        develop_body = json.dumps(develop_payload).encode("utf-8")
+        develop_response = client.post(
+            "/webhooks/github",
+            content=develop_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, develop_body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert plan_response.status_code == 200
+    assert develop_response.status_code == 200
+    result = develop_response.json()
+    assert result["previous_state"] == "Todo"
+    assert result["current_state"] == "In Progress"
+    assert result["message"] == "plan approved; dev agent started"
+    assert repo.active_branch.name == expected_branch
+    commit_plan = tmp_path / "artifacts" / result["task_id"] / "dev" / "commit-plan.md"
+    dev_status = tmp_path / "artifacts" / result["task_id"] / "dev" / "dev-status.md"
+    assert commit_plan.exists()
+    assert dev_status.exists()
+    assert expected_branch in commit_plan.read_text()
+    assert "[회원 가입 기능 구현] : 버튼/라우팅 추가" in commit_plan.read_text()
+    assert "[회원 가입 기능 구현] : 프론트엔드 테스트 코드 추가" in commit_plan.read_text()
+    assert "signup page smoke checks passed" in (
+        tmp_path / "artifacts" / result["task_id"] / "dev" / "test-report.md"
+    ).read_text()
+    assert (tmp_path / "artifacts" / result["task_id"] / "dev" / "implementation.patch").exists()
+    assert (tmp_path / "artifacts" / result["task_id"] / "dev" / "test-report.md").exists()
+
+
+def test_issue_comment_develop_command_without_plan_is_ignored(monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "develop_command", "@ai-harness develop")
+    monkeypatch.setattr(orchestration.settings, "github_token", None)
+
+    issue_number = uuid4().int % 1_000_000_000
+    payload = {
+        "action": "created",
+        "issue": {
+            "number": issue_number,
+            "title": "[FE] 회원 가입 기능 구현",
+            "body": "회원가입 화면을 추가한다.",
+            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            "labels": [{"name": "type: feFeature"}],
+        },
+        "comment": {"body": "@ai-harness develop"},
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ignored",
+        "reason": "plan not found; run @ai-harness plan first",
+    }
+
+
+def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "plan_command", "@ai-harness plan")
+    monkeypatch.setattr(routes.settings, "develop_command", "@ai-harness develop")
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "github_token", None)
+    target_repo = tmp_path / "studyHub"
+    target_repo.mkdir()
+    repo = Repo.init(target_repo)
+    (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
+    (target_repo / "apps/web").mkdir(parents=True)
+    (target_repo / "apps/web/package.json").write_text(
+        json.dumps({"name": "@studyhub/web", "private": True, "scripts": {}}),
+        encoding="utf-8",
+    )
+    repo.index.add(["README.md"])
+    repo.index.commit("Initial commit")
+    monkeypatch.setattr(orchestration.settings, "target_repo_path", target_repo)
+
+    issue_number = uuid4().int % 1_000_000_000
+    issue = {
+        "number": issue_number,
+        "title": "[FE] 회원 가입 기능 구현",
+        "body": "회원가입 화면을 추가한다.",
+        "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        "labels": [{"name": "type: feFeature"}],
+    }
+
+    with TestClient(app) as client:
+        for command in ["@ai-harness plan", "@ai-harness develop"]:
+            payload = {"action": "created", "issue": issue, "comment": {"body": command}}
+            body = json.dumps(payload).encode("utf-8")
+            response = client.post(
+                "/webhooks/github",
+                content=body,
+                headers={
+                    "X-GitHub-Event": "issue_comment",
+                    "X-Hub-Signature-256": _signature(secret, body),
+                    "Content-Type": "application/json",
+                },
+            )
+            assert response.status_code == 200
+
+        continue_payload = {
+            "action": "created",
+            "issue": issue,
+            "comment": {"body": "@ai-harness develop"},
+        }
+        continue_body = json.dumps(continue_payload).encode("utf-8")
+        continue_response = client.post(
+            "/webhooks/github",
+            content=continue_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, continue_body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert continue_response.status_code == 200
+    result = continue_response.json()
+    assert result["previous_state"] == "In Progress"
+    assert result["current_state"] == "In Progress"
+    assert result["message"] == "dev agent continued"
+
+
+def test_issue_comment_ignores_commands_not_on_first_content_line(monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "replan_command", "@ai-harness replan")
+
+    payload = {
+        "action": "created",
+        "issue": {
+            "number": uuid4().int % 1_000_000_000,
+            "title": "[FE] 회원 가입 기능 구현",
+            "body": "회원가입 화면을 추가한다.",
+            "html_url": "https://github.com/passionryu/studyHub/issues/1",
+        },
+        "comment": {
+            "body": "\n".join(
+                [
+                    "## AI Plan already exists",
+                    "",
+                    "```markdown",
+                    "@ai-harness replan",
+                    "",
+                    "- 수정하고 싶은 설계 방향을 적습니다.",
+                    "```",
+                ]
+            )
+        },
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ignored", "reason": "not an ai-harness issue command"}
+
+
+def test_issue_comment_ignores_ai_harness_generated_comment(monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+
+    payload = {
+        "action": "created",
+        "issue": {
+            "number": uuid4().int % 1_000_000_000,
+            "title": "[FE] 회원 가입 기능 구현",
+            "body": "회원가입 화면을 추가한다.",
+            "html_url": "https://github.com/passionryu/studyHub/issues/1",
+        },
+        "comment": {
+            "body": "\n".join(
+                [
+                    "<!-- ai-harness-generated -->",
+                    "",
+                    "@ai-harness replan",
+                    "",
+                    "- 이 댓글은 하네스가 작성했다.",
+                ]
+            )
+        },
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ignored", "reason": "ai-harness generated comment"}
