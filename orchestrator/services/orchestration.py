@@ -147,7 +147,7 @@ class OrchestrationService:
                 task_id=task.id,
                 previous_state=previous,
                 current_state=task.state,
-                message="plan already completed; skipped duplicate trigger",
+                message="이미 Plan이 완료되어 중복 실행을 스킵했습니다.",
             )
 
         run_id = self._run_agent(task, "plan")
@@ -181,7 +181,7 @@ class OrchestrationService:
                 task.id,
                 run_id,
                 "github.comment_skipped",
-                {"reason": "GITHUB_TOKEN is not configured", "issue_number": issue_number},
+                {"reason": "GITHUB_TOKEN이 설정되어 있지 않습니다.", "issue_number": issue_number},
             )
 
         self.db.commit()
@@ -189,7 +189,7 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="plan generated from GitHub issue trigger",
+            message="GitHub 이슈 트리거로 Plan을 생성했습니다.",
         )
 
     def run_replan_for_github_issue(
@@ -223,7 +223,7 @@ class OrchestrationService:
         if task is None:
             return self._skip_develop_command(
                 issue_number,
-                "plan not found; run @ai-harness plan first",
+                "Plan을 찾을 수 없습니다. 먼저 @ai-harness plan을 실행하세요.",
             )
 
         task.title = title
@@ -233,14 +233,14 @@ class OrchestrationService:
         if not self.has_successful_agent_run(task.id, "plan"):
             return self._skip_develop_command(
                 issue_number,
-                "successful plan not found; run @ai-harness plan first",
+                "성공한 Plan 실행 기록이 없습니다. 먼저 @ai-harness plan을 실행하세요.",
                 task.id,
             )
 
         if task.state not in {"Todo", "In Progress"}:
             return self._skip_develop_command(
                 issue_number,
-                f"task is already in `{task.state}`; develop can run only from `Todo` or `In Progress`",
+                f"현재 작업 상태는 `{task.state}`입니다. develop은 `Todo` 또는 `In Progress`에서만 실행할 수 있습니다.",
                 task.id,
             )
 
@@ -282,15 +282,14 @@ class OrchestrationService:
                 {"issue_number": issue_number},
             )
 
-        self._notify_after_qa(task, run_id, rerun=False)
         self.db.commit()
         return EventResult(
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="plan approved; dev agent started"
+            message="Plan이 승인되어 Dev Agent를 실행했습니다."
             if previous == "Todo"
-            else "dev agent continued",
+            else "Dev Agent를 다시 실행했습니다.",
         )
 
     def run_refactor_for_github_issue(
@@ -306,7 +305,7 @@ class OrchestrationService:
         if task is None:
             return self._skip_refactor_command(
                 issue_number,
-                "task not found; run plan and develop first",
+                "작업을 찾을 수 없습니다. 먼저 plan과 develop을 실행하세요.",
             )
 
         task.title = title
@@ -319,14 +318,14 @@ class OrchestrationService:
         if not self.has_successful_agent_run(task.id, "dev"):
             return self._skip_refactor_command(
                 issue_number,
-                "successful dev run not found; run @ai-harness develop first",
+                "성공한 Dev 실행 기록이 없습니다. 먼저 @ai-harness develop을 실행하세요.",
                 task.id,
             )
 
         if task.state not in {"In Progress", "System QA", "Human QA"}:
             return self._skip_refactor_command(
                 issue_number,
-                f"task is in `{task.state}`; refactor can run only after development has started",
+                f"현재 작업 상태는 `{task.state}`입니다. refactor는 개발이 시작된 이후에만 실행할 수 있습니다.",
                 task.id,
             )
 
@@ -370,7 +369,7 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="refactor request applied; task moved to In Progress",
+            message="리팩터링 요청을 반영했고 작업 상태를 In Progress로 변경했습니다.",
         )
 
     def run_qa_for_github_issue(
@@ -383,7 +382,7 @@ class OrchestrationService:
     ) -> EventResult | dict[str, str]:
         task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
         if task is None:
-            return self._skip_qa_command(issue_number, "task not found; run plan and develop first")
+            return self._skip_qa_command(issue_number, "작업을 찾을 수 없습니다. 먼저 plan과 develop을 실행하세요.")
 
         task.title = title
         task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
@@ -397,7 +396,7 @@ class OrchestrationService:
             )
             return self._skip_qa_command(
                 issue_number,
-                f"task is in `{task.state}`; QA can run only from `In Progress`",
+                f"현재 작업 상태는 `{task.state}`입니다. QA는 `In Progress`에서만 실행할 수 있습니다.",
                 task.id,
                 next_command,
             )
@@ -443,12 +442,13 @@ class OrchestrationService:
                 {"issue_number": issue_number},
             )
 
+        self._notify_after_qa(task, run_id, rerun=False)
         self.db.commit()
         return EventResult(
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="qa passed; task moved to System QA",
+            message="QA가 통과되어 작업 상태를 System QA로 변경했습니다.",
         )
 
     def rerun_qa_for_github_issue(
@@ -463,7 +463,7 @@ class OrchestrationService:
         if task is None:
             return self._skip_qa_command(
                 issue_number,
-                "task not found; run plan and develop first",
+                "작업을 찾을 수 없습니다. 먼저 plan과 develop을 실행하세요.",
                 next_command=settings.plan_command,
             )
 
@@ -475,7 +475,7 @@ class OrchestrationService:
             next_command = settings.qa_command if task.state == "In Progress" else settings.develop_command
             return self._skip_qa_command(
                 issue_number,
-                f"task is in `{task.state}`; re-QA can run only from `System QA`",
+                f"현재 작업 상태는 `{task.state}`입니다. re-QA는 `System QA`에서만 실행할 수 있습니다.",
                 task.id,
                 next_command,
             )
@@ -522,7 +522,7 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="qa rerun passed; task remains in System QA",
+            message="QA 재검증이 통과되었고 작업 상태는 System QA로 유지됩니다.",
         )
 
     def comment_status_for_github_issue(
@@ -555,7 +555,7 @@ class OrchestrationService:
             )
         self._audit(task.id, None, "status.commented", {"issue_number": issue_number})
         self.db.commit()
-        return {"status": "ok", "message": "status comment created", "task_id": task.id}
+        return {"status": "ok", "message": "상태 댓글을 생성했습니다.", "task_id": task.id}
 
     def cancel_github_issue_task(
         self,
@@ -601,7 +601,7 @@ class OrchestrationService:
                 self._build_cancel_comment(task, previous, reason, bool(running_run)),
             )
         self.db.commit()
-        return {"status": "ok", "message": "task cancelled", "task_id": task.id}
+        return {"status": "ok", "message": "작업을 중지했습니다.", "task_id": task.id}
 
     def comment_command_failure(
         self,
@@ -646,18 +646,18 @@ class OrchestrationService:
     def handle_manual_event(self, payload: ManualEvent) -> EventResult:
         task = self.get_task(payload.task_id)
         if task is None:
-            raise ValueError("task not found")
+            raise ValueError("작업을 찾을 수 없습니다.")
 
         previous = task.state
         decision = self.state_machine.decide(task.state, payload.event)
 
         if decision.increments_retry:
             if task.retry_count >= task.retry_limit:
-                raise ValueError("retry limit exceeded")
+                raise ValueError("재시도 한도를 초과했습니다.")
             task.retry_count += 1
 
         if decision.requires_human_approval:
-            raise ValueError("use human approval endpoint for Done transition")
+            raise ValueError("Done 상태 전이는 Human approval endpoint를 사용해야 합니다.")
 
         run_id: str | None = None
         if decision.requires_agent:
@@ -679,13 +679,13 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message=f"transitioned by event {payload.event}",
+            message=f"이벤트 {payload.event}로 상태가 전이되었습니다.",
         )
 
     def approve_human_qa(self, task_id: str, payload: HumanApproval) -> EventResult:
         task = self.get_task(task_id)
         if task is None:
-            raise ValueError("task not found")
+            raise ValueError("작업을 찾을 수 없습니다.")
 
         previous = task.state
         decision = self.state_machine.decide(task.state, WorkflowEvent.HUMAN_APPROVE.value)
@@ -707,7 +707,7 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="human approval recorded",
+            message="Human QA 승인을 기록했습니다.",
         )
 
     def _run_agent(self, task: Task, agent_name: str) -> str:
@@ -745,7 +745,7 @@ class OrchestrationService:
             run.finished_at = datetime.now(UTC)
             self.artifact_store.persist_agent_artifacts(task.id, run.id, result.artifacts)
             if result.status != AgentStatus.SUCCESS:
-                raise ValueError(f"agent failed: {agent_name}: {result.error or result.summary}")
+                raise ValueError(f"Agent 실행 실패: {agent_name}: {result.error or result.summary}")
             return run.id
         except Exception as exc:
             if run.status == "running":
@@ -754,7 +754,7 @@ class OrchestrationService:
                 run.error = str(exc)
             run.finished_at = datetime.now(UTC)
             if not run.summary:
-                run.summary = f"{agent_name} failed before completion."
+                run.summary = f"{agent_name}가 완료 전에 실패했습니다."
             raise
         finally:
             logger.info(
@@ -899,7 +899,7 @@ class OrchestrationService:
                 f"- status: `{latest_run.status}`",
                 f"- started_at: `{self._format_dt(latest_run.started_at)}`",
                 f"- finished_at: `{self._format_dt(latest_run.finished_at)}`",
-                f"- summary: {latest_run.summary or 'not recorded'}",
+                f"- summary: {latest_run.summary or '기록 없음'}",
             ]
             if latest_run.error:
                 run_lines.append(f"- error: `{latest_run.error}`")
@@ -907,7 +907,7 @@ class OrchestrationService:
         transition_lines = ["- 아직 상태 전이 기록이 없습니다."]
         if latest_transition:
             transition_lines = [
-                f"- from: `{latest_transition.from_state or 'none'}`",
+                f"- from: `{latest_transition.from_state or '없음'}`",
                 f"- to: `{latest_transition.to_state}`",
                 f"- reason: {latest_transition.reason}",
                 f"- at: `{self._format_dt(latest_transition.created_at)}`",
@@ -961,18 +961,18 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## 🛑 AI Harness Cancelled: {task.title}",
+                f"## 🛑 AI Harness 작업 중지: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
-                "### State",
+                "### 상태",
                 f"- previous: `{previous_state}`",
                 f"- current: `{task.state}`",
                 "",
-                "### Reason",
+                "### 사유",
                 f"- {reason}",
                 "",
-                "### Note",
+                "### 참고",
                 f"- {interrupt_note}",
                 "",
                 "상태를 다시 확인하려면 아래 명령을 사용하세요.",
@@ -994,7 +994,7 @@ class OrchestrationService:
                 f"- status: `{latest_run.status}`",
                 f"- started_at: `{self._format_dt(latest_run.started_at)}`",
                 f"- finished_at: `{self._format_dt(latest_run.finished_at)}`",
-                f"- summary: {latest_run.summary or 'not recorded'}",
+                f"- summary: {latest_run.summary or '기록 없음'}",
             ]
             if latest_run.error:
                 run_lines.append(f"- error: `{latest_run.error}`")
@@ -1003,12 +1003,12 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## ⚠️ AI Harness Command Failed: {task.title}",
+                f"## ⚠️ AI Harness 명령 실패: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
-                "### Command",
-                f"- `{command or 'unknown'}`",
+                "### 명령",
+                f"- `{command or '알 수 없음'}`",
                 "",
                 "### 실패 이유",
                 f"- {error}",
@@ -1207,7 +1207,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## 🏗️ AI Plan already exists: {task.title}",
+                f"## 🏗️ AI Plan이 이미 존재합니다: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
@@ -1229,31 +1229,31 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## 🛠️ Development Started: {task.title}",
+                f"## 🛠️ 개발 시작: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
-                "Plan has been approved by human command.",
+                "사람의 명령으로 Plan이 승인되었습니다.",
                 "",
-                "### State",
+                "### 상태",
                 f"- previous: `{previous_state}`",
                 f"- current: `{task.state}`",
                 "",
-                "### Branch",
+                "### 브랜치",
                 f"- `{branch_name}`",
                 "",
-                "### Commit Rule",
+                "### 커밋 규칙",
                 "- 구현 단계 하나가 끝날 때마다 커밋한다.",
                 "- 커밋 메시지 형식: `[구현 기능(이슈 제목)] : 내용`",
                 "- 각 구현 단위에는 테스트 코드를 포함한다.",
                 "",
-                "### Dev Artifacts",
+                "### Dev 산출물",
                 f"- `artifacts/{task.id}/dev/commit-plan.md`",
                 f"- `artifacts/{task.id}/dev/dev-status.md`",
                 f"- `artifacts/{task.id}/dev/implementation.patch`",
                 f"- `artifacts/{task.id}/dev/test-report.md`",
                 "",
-                "### How to Track",
+                "### 확인 방법",
                 "- 이 GitHub 댓글에서 브랜치와 artifact 경로를 확인한다.",
                 "- `dev-status.md`에서 현재 단계와 체크리스트를 확인한다.",
                 "- `commit-plan.md`에서 실제 커밋 해시와 커밋 단위를 확인한다.",
@@ -1270,30 +1270,30 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## 🛠️ Refactor Completed: {task.title}",
+                f"## 🛠️ 리팩터링 완료: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
-                "Human refactor request has been applied by Dev Agent.",
+                "사람이 요청한 리팩터링 내용을 Dev Agent가 반영했습니다.",
                 "",
-                "### State",
+                "### 상태",
                 f"- previous: `{previous_state}`",
                 f"- current: `{task.state}`",
                 "",
-                "### Branch",
+                "### 브랜치",
                 f"- `{branch_name}`",
                 "",
                 "### 반영 요청",
-                *(self._comment_bullets(refactor_request, ["Refactor requested without additional detail."])),
+                *(self._comment_bullets(refactor_request, ["추가 상세 내용 없이 리팩터링이 요청되었습니다."])),
                 "",
-                "### Dev Artifacts",
+                "### Dev 산출물",
                 f"- `artifacts/{task.id}/dev/commit-plan.md`",
                 f"- `artifacts/{task.id}/dev/dev-status.md`",
                 f"- `artifacts/{task.id}/dev/backend-style-checklist.md`",
                 f"- `artifacts/{task.id}/dev/implementation.patch`",
                 f"- `artifacts/{task.id}/dev/test-report.md`",
                 "",
-                "### Next Step",
+                "### 다음 단계",
                 "리팩터링으로 코드가 변경되었으므로 System QA를 다시 실행하세요.",
                 "",
                 "```markdown",
@@ -1306,19 +1306,19 @@ class OrchestrationService:
         lines = [
             "<!-- ai-harness-generated -->",
             "",
-            "## 🛠️ Development Not Started",
+            "## 🛠️ 개발을 시작하지 못했습니다",
             "",
         ]
         if task_id:
             lines.extend([f"Task ID: `{task_id}`", ""])
         lines.extend(
             [
-                "Cannot start development yet.",
+                "아직 개발을 시작할 수 없습니다.",
                 "",
-                "### Reason",
+                "### 사유",
                 f"- {reason}",
                 "",
-                "### Next Command",
+                "### 다음 명령",
                 "```markdown",
                 settings.plan_command,
                 "```",
@@ -1330,19 +1330,19 @@ class OrchestrationService:
         lines = [
             "<!-- ai-harness-generated -->",
             "",
-            "## 🛠️ Refactor Not Started",
+            "## 🛠️ 리팩터링을 시작하지 못했습니다",
             "",
         ]
         if task_id:
             lines.extend([f"Task ID: `{task_id}`", ""])
         lines.extend(
             [
-                "Cannot start refactor yet.",
+                "아직 리팩터링을 시작할 수 없습니다.",
                 "",
-                "### Reason",
+                "### 사유",
                 f"- {reason}",
                 "",
-                "### Next Command",
+                "### 다음 명령",
                 "```markdown",
                 settings.develop_command,
                 "```",
@@ -1352,7 +1352,7 @@ class OrchestrationService:
 
     def _build_qa_comment(self, task: Task, previous_state: str, rerun: bool = False) -> str:
         qa_summary = self._build_qa_summary_lines(task.id)
-        title = "♻️ 🔎 System QA Re-QA Passed" if rerun else "🔎 System QA Passed"
+        title = "♻️ 🔎 System QA 재검증 통과" if rerun else "🔎 System QA 통과"
         return "\n".join(
             [
                 "<!-- ai-harness-generated -->",
@@ -1361,17 +1361,17 @@ class OrchestrationService:
                 "",
                 f"Task ID: `{task.id}`",
                 "",
-                "### State",
+                "### 상태",
                 f"- previous: `{previous_state}`",
                 f"- current: `{task.state}`",
                 "",
                 *qa_summary,
                 "",
-                "### QA Artifacts",
+                "### QA 산출물",
                 f"- `artifacts/{task.id}/qa/qa-report.md`",
                 f"- `artifacts/{task.id}/qa/qa-checklist.md`",
                 "",
-                "### Next Step",
+                "### 다음 단계",
                 "- 바로 다음 Human QA 요청 댓글의 체크리스트를 기준으로 사람이 직접 검증하세요.",
             ]
         )
@@ -1381,14 +1381,14 @@ class OrchestrationService:
         if not report_path.exists():
             return [
                 "### QA 결과",
-                "- QA report file was not found. Check the artifact path below.",
+                "- QA report 파일을 찾지 못했습니다. 아래 artifact 경로를 확인하세요.",
             ]
 
         report_lines = report_path.read_text(encoding="utf-8").splitlines()
         metadata: dict[str, str] = {}
         checklist: list[str] = []
-        command = "not recorded"
-        output = "not recorded"
+        command = "기록 없음"
+        output = "기록 없음"
         in_stdout = False
         in_checklist = False
 
@@ -1426,16 +1426,16 @@ class OrchestrationService:
 
         summary = [
             "### QA 결과",
-            f"- result: `{metadata.get('result', 'unknown')}`",
-            f"- branch: `{metadata.get('branch', 'unknown')}`",
+            f"- result: `{metadata.get('result', '알 수 없음')}`",
+            f"- branch: `{metadata.get('branch', '알 수 없음')}`",
             f"- command: `{command}`",
             f"- output: `{output}`",
             "",
             "### 검증 항목",
         ]
-        summary.extend(checklist[:20] or ["- No checklist entries were recorded."])
+        summary.extend(checklist[:20] or ["- 기록된 체크리스트 항목이 없습니다."])
         if len(checklist) > 20:
-            summary.append(f"- ...and {len(checklist) - 20} more checks in `qa-report.md`")
+            summary.append(f"- `qa-report.md`에 추가 검증 항목 {len(checklist) - 20}개가 더 있습니다.")
         return summary
 
     def _build_human_qa_lines(self, task_id: str) -> list[str]:
@@ -1443,7 +1443,7 @@ class OrchestrationService:
         if not report_path.exists():
             return [
                 "### Human QA 권장 체크",
-                "- QA report file was not found. Check the artifact path below.",
+                "- QA report 파일을 찾지 못했습니다. 아래 artifact 경로를 확인하세요.",
             ]
 
         report_lines = report_path.read_text(encoding="utf-8").splitlines()
@@ -1530,7 +1530,7 @@ class OrchestrationService:
                 task.id,
                 run_id,
                 "external_notifications.skipped",
-                {"reason": "ALLOW_EXTERNAL_NOTIFICATIONS is false", "rerun": rerun},
+                {"reason": "ALLOW_EXTERNAL_NOTIFICATIONS가 false입니다.", "rerun": rerun},
             )
             return
 
@@ -1547,7 +1547,7 @@ class OrchestrationService:
                 task.id,
                 run_id,
                 "google_chat.qa_notification_skipped",
-                {"reason": "GOOGLE_CHAT_WEBHOOK_URL is not configured"},
+                {"reason": "GOOGLE_CHAT_WEBHOOK_URL이 설정되어 있지 않습니다."},
             )
             return
 
@@ -1555,7 +1555,7 @@ class OrchestrationService:
             notifier.send_text(message)
         except Exception as exc:  # noqa: BLE001 - notification failure must not fail QA
             logger.warning(
-                "google chat QA notification failed",
+                "Google Chat QA 알림 전송 실패",
                 extra={"task_id": task.id, "run_id": run_id, "error": str(exc)},
             )
             self._audit(
@@ -1582,7 +1582,7 @@ class OrchestrationService:
                 task.id,
                 run_id,
                 "discord.qa_notification_skipped",
-                {"reason": "DISCORD_WEBHOOK_URL is not configured"},
+                {"reason": "DISCORD_WEBHOOK_URL이 설정되어 있지 않습니다."},
             )
             return
 
@@ -1590,7 +1590,7 @@ class OrchestrationService:
             notifier.send_text(message)
         except Exception as exc:  # noqa: BLE001 - notification failure must not fail QA
             logger.warning(
-                "discord QA notification failed",
+                "Discord QA 알림 전송 실패",
                 extra={"task_id": task.id, "run_id": run_id, "error": str(exc)},
             )
             self._audit(
@@ -1614,19 +1614,19 @@ class OrchestrationService:
         lines = [
             "<!-- ai-harness-generated -->",
             "",
-            "## 🔎 System QA Not Started",
+            "## 🔎 System QA를 시작하지 못했습니다",
             "",
         ]
         if task_id:
             lines.extend([f"Task ID: `{task_id}`", ""])
         lines.extend(
             [
-                "Cannot run QA yet.",
+                "아직 QA를 실행할 수 없습니다.",
                 "",
-                "### Reason",
+                "### 사유",
                 f"- {reason}",
                 "",
-                "### Next Command",
+                "### 다음 명령",
                 "```markdown",
                 next_command,
                 "```",

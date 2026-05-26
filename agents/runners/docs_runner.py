@@ -11,7 +11,7 @@ class DocsRunner:
     def run(self, context: DevRunnerContext) -> DevRunnerResult:
         return DevRunnerResult(
             status=AgentStatus.NEEDS_HUMAN,
-            summary="Docs runner selected, but automated docs implementation is not enabled yet.",
-            progress=["- [ ] Automated docs runner implementation"],
-            error="Automated docs runner is not enabled yet.",
+            summary="Docs Runner가 선택되었지만 아직 문서 자동 구현은 활성화되어 있지 않습니다.",
+            progress=["- [ ] 문서 자동 구현"],
+            error="Docs Runner는 아직 활성화되어 있지 않습니다.",
         )

@@ -122,7 +122,7 @@ def _backend_style_skill_path() -> Path:
 
 def _backend_style_lines(issue_type: str) -> list[str]:
     if not _requires_backend_style(issue_type):
-        return ["- backend orchestration style skill: not required for this issue type"]
+        return ["- backend orchestration style skill: 이 이슈 타입에는 필수가 아닙니다."]
 
     skill_path = _backend_style_skill_path()
     backend_rules_path = Path("rules/backend-runner.md")
@@ -130,6 +130,7 @@ def _backend_style_lines(issue_type: str) -> list[str]:
         "- backend orchestration style skill: required",
         f"- skill_path: `{skill_path}`",
         f"- backend_runner_rules: `{backend_rules_path}`",
+        "- localization_rules: `rules/localization.md`",
         "- 컨트롤러는 얇게 유지하고 request/response DTO는 컨트롤러 파일 밖의 별도 파일로 둔다.",
         "- domain/application/port/infrastructure/bootstrap 경계를 지킨다.",
         "- 메인 서비스 메서드는 유스케이스 흐름이 보이게 작성한다.",
@@ -137,6 +138,7 @@ def _backend_style_lines(issue_type: str) -> list[str]:
         "- 정책, 검증, 외부 연동, 상태 변경 책임은 이름이 명확한 외부 책임 객체로 분리한다.",
         "- 책임 객체의 public 메서드에는 한국어 한 줄 주석을 작성한다.",
         "- 클래스와 메서드는 유비쿼터스 언어와 주어/동사/목적어가 드러나게 명명한다.",
+        "- 사용자 응답, 프론트엔드 검증 메시지, 내부 예외, 로그는 한국어를 우선 사용한다.",
         "- 사용자 응답 메시지는 안전하고 이해 가능하게 작성하고, 내부 로그에는 who/what/requestData/reason을 남긴다.",
     ]
 
@@ -161,15 +163,15 @@ def _checkout_branch(repo_path: Path, branch_name: str) -> str:
     repo = Repo(repo_path)
     dirty_note = ""
     if repo.is_dirty(untracked_files=True):
-        dirty_note = " with pre-existing uncommitted changes"
+        dirty_note = " (기존 미커밋 변경사항 있음)"
 
     existing = {head.name for head in repo.heads}
     if branch_name in existing:
         repo.git.checkout(branch_name)
-        return f"checked out existing branch{dirty_note}"
+        return f"기존 브랜치 체크아웃{dirty_note}"
 
     repo.git.checkout("-b", branch_name)
-    return f"created branch{dirty_note}"
+    return f"새 브랜치 생성{dirty_note}"
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -181,7 +183,7 @@ def _stage_and_commit(repo: Repo, repo_path: Path, paths: list[str], message: st
     existing_paths = [path for path in paths if (repo_path / path).exists()]
     repo.index.add(existing_paths)
     if not repo.index.diff("HEAD"):
-        return "skipped: no staged changes"
+        return "스킵: 스테이징된 변경사항 없음"
     commit = repo.index.commit(message)
     return commit.hexsha[:12]
 
@@ -326,7 +328,7 @@ export function SearchHeader({ onNavigate, userName, userPlan }: SearchHeaderPro
       <div className="relative flex-1 max-w-md">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
-          placeholder="Search notes, questions, topics..."
+          placeholder="노트, 질문, 주제를 검색하세요"
           className="h-9 bg-secondary border-0 pl-9 pr-12 text-sm placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-primary"
         />
         <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
@@ -339,7 +341,7 @@ export function SearchHeader({ onNavigate, userName, userPlan }: SearchHeaderPro
         <Button asChild size="sm" variant="outline" className="hidden sm:inline-flex">
           <Link href="/signup">
             <UserPlus className="h-4 w-4" />
-            Sign up
+            회원가입
           </Link>
         </Button>
         <ThemeSelector />
@@ -348,11 +350,11 @@ export function SearchHeader({ onNavigate, userName, userPlan }: SearchHeaderPro
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="flex items-center gap-3 h-auto py-1.5 px-2 hover:bg-secondary">
               <div className="text-right hidden sm:block">
-                <p className="text-sm font-medium text-foreground">{userName || "User"}</p>
-                <p className="text-xs text-muted-foreground">{userPlan || "Free Plan"}</p>
+                <p className="text-sm font-medium text-foreground">{userName || "사용자"}</p>
+                <p className="text-xs text-muted-foreground">{userPlan || "무료 플랜"}</p>
               </div>
               <Avatar className="h-8 w-8 border border-border">
-                <AvatarImage src="" alt={userName || "User"} />
+                <AvatarImage src="" alt={userName || "사용자"} />
                 <AvatarFallback className="bg-secondary text-secondary-foreground text-xs">
                   {userName ? userName.split(" ").map((n) => n[0]).join("").toUpperCase() : "U"}
                 </AvatarFallback>
@@ -365,16 +367,16 @@ export function SearchHeader({ onNavigate, userName, userPlan }: SearchHeaderPro
               onClick={() => onNavigate?.("profile")}
             >
               <User className="mr-2 h-4 w-4" />
-              <span>My Profile</span>
+              <span>내 프로필</span>
             </DropdownMenuItem>
             <DropdownMenuItem className="cursor-pointer hover:bg-secondary">
               <Settings className="mr-2 h-4 w-4" />
-              <span>Settings</span>
+              <span>설정</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator className="bg-border" />
             <DropdownMenuItem className="cursor-pointer hover:bg-secondary text-destructive">
               <LogOut className="mr-2 h-4 w-4" />
-              <span>Log out</span>
+              <span>로그아웃</span>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -398,15 +400,15 @@ export default function SignupPage() {
         <Button asChild variant="ghost" className="w-fit px-0">
           <Link href="/">
             <ArrowLeft className="h-4 w-4" />
-            Back to StudyHub
+            StudyHub로 돌아가기
           </Link>
         </Button>
 
         <section className="space-y-3">
-          <p className="text-sm font-medium text-primary">StudyHub account</p>
-          <h1 className="text-3xl font-semibold tracking-normal">Create your account</h1>
+          <p className="text-sm font-medium text-primary">StudyHub 계정</p>
+          <h1 className="text-3xl font-semibold tracking-normal">계정을 만들어보세요</h1>
           <p className="max-w-2xl text-muted-foreground">
-            Join StudyHub to organize notes, interview practice, and study questions in one place.
+            StudyHub에서 노트, 면접 연습, 학습 질문을 한곳에 정리하세요.
           </p>
         </section>
       </div>
@@ -437,27 +439,27 @@ export function validateSignup(values: SignupFormValues): SignupValidationResult
   const errors: SignupValidationResult["errors"] = {}
 
   if (!values.name.trim()) {
-    errors.name = "Name is required."
+    errors.name = "이름을 입력해주세요."
   }
 
   if (!emailPattern.test(values.email.trim())) {
-    errors.email = "Enter a valid email address."
+    errors.email = "올바른 이메일 주소를 입력해주세요."
   }
 
   if (values.password.length < 8) {
-    errors.password = "Password must be at least 8 characters."
+    errors.password = "비밀번호는 8자 이상이어야 합니다."
   }
 
   if (values.password !== values.confirmPassword) {
-    errors.confirmPassword = "Passwords do not match."
+    errors.confirmPassword = "비밀번호가 서로 일치하지 않습니다."
   }
 
   if (!values.phone.trim()) {
-    errors.phone = "Phone number is required."
+    errors.phone = "전화번호를 입력해주세요."
   }
 
   if (!values.interests.trim()) {
-    errors.interests = "Add at least one interest."
+    errors.interests = "관심 영역을 하나 이상 입력해주세요."
   }
 
   return {
@@ -512,49 +514,49 @@ export function SignupForm() {
   return (
     <form onSubmit={handleSubmit} className="grid gap-5 rounded-lg border border-border bg-card p-6 shadow-sm">
       <div className="grid gap-2">
-        <Label htmlFor="name">Name</Label>
+        <Label htmlFor="name">이름</Label>
         <Input id="name" value={values.name} onChange={(event) => updateField("name", event.target.value)} />
         {errorFor("name") && <p className="text-sm text-destructive">{errorFor("name")}</p>}
       </div>
 
       <div className="grid gap-2">
-        <Label htmlFor="email">Email</Label>
+        <Label htmlFor="email">이메일</Label>
         <Input id="email" type="email" value={values.email} onChange={(event) => updateField("email", event.target.value)} />
         {errorFor("email") && <p className="text-sm text-destructive">{errorFor("email")}</p>}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="grid gap-2">
-          <Label htmlFor="password">Password</Label>
+          <Label htmlFor="password">비밀번호</Label>
           <Input id="password" type="password" value={values.password} onChange={(event) => updateField("password", event.target.value)} />
           {errorFor("password") && <p className="text-sm text-destructive">{errorFor("password")}</p>}
         </div>
 
         <div className="grid gap-2">
-          <Label htmlFor="confirmPassword">Confirm password</Label>
+          <Label htmlFor="confirmPassword">비밀번호 확인</Label>
           <Input id="confirmPassword" type="password" value={values.confirmPassword} onChange={(event) => updateField("confirmPassword", event.target.value)} />
           {errorFor("confirmPassword") && <p className="text-sm text-destructive">{errorFor("confirmPassword")}</p>}
         </div>
       </div>
 
       <div className="grid gap-2">
-        <Label htmlFor="phone">Phone</Label>
+        <Label htmlFor="phone">전화번호</Label>
         <Input id="phone" value={values.phone} onChange={(event) => updateField("phone", event.target.value)} />
         {errorFor("phone") && <p className="text-sm text-destructive">{errorFor("phone")}</p>}
       </div>
 
       <div className="grid gap-2">
-        <Label htmlFor="interests">Interests</Label>
+        <Label htmlFor="interests">관심 영역</Label>
         <Textarea
           id="interests"
           value={values.interests}
           onChange={(event) => updateField("interests", event.target.value)}
-          placeholder="Algorithms, Spring Boot, system design"
+          placeholder="알고리즘, Spring Boot, 시스템 설계"
         />
         {errorFor("interests") && <p className="text-sm text-destructive">{errorFor("interests")}</p>}
       </div>
 
-      <Button type="submit" className="w-full sm:w-fit">Create account</Button>
+      <Button type="submit" className="w-full sm:w-fit">계정 만들기</Button>
     </form>
   )
 }
@@ -575,15 +577,15 @@ export default function SignupPage() {
         <Button asChild variant="ghost" className="w-fit px-0">
           <Link href="/">
             <ArrowLeft className="h-4 w-4" />
-            Back to StudyHub
+            StudyHub로 돌아가기
           </Link>
         </Button>
 
         <section className="space-y-3">
-          <p className="text-sm font-medium text-primary">StudyHub account</p>
-          <h1 className="text-3xl font-semibold tracking-normal">Create your account</h1>
+          <p className="text-sm font-medium text-primary">StudyHub 계정</p>
+          <h1 className="text-3xl font-semibold tracking-normal">계정을 만들어보세요</h1>
           <p className="max-w-2xl text-muted-foreground">
-            Join StudyHub to organize notes, interview practice, and study questions in one place.
+            StudyHub에서 노트, 면접 연습, 학습 질문을 한곳에 정리하세요.
           </p>
         </section>
 
@@ -612,23 +614,23 @@ const contents = Object.fromEntries(
 )
 
 const checks = [
-  [contents.searchHeader.includes('href="/signup"'), "search header links to /signup"],
-  [contents.signupPage.includes("SignupForm"), "signup page renders SignupForm"],
-  [contents.signupForm.includes("confirmPassword"), "signup form has password confirmation"],
-  [contents.signupForm.includes("interests"), "signup form has interests field"],
-  [contents.validation.includes("Passwords do not match."), "validation checks password confirmation"],
-  [contents.validation.includes("Password must be at least 8 characters."), "validation checks password length"],
+  [contents.searchHeader.includes('href="/signup"'), "회원가입 링크 확인"],
+  [contents.signupPage.includes("SignupForm"), "회원가입 폼 렌더링 확인"],
+  [contents.signupForm.includes("confirmPassword"), "비밀번호 확인 필드 확인"],
+  [contents.signupForm.includes("interests"), "관심 영역 필드 확인"],
+  [contents.validation.includes("비밀번호가 서로 일치하지 않습니다."), "비밀번호 확인 검증"],
+  [contents.validation.includes("비밀번호는 8자 이상이어야 합니다."), "비밀번호 길이 검증"],
 ]
 
 const failed = checks.filter(([passed]) => !passed)
 if (failed.length > 0) {
   for (const [, message] of failed) {
-    console.error(`failed: ${message}`)
+    console.error(`실패: ${message}`)
   }
   process.exit(1)
 }
 
-console.log("signup page smoke checks passed")
+console.log("회원가입 화면 smoke 검증 통과")
 '''
 
 
@@ -680,7 +682,7 @@ class DevAgent:
             runners = _select_runners(context)
             if not runners:
                 result_status = AgentStatus.NEEDS_HUMAN
-                runner_error = f"No dev runner can handle issue_type={issue_type}."
+                runner_error = f"issue_type={issue_type}를 처리할 수 있는 Dev Runner가 없습니다."
                 verification = [
                     "## runner_selection",
                     "",
@@ -719,7 +721,7 @@ class DevAgent:
             result_status = AgentStatus.FAILED
             runner_error = branch_status
             verification = [
-                "## runner_selection",
+                "## Runner 선택",
                 "",
                 "- status: failed",
                 f"- reason: {branch_status}",
@@ -729,7 +731,7 @@ class DevAgent:
         commit_plan.write_text(
             "\n".join(
                 [
-                    "# Commit Plan",
+                    "# 커밋 계획",
                     "",
                     f"- issue_type: `{issue_type}`",
                     f"- issue_number: `{issue_number}`",
@@ -738,7 +740,7 @@ class DevAgent:
                     f"- selected_runner: `{runner_name}`",
                     f"- mode: `{'refactor' if is_refactor_mode else 'develop'}`",
                     "",
-                    "## Rule",
+                    "## 규칙",
                     "",
                     "- 구현 단계 하나가 끝날 때마다 커밋한다.",
                     "- 빈 커밋은 만들지 않는다.",
@@ -749,23 +751,23 @@ class DevAgent:
                     "",
                     *(
                         [
-                            "## Human Refactor Request",
+                            "## 사람 리팩터링 요청",
                             *refactor_request,
                             "",
                         ]
                         if is_refactor_mode
                         else []
                     ),
-                    "## Commit Units",
+                    "## 커밋 단위",
                     *[
                         f"{index}. [{feature_name}] : {message}"
                         for index, (_, message) in enumerate(commit_units, start=1)
                     ],
                     "",
-                    "## Actual Commits",
-                    *(commits or ["- pending implementation runner"]),
+                    "## 실제 커밋",
+                    *(commits or ["- 구현 Runner 실행 대기 중"]),
                     "",
-                    "## Runner Result",
+                    "## Runner 결과",
                     f"- status: `{result_status.value}`",
                     f"- error: `{runner_error or 'none'}`",
                 ]
@@ -777,34 +779,34 @@ class DevAgent:
         status.write_text(
             "\n".join(
                 [
-                    "# Dev Status",
+                    "# Dev 상태",
                     "",
                     f"- branch: `{branch_name}`",
                     f"- branch_status: {branch_status}",
                     f"- selected_runner: `{runner_name}`",
                     f"- mode: `{'refactor' if is_refactor_mode else 'develop'}`",
-                    f"- current_step: {'completed' if commits else 'stopped before implementation'}",
-                    "- visibility: GitHub issue comment + this artifact",
+                    f"- current_step: {'완료' if commits else '구현 전 중단'}",
+                    "- visibility: GitHub 이슈 댓글과 이 artifact에서 확인합니다.",
                     "",
-                    "## Backend Style",
+                    "## 백엔드 스타일",
                     *backend_style_lines,
                     "",
                     *(
                         [
-                            "## Human Refactor Request",
+                            "## 사람 리팩터링 요청",
                             *refactor_request,
                             "",
                         ]
                         if is_refactor_mode
                         else []
                     ),
-                    "## Progress",
+                    "## 진행 상황",
                     *progress_override,
                     "",
-                    "## Commits",
-                    *(commits or ["- pending implementation runner"]),
+                    "## 커밋",
+                    *(commits or ["- 구현 Runner 실행 대기 중"]),
                     "",
-                    "## Runner Result",
+                    "## Runner 결과",
                     f"- status: `{result_status.value}`",
                     f"- error: `{runner_error or 'none'}`",
                 ]
@@ -816,7 +818,7 @@ class DevAgent:
         style_guide.write_text(
             "\n".join(
                 [
-                    "# Backend Style Checklist",
+                    "# 백엔드 스타일 체크리스트",
                     "",
                     f"- mode: `{'refactor' if is_refactor_mode else 'develop'}`",
                     "",
@@ -824,14 +826,14 @@ class DevAgent:
                     "",
                     *(
                         [
-                            "## Human Refactor Request",
+                            "## 사람 리팩터링 요청",
                             *refactor_request,
                             "",
                         ]
                         if is_refactor_mode
                         else []
                     ),
-                    "## Review Items",
+                    "## 리뷰 항목",
                     "- [ ] 메인 서비스 메서드가 조회, 검증, 수행/요청, 기록/상태 변경, 반환 흐름을 직접 보여준다.",
                     "- [ ] 정책적 의미가 있는 로직은 명확한 책임 객체로 분리되어 있다.",
                     "- [ ] 책임 객체 public 메서드에는 한국어 한 줄 주석이 있다.",
@@ -852,7 +854,7 @@ class DevAgent:
             diff
             or "\n".join(
                 [
-                    "# No implementation diff generated.",
+                    "# 생성된 구현 diff가 없습니다.",
                     f"# task_id={input_data.task_id}",
                     f"# branch={branch_name}",
                 ]
@@ -864,31 +866,31 @@ class DevAgent:
         report.write_text(
             "\n".join(
                 [
-                    "# Dev Test Report",
+                    "# Dev 테스트 리포트",
                     "",
                     f"- branch: `{branch_name}`",
                     f"- branch_status: {branch_status}",
                     f"- selected_runner: `{runner_name}`",
                     f"- runner_status: `{result_status.value}`",
-                    "- test code: required for each implementation unit",
-                    "- smoke test: see command sections below when executed",
-                    "- edge case test: covered by generated smoke checks when supported",
-                    "- build: run manually or in the next QA stage",
+                    "- test code: 각 구현 단위마다 테스트 코드가 필요합니다.",
+                    "- smoke test: 실행된 경우 아래 command 섹션에서 확인하세요.",
+                    "- edge case test: 지원되는 경우 생성된 smoke check에 포함됩니다.",
+                    "- build: 수동 또는 다음 QA 단계에서 실행합니다.",
                     "",
-                    *(verification or ["- automated verification not executed for this issue type"]),
+                    *(verification or ["- 이 이슈 타입에는 자동 검증이 실행되지 않았습니다."]),
                 ]
             ),
             encoding="utf-8",
         )
 
-        action_label = "Refactor" if is_refactor_mode else "Dev implementation"
+        action_label = "리팩터링" if is_refactor_mode else "개발 구현"
         summary = (
-            f"{action_label} completed by {runner_name} on {branch_name}. {len(commits)} commit entries recorded."
+            f"{action_label}이 {runner_name}에 의해 {branch_name}에서 완료되었습니다. 커밋 기록 {len(commits)}개가 생성되었습니다."
             if commits
             else (
-                f"{action_label} runner stopped before implementation on {branch_name}: {runner_error}"
+                f"{action_label} 러너가 {branch_name}에서 구현 전 중단되었습니다: {runner_error}"
                 if runner_error
-                else f"{action_label} branch prepared: {branch_name}. Commit plan generated."
+                else f"{action_label} 브랜치가 준비되었습니다: {branch_name}. 커밋 계획이 생성되었습니다."
             )
         )
 

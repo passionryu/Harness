@@ -26,7 +26,7 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
 def get_task(task_id: str, db: Session = Depends(get_db)):
     task = OrchestrationService(db).get_task(task_id)
     if task is None:
-        raise HTTPException(status_code=404, detail="task not found")
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
     return task
 
 
@@ -59,7 +59,7 @@ async def github_webhook(
         x_hub_signature_256,
         settings.github_webhook_secret,
     ):
-        raise HTTPException(status_code=401, detail="invalid GitHub webhook signature")
+        raise HTTPException(status_code=401, detail="GitHub webhook 서명이 올바르지 않습니다.")
 
     payload = await request.json()
 
@@ -67,7 +67,7 @@ async def github_webhook(
         return _handle_issue_comment_webhook(payload, db)
 
     if x_github_event != "issues":
-        return {"status": "ignored", "reason": f"unsupported event: {x_github_event}"}
+        return {"status": "ignored", "reason": f"지원하지 않는 이벤트입니다: {x_github_event}"}
 
     action = payload.get("action")
     issue = payload.get("issue") or {}
@@ -77,7 +77,7 @@ async def github_webhook(
     is_plan_label = label.get("name") == settings.plan_trigger_label
     has_plan_label = settings.plan_trigger_label in issue_labels
     if action != "labeled" or not (is_plan_label and has_plan_label):
-        return {"status": "ignored", "reason": "not a plan label trigger"}
+        return {"status": "ignored", "reason": "plan label 트리거가 아닙니다."}
 
     try:
         return OrchestrationService(db).run_plan_for_github_issue(
@@ -98,7 +98,7 @@ def sync_github_issue_plan(
     db: Session = Depends(get_db),
 ):
     if not settings.github_token:
-        raise HTTPException(status_code=400, detail="GITHUB_TOKEN is required for issue sync")
+        raise HTTPException(status_code=400, detail="이슈 동기화에는 GITHUB_TOKEN이 필요합니다.")
 
     try:
         issue = GitHubAdapter(settings.github_token).get_issue(
@@ -108,7 +108,7 @@ def sync_github_issue_plan(
         )
         labels = {item["name"] for item in issue.get("labels", [])}
         if settings.plan_trigger_label not in labels:
-            raise ValueError(f"issue does not have label: {settings.plan_trigger_label}")
+            raise ValueError(f"이슈에 필요한 라벨이 없습니다: {settings.plan_trigger_label}")
 
         return OrchestrationService(db).run_plan_for_github_issue(
             issue_number=int(issue["number"]),
@@ -125,16 +125,16 @@ def sync_github_issue_plan(
 def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | dict[str, str]:
     action = payload.get("action")
     if action != "created":
-        return {"status": "ignored", "reason": "issue comment action is not created"}
+        return {"status": "ignored", "reason": "생성된 이슈 댓글이 아닙니다."}
 
     issue = payload.get("issue") or {}
     if issue.get("pull_request"):
-        return {"status": "ignored", "reason": "pull request comments are not handled"}
+        return {"status": "ignored", "reason": "Pull Request 댓글은 처리하지 않습니다."}
 
     comment = payload.get("comment") or {}
     comment_body = comment.get("body") or ""
     if AI_HARNESS_GENERATED_MARKER in comment_body:
-        return {"status": "ignored", "reason": "ai-harness generated comment"}
+        return {"status": "ignored", "reason": "AI Harness가 생성한 댓글입니다."}
 
     issue_number = int(issue["number"])
     issue_body = issue.get("body") or ""
@@ -187,7 +187,7 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
             )
 
     if command == settings.refactor_command:
-        refactor_request = command_body or "Refactor requested without additional detail."
+        refactor_request = command_body or "추가 상세 내용 없이 리팩터링이 요청되었습니다."
         try:
             return OrchestrationService(db).run_refactor_for_github_issue(
                 issue_number=issue_number,
@@ -268,11 +268,11 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
         )
 
     if command != settings.replan_command:
-        return {"status": "ignored", "reason": "not an ai-harness issue command"}
+        return {"status": "ignored", "reason": "AI Harness 이슈 명령이 아닙니다."}
 
     replan_request = command_body
     if not replan_request:
-        replan_request = "Replan requested without additional detail."
+        replan_request = "추가 상세 내용 없이 재설계가 요청되었습니다."
 
     try:
         return OrchestrationService(db).run_replan_for_github_issue(

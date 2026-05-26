@@ -15,6 +15,5 @@ class AgentRegistry:
     def get(self, name: str) -> AgentRunner:
         agent = self._agents.get(name)
         if agent is None:
-            raise ValueError(f"unknown agent: {name}")
+            raise ValueError(f"알 수 없는 Agent입니다: {name}")
         return agent
-

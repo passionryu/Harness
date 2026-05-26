@@ -29,28 +29,28 @@ class KotlinSpringRunner:
                     "",
                     "## Status",
                     "",
-                    "- Kotlin/Spring Boot runner selected.",
-                    "- This backend feature is not supported by the generic runner yet.",
-                    "- The runner stopped instead of reporting a fake success.",
+                    "- Kotlin/Spring Boot Runner가 선택되었습니다.",
+                    "- 아직 이 백엔드 기능은 범용 Runner가 자동 구현을 지원하지 않습니다.",
+                    "- 가짜 성공을 보고하지 않고 중단했습니다.",
                 ]
             ),
             encoding="utf-8",
         )
         return DevRunnerResult(
             status=AgentStatus.NEEDS_HUMAN,
-            summary="Kotlin/Spring Boot runner selected, but this backend plan is not supported yet.",
+            summary="Kotlin/Spring Boot Runner가 선택되었지만 아직 이 백엔드 계획은 자동 구현을 지원하지 않습니다.",
             progress=[
-                "- [x] Kotlin/Spring Boot runner selected",
-                "- [ ] Plan-based backend implementation for this feature",
+                "- [x] Kotlin/Spring Boot Runner 선택",
+                "- [ ] 이 기능에 대한 계획 기반 백엔드 구현",
             ],
             verification=[
                 "## kotlin_spring_runner",
                 "",
                 "- status: needs_human",
-                "- reason: backend feature is not supported by the generic runner yet",
+                "- reason: 아직 이 백엔드 기능은 범용 Runner가 자동 구현을 지원하지 않습니다.",
             ],
             artifacts=[ArtifactSpec("kotlin-spring-runner-report", report)],
-            error="This backend feature is not supported by the generic Kotlin/Spring runner yet.",
+            error="아직 이 백엔드 기능은 범용 Kotlin/Spring Runner가 자동 구현을 지원하지 않습니다.",
         )
 
 
@@ -76,7 +76,7 @@ def _stage_and_commit(context: DevRunnerContext, paths: list[str], message: str)
     existing_paths = [path for path in paths if (context.repo_path / path).exists()]
     context.repo.index.add(existing_paths)
     if not context.repo.index.diff("HEAD"):
-        return "skipped: no staged changes"
+        return "스킵: 스테이징된 변경사항 없음"
     commit = context.repo.index.commit(message)
     return commit.hexsha[:12]
 
@@ -164,17 +164,18 @@ def _implement_member_signup_api(context: DevRunnerContext) -> DevRunnerResult:
                 "",
                 f"- runner: `{KotlinSpringRunner.name}`",
                 f"- branch: `{context.branch_name}`",
-                "- feature: member signup API",
+                "- feature: 회원가입 API",
                 "- service_layer_skill: `/Users/rsy/.codex/skills/usecase-orchestration-style/SKILL.md`",
                 "- backend_runner_rules: `rules/backend-runner.md`",
+                "- localization_rules: `rules/localization.md`",
                 "",
                 "## Generated Scope",
                 "",
-                "- domain member model",
-                "- application register member usecase and ports",
+                "- 회원 도메인 모델",
+                "- 회원가입 application usecase와 port",
                 "- JPA persistence adapter",
-                "- REST signup endpoint",
-                "- unit tests",
+                "- REST 회원가입 endpoint",
+                "- 단위 테스트",
                 "",
                 "## Verification",
                 "",
@@ -187,12 +188,12 @@ def _implement_member_signup_api(context: DevRunnerContext) -> DevRunnerResult:
 
     return DevRunnerResult(
         status=AgentStatus.SUCCESS if exit_code == 0 else AgentStatus.FAILED,
-        summary=f"Kotlin/Spring member signup API implementation completed on {context.branch_name}.",
+        summary=f"Kotlin/Spring 회원가입 API 구현이 {context.branch_name}에서 완료되었습니다.",
         commits=commits,
         progress=progress,
         verification=verification,
         artifacts=[ArtifactSpec("kotlin-spring-runner-report", report)],
-        error=None if exit_code == 0 else "Gradle test failed after Kotlin/Spring implementation.",
+        error=None if exit_code == 0 else "Kotlin/Spring 구현 후 Gradle 테스트가 실패했습니다.",
     )
 
 
@@ -242,7 +243,7 @@ data class RegisterMemberResult(
 
 class DuplicateMemberEmailException(
     val email: String,
-) : RuntimeException("Duplicated member email")
+) : RuntimeException("이미 가입된 이메일입니다.")
 """,
         port_base / "MemberRepository.kt": """package com.studyhub.server.application.member.port
 
@@ -605,7 +606,7 @@ class ApiExceptionHandler {
                 "who=anonymous, " +
                 "what=POST /api/members/signup, " +
                 "requestData=validationFields:${exception.bindingResult.fieldErrors.map { it.field }.distinct()}, " +
-                "reason=message:invalid_request"
+                "reason=message:요청 값 검증 실패"
         )
 
         return ResponseEntity.badRequest()

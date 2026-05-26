@@ -429,7 +429,7 @@ class PlanAgent:
 
         return AgentResult(
             status=AgentStatus.SUCCESS,
-            summary=f"{issue_type} plan generated with implementation steps and edge cases.",
+            summary=f"{issue_type} Plan이 구현 순서와 엣지 케이스를 포함해 생성되었습니다.",
             artifacts=[
                 ArtifactSpec("architecture-doc", Path(architecture)),
                 ArtifactSpec("sequence-diagram", Path(sequence)),

@@ -10,7 +10,7 @@ class DiscordNotifier:
 
     def send_text(self, text: str) -> None:
         if not self.webhook_url:
-            raise ValueError("Discord webhook URL is not configured")
+            raise ValueError("Discord webhook URL이 설정되어 있지 않습니다.")
 
         response = httpx.post(
             self.webhook_url,

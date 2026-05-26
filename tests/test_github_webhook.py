@@ -52,7 +52,7 @@ def test_github_plan_label_webhook_triggers_plan(tmp_path, monkeypatch):
     assert response.status_code == 200
     result = response.json()
     assert result["current_state"] == "Todo"
-    assert "plan generated" in result["message"]
+    assert "Plan을 생성했습니다" in result["message"]
 
     artifact_root = Path(tmp_path / "artifacts" / result["task_id"] / "plans")
     assert (artifact_root / "architecture.md").exists()
@@ -123,7 +123,7 @@ def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
             issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
         )
 
-    assert event.message == "plan generated from GitHub issue trigger"
+    assert event.message == "GitHub 이슈 트리거로 Plan을 생성했습니다."
     assert "### 구현 요약" in captured["body"]
     assert "### 변경 대상" in captured["body"]
     assert "### 구현 순서" in captured["body"]
@@ -186,7 +186,7 @@ def test_issue_comment_replan_command_forces_new_plan(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     result = response.json()
-    assert "plan generated" in result["message"]
+    assert "Plan을 생성했습니다" in result["message"]
 
     architecture = (
         tmp_path / "artifacts" / result["task_id"] / "plans" / "architecture.md"
@@ -230,7 +230,7 @@ def test_issue_comment_plan_command_triggers_initial_plan(tmp_path, monkeypatch)
 
     assert response.status_code == 200
     result = response.json()
-    assert "plan generated" in result["message"]
+    assert "Plan을 생성했습니다" in result["message"]
     architecture = tmp_path / "artifacts" / result["task_id"] / "plans" / "architecture.md"
     assert architecture.exists()
     assert "## Issue Type\nfeFeature" in architecture.read_text()
@@ -364,7 +364,7 @@ def test_issue_comment_cancel_command_marks_task_cancelled(tmp_path, monkeypatch
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
-    assert "AI Harness Cancelled" in captured_comments[-1]
+    assert "AI Harness 작업 중지" in captured_comments[-1]
     assert "- current: `Cancelled`" in captured_comments[-1]
     assert "잘못된 방향이라 중지" in captured_comments[-1]
 
@@ -529,10 +529,10 @@ def test_issue_comment_plan_command_skips_duplicate_successful_plan(tmp_path, mo
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
-    assert "plan generated" in first_response.json()["message"]
-    assert second_response.json()["message"] == "plan already completed; skipped duplicate trigger"
+    assert "Plan을 생성했습니다" in first_response.json()["message"]
+    assert second_response.json()["message"] == "이미 Plan이 완료되어 중복 실행을 스킵했습니다."
     assert len(captured_comments) == 2
-    assert "AI Plan already exists" in captured_comments[-1]
+    assert "AI Plan이 이미 존재합니다" in captured_comments[-1]
     assert "@ai-harness replan" in captured_comments[-1]
 
 
@@ -600,7 +600,7 @@ def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monk
     result = develop_response.json()
     assert result["previous_state"] == "Todo"
     assert result["current_state"] == "In Progress"
-    assert result["message"] == "plan approved; dev agent started"
+    assert result["message"] == "Plan이 승인되어 Dev Agent를 실행했습니다."
     assert repo.active_branch.name == expected_branch
     commit_plan = tmp_path / "artifacts" / result["task_id"] / "dev" / "commit-plan.md"
     dev_status = tmp_path / "artifacts" / result["task_id"] / "dev" / "dev-status.md"
@@ -609,7 +609,7 @@ def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monk
     assert expected_branch in commit_plan.read_text()
     assert "[회원 가입 기능 구현] : 버튼/라우팅 추가" in commit_plan.read_text()
     assert "[회원 가입 기능 구현] : 프론트엔드 테스트 코드 추가" in commit_plan.read_text()
-    assert "signup page smoke checks passed" in (
+    assert "회원가입 화면 smoke 검증 통과" in (
         tmp_path / "artifacts" / result["task_id"] / "dev" / "test-report.md"
     ).read_text()
     assert (tmp_path / "artifacts" / result["task_id"] / "dev" / "implementation.patch").exists()
@@ -650,7 +650,7 @@ def test_issue_comment_develop_command_without_plan_is_ignored(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {
         "status": "ignored",
-        "reason": "plan not found; run @ai-harness plan first",
+        "reason": "Plan을 찾을 수 없습니다. 먼저 @ai-harness plan을 실행하세요.",
     }
 
 
@@ -735,7 +735,7 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
     assert develop_response.status_code == 200
     result = develop_response.json()
     assert result["status"] == "failed"
-    assert "Gradle test failed after Kotlin/Spring implementation" in result["reason"]
+    assert "Kotlin/Spring 구현 후 Gradle 테스트가 실패했습니다." in result["reason"]
 
     task_id = plan_response.json()["task_id"]
     dev_dir = tmp_path / "artifacts" / task_id / "dev"
@@ -815,7 +815,7 @@ def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monk
     result = continue_response.json()
     assert result["previous_state"] == "In Progress"
     assert result["current_state"] == "In Progress"
-    assert result["message"] == "dev agent continued"
+    assert result["message"] == "Dev Agent를 다시 실행했습니다."
 
 
 def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypatch):
@@ -892,7 +892,7 @@ def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypa
     result = refactor_response.json()
     assert result["previous_state"] == "In Progress"
     assert result["current_state"] == "In Progress"
-    assert result["message"] == "refactor request applied; task moved to In Progress"
+    assert result["message"] == "리팩터링 요청을 반영했고 작업 상태를 In Progress로 변경했습니다."
 
     dev_status = tmp_path / "artifacts" / result["task_id"] / "dev" / "dev-status.md"
     assert "mode: `refactor`" in dev_status.read_text()
@@ -918,7 +918,7 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     monkeypatch.setattr(
         qa_agent,
         "_run_command",
-        lambda command, cwd, timeout_seconds: (0, "signup page smoke checks passed", ""),
+        lambda command, cwd, timeout_seconds: (0, "회원가입 화면 smoke 검증 통과", ""),
     )
     captured_comments: list[str] = []
     captured_chat_messages: list[str] = []
@@ -1039,13 +1039,13 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     result = qa_response.json()
     assert result["previous_state"] == "In Progress"
     assert result["current_state"] == "System QA"
-    assert result["message"] == "qa passed; task moved to System QA"
+    assert result["message"] == "QA가 통과되어 작업 상태를 System QA로 변경했습니다."
     qa_dir = tmp_path / "artifacts" / result["task_id"] / "qa"
     assert (qa_dir / "qa-report.md").exists()
     assert (qa_dir / "qa-checklist.md").exists()
     assert "test:signup 통과" in (qa_dir / "qa-report.md").read_text()
     assert "## Human QA 체크리스트" in (qa_dir / "qa-report.md").read_text()
-    qa_comment = next(comment for comment in captured_comments if "🔎 System QA Passed" in comment)
+    qa_comment = next(comment for comment in captured_comments if "🔎 System QA 통과" in comment)
     human_qa_comment = next(comment for comment in captured_comments if "🧑‍💻 Human QA 요청" in comment)
     assert "### QA 결과" in qa_comment
     assert "- result: `pass`" in qa_comment
@@ -1061,18 +1061,18 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     assert duplicate_qa_response.status_code == 200
     assert duplicate_qa_response.json() == {
         "status": "ignored",
-        "reason": "task is in `System QA`; QA can run only from `In Progress`",
+        "reason": "현재 작업 상태는 `System QA`입니다. QA는 `In Progress`에서만 실행할 수 있습니다.",
     }
     duplicate_qa_comment = next(
-        comment for comment in captured_comments if "🔎 System QA Not Started" in comment
+        comment for comment in captured_comments if "🔎 System QA를 시작하지 못했습니다" in comment
     )
     assert "@ai-harness re-qa" in duplicate_qa_comment
     assert reqa_response.status_code == 200
     reqa_result = reqa_response.json()
     assert reqa_result["previous_state"] == "System QA"
     assert reqa_result["current_state"] == "System QA"
-    assert reqa_result["message"] == "qa rerun passed; task remains in System QA"
-    assert any("♻️ 🔎 System QA Re-QA Passed" in comment for comment in captured_comments)
+    assert reqa_result["message"] == "QA 재검증이 통과되었고 작업 상태는 System QA로 유지됩니다."
+    assert any("♻️ 🔎 System QA 재검증 통과" in comment for comment in captured_comments)
     assert any("♻️ 🧑‍💻 Human QA Re-QA 요청" in comment for comment in captured_comments)
     assert len(captured_chat_messages) == 2
     assert "🧑‍💻 Human QA 요청" in captured_chat_messages[0]
@@ -1119,7 +1119,7 @@ def test_issue_comment_qa_command_without_development_is_ignored(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {
         "status": "ignored",
-        "reason": "task not found; run plan and develop first",
+        "reason": "작업을 찾을 수 없습니다. 먼저 plan과 develop을 실행하세요.",
     }
 
 
@@ -1139,7 +1139,7 @@ def test_issue_comment_ignores_commands_not_on_first_content_line(monkeypatch):
         "comment": {
             "body": "\n".join(
                 [
-                    "## AI Plan already exists",
+                    "## AI Plan이 이미 존재합니다",
                     "",
                     "```markdown",
                     "@ai-harness replan",
@@ -1164,7 +1164,7 @@ def test_issue_comment_ignores_commands_not_on_first_content_line(monkeypatch):
         )
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ignored", "reason": "not an ai-harness issue command"}
+    assert response.json() == {"status": "ignored", "reason": "AI Harness 이슈 명령이 아닙니다."}
 
 
 def test_issue_comment_ignores_ai_harness_generated_comment(monkeypatch):
@@ -1205,4 +1205,4 @@ def test_issue_comment_ignores_ai_harness_generated_comment(monkeypatch):
         )
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ignored", "reason": "ai-harness generated comment"}
+    assert response.json() == {"status": "ignored", "reason": "AI Harness가 생성한 댓글입니다."}

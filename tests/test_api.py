@@ -40,7 +40,7 @@ def test_task_lifecycle(tmp_path, monkeypatch):
             json={"task_id": task_id, "event": "start_dev", "reason": "test"},
         )
         assert dev_response.status_code == 400
-        assert "agent failed: dev" in dev_response.json()["detail"]
+        assert "Agent 실행 실패: dev" in dev_response.json()["detail"]
 
     task_artifact_root = Path(artifact_root) / task_id
     assert task_artifact_root.exists()

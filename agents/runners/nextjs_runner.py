@@ -16,18 +16,18 @@ class NextJsRunner:
         if not _is_signup_feature(context.issue_type, context.title, context.body):
             return DevRunnerResult(
                 status=AgentStatus.NEEDS_HUMAN,
-                summary="Next.js runner selected, but this frontend plan is not supported yet.",
+                summary="Next.js Runner가 선택되었지만 아직 이 프론트엔드 계획은 자동 구현을 지원하지 않습니다.",
                 progress=[
-                    "- [x] Next.js runner selected",
-                    "- [ ] Plan-based generic frontend implementation",
+                    "- [x] Next.js Runner 선택",
+                    "- [ ] 계획 기반 범용 프론트엔드 구현",
                 ],
                 verification=[
                     "## nextjs_runner",
                     "",
                     "- status: needs_human",
-                    "- reason: only signup frontend automation is enabled yet",
+                    "- reason: 현재는 회원가입 화면 자동화만 지원합니다.",
                 ],
-                error="Only signup frontend automation is enabled yet.",
+                error="현재는 회원가입 화면 자동화만 지원합니다.",
             )
 
         commits, progress, verification = _implement_signup_feature(
@@ -39,8 +39,8 @@ class NextJsRunner:
         return DevRunnerResult(
             status=AgentStatus.SUCCESS,
             summary=(
-                f"{self.name} completed implementation on "
-                f"{context.branch_name}. {len(commits)} commit entries recorded."
+                f"{self.name}가 {context.branch_name}에서 구현을 완료했습니다. "
+                f"커밋 기록 {len(commits)}개가 생성되었습니다."
             ),
             commits=commits,
             progress=progress,

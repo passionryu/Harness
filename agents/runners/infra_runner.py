@@ -11,7 +11,7 @@ class InfraRunner:
     def run(self, context: DevRunnerContext) -> DevRunnerResult:
         return DevRunnerResult(
             status=AgentStatus.NEEDS_HUMAN,
-            summary="Infra runner selected, but automated infra/config implementation is not enabled yet.",
-            progress=["- [ ] Automated infra/config runner implementation"],
-            error="Automated infra/config runner is not enabled yet.",
+            summary="Infra Runner가 선택되었지만 아직 인프라/config 자동 구현은 활성화되어 있지 않습니다.",
+            progress=["- [ ] 인프라/config 자동 구현"],
+            error="Infra Runner는 아직 활성화되어 있지 않습니다.",
         )

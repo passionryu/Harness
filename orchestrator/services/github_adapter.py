@@ -16,7 +16,7 @@ class GitHubAdapter:
         body: str,
     ) -> None:
         if not self.token:
-            raise ValueError("GitHub token is not configured")
+            raise ValueError("GitHub token이 설정되어 있지 않습니다.")
 
         url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments"
         headers = {
@@ -29,7 +29,7 @@ class GitHubAdapter:
 
     def get_issue(self, owner: str, repo: str, issue_number: int) -> dict:
         if not self.token:
-            raise ValueError("GitHub token is not configured")
+            raise ValueError("GitHub token이 설정되어 있지 않습니다.")
 
         url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}"
         headers = {
@@ -43,7 +43,7 @@ class GitHubAdapter:
 
     def list_issue_comments(self, owner: str, repo: str, issue_number: int) -> list[dict]:
         if not self.token:
-            raise ValueError("GitHub token is not configured")
+            raise ValueError("GitHub token이 설정되어 있지 않습니다.")
 
         url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments"
         headers = {

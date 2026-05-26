@@ -65,7 +65,7 @@ def _extract_issue_type(markdown: str) -> str:
     for label in [item.strip() for item in labels.split(",")]:
         if label.startswith("type: "):
             return label.removeprefix("type: ").strip()
-    return "unspecified"
+    return "미지정"
 
 
 def _branch_prefix(issue_type: str) -> str:
@@ -123,7 +123,7 @@ class QAAgent:
         repo_exists = repo_path.exists()
         checks.append(("target repository exists", repo_exists, str(repo_path)))
 
-        current_branch = "unknown"
+        current_branch = "알 수 없음"
         if repo_exists:
             repo = Repo(repo_path)
             if branch_name in {head.name for head in repo.heads}:
@@ -178,12 +178,12 @@ class QAAgent:
                         "",
                         "### stdout",
                         "```text",
-                        stdout.strip() or "(empty)",
+                        stdout.strip() or "(비어 있음)",
                         "```",
                         "",
                         "### stderr",
                         "```text",
-                        stderr.strip() or "(empty)",
+                        stderr.strip() or "(비어 있음)",
                         "```",
                     ]
                 )
@@ -210,7 +210,7 @@ class QAAgent:
                     "## 검증 체크리스트",
                     *checklist_lines,
                     "",
-                    *(command_sections or ["## Commands", "", "- No command executed for this issue type."]),
+                    *(command_sections or ["## Commands", "", "- 이 이슈 타입에는 실행된 명령이 없습니다."]),
                     "",
                     "## Human QA 체크리스트",
                     *human_qa_lines,
@@ -236,10 +236,10 @@ class QAAgent:
 
         return AgentResult(
             status=AgentStatus.SUCCESS if passed else AgentStatus.FAILED,
-            summary=f"QA {'passed' if passed else 'failed'} for {branch_name}.",
+            summary=f"{branch_name} QA {'통과' if passed else '실패'}.",
             artifacts=[
                 ArtifactSpec("qa-report", Path(report)),
                 ArtifactSpec("qa-checklist", Path(checklist)),
             ],
-            error=None if passed else "QA checks failed. See qa-report.md.",
+            error=None if passed else "QA 검증이 실패했습니다. qa-report.md를 확인하세요.",
         )

@@ -16,3 +16,8 @@ Backend runners must also apply `rules/backend-runner.md`. Keep controllers
 thin, put request/response DTOs in separate files, preserve domain/application/
 port/adapter/presentation boundaries, and stop with a clear report instead of
 generating backend code that violates those boundaries.
+
+All generated StudyHub user-facing messages must follow `rules/localization.md`.
+Frontend labels, validation messages, backend API error responses, internal
+exception messages, logs, GitHub comments, and human-facing reports should be
+Korean-first. Keep only stable machine status values in English when needed.
