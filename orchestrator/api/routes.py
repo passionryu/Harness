@@ -156,7 +156,15 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
                 comment_on_duplicate=True,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return OrchestrationService(db).comment_command_failure(
+                issue_number=issue_number,
+                title=issue_title,
+                body=issue_body,
+                issue_url=issue_url,
+                issue_labels=issue_labels,
+                command=command,
+                error=str(exc),
+            )
 
     if command == settings.develop_command:
         try:
@@ -168,7 +176,15 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
                 issue_labels=issue_labels,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return OrchestrationService(db).comment_command_failure(
+                issue_number=issue_number,
+                title=issue_title,
+                body=issue_body,
+                issue_url=issue_url,
+                issue_labels=issue_labels,
+                command=command,
+                error=str(exc),
+            )
 
     if command == settings.qa_command:
         try:
@@ -180,7 +196,15 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
                 issue_labels=issue_labels,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return OrchestrationService(db).comment_command_failure(
+                issue_number=issue_number,
+                title=issue_title,
+                body=issue_body,
+                issue_url=issue_url,
+                issue_labels=issue_labels,
+                command=command,
+                error=str(exc),
+            )
 
     if command == settings.reqa_command:
         try:
@@ -192,7 +216,34 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
                 issue_labels=issue_labels,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return OrchestrationService(db).comment_command_failure(
+                issue_number=issue_number,
+                title=issue_title,
+                body=issue_body,
+                issue_url=issue_url,
+                issue_labels=issue_labels,
+                command=command,
+                error=str(exc),
+            )
+
+    if command == settings.status_command:
+        return OrchestrationService(db).comment_status_for_github_issue(
+            issue_number=issue_number,
+            title=issue_title,
+            body=issue_body,
+            issue_url=issue_url,
+            issue_labels=issue_labels,
+        )
+
+    if command == settings.cancel_command:
+        return OrchestrationService(db).cancel_github_issue_task(
+            issue_number=issue_number,
+            title=issue_title,
+            body=issue_body,
+            issue_url=issue_url,
+            issue_labels=issue_labels,
+            reason=command_body or "cancel requested by GitHub comment",
+        )
 
     if command != settings.replan_command:
         return {"status": "ignored", "reason": "not an ai-harness issue command"}
@@ -211,7 +262,15 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
             replan_request=replan_request,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return OrchestrationService(db).comment_command_failure(
+            issue_number=issue_number,
+            title=issue_title,
+            body=issue_body,
+            issue_url=issue_url,
+            issue_labels=issue_labels,
+            command=command,
+            error=str(exc),
+        )
 
 
 def _parse_issue_comment_command(comment_body: str) -> tuple[str | None, str]:
