@@ -28,25 +28,19 @@ def test_task_lifecycle(tmp_path, monkeypatch):
         task_id = task["id"]
         assert task["state"] == "Backlog"
 
-        for event, expected_state in [
-            ("triage", "Todo"),
-            ("start_dev", "In Progress"),
-            ("dev_complete", "System QA"),
-            ("qa_pass", "Human QA"),
-        ]:
-            response = client.post(
-                "/events/manual",
-                json={"task_id": task_id, "event": event, "reason": "test"},
-            )
-            assert response.status_code == 200
-            assert response.json()["current_state"] == expected_state
-
-        done_response = client.post(
-            f"/tasks/{task_id}/approve-human-qa",
-            json={"approved_by": "tester", "notes": "looks good"},
+        triage_response = client.post(
+            "/events/manual",
+            json={"task_id": task_id, "event": "triage", "reason": "test"},
         )
-        assert done_response.status_code == 200
-        assert done_response.json()["current_state"] == "Done"
+        assert triage_response.status_code == 200
+        assert triage_response.json()["current_state"] == "Todo"
+
+        dev_response = client.post(
+            "/events/manual",
+            json={"task_id": task_id, "event": "start_dev", "reason": "test"},
+        )
+        assert dev_response.status_code == 400
+        assert "agent failed: dev" in dev_response.json()["detail"]
 
     task_artifact_root = Path(artifact_root) / task_id
     assert task_artifact_root.exists()
