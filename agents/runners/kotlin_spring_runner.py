@@ -9,7 +9,7 @@ class KotlinSpringRunner:
     name = "kotlin_spring_runner"
 
     def can_handle(self, context: DevRunnerContext) -> bool:
-        return context.issue_type in {"beFeature", "apiConnect", "bugfix", "hotfix"} and (
+        return context.issue_type in {"beFeature", "bugfix", "hotfix"} and (
             context.repo_path / "apps/server/build.gradle.kts"
         ).exists()
 
@@ -56,7 +56,7 @@ class KotlinSpringRunner:
 
 def _is_member_signup_feature(context: DevRunnerContext) -> bool:
     haystack = f"{context.title}\n{context.body}".lower()
-    return context.issue_type in {"beFeature", "apiConnect"} and (
+    return context.issue_type == "beFeature" and (
         ("회원" in haystack and "가입" in haystack)
         or "signup" in haystack
         or "sign up" in haystack
