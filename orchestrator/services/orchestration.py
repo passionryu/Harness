@@ -1,5 +1,5 @@
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -23,6 +23,11 @@ from orchestrator.services.google_chat import GoogleChatNotifier
 from workflows.state_machine import StateMachine, WorkflowEvent
 
 logger = logging.getLogger(__name__)
+KST = ZoneInfo("Asia/Seoul")
+
+
+def now_kst() -> datetime:
+    return datetime.now(KST)
 
 
 class OrchestrationService:
@@ -698,7 +703,7 @@ class OrchestrationService:
 
         previous = task.state
         decision = self.state_machine.decide(task.state, WorkflowEvent.HUMAN_APPROVE.value)
-        task.human_approved_at = datetime.now(UTC)
+        task.human_approved_at = now_kst()
         task.state = decision.to_state.value
 
         self._record_transition(
@@ -751,7 +756,7 @@ class OrchestrationService:
             run.status = result.status.value
             run.summary = result.summary
             run.error = result.error
-            run.finished_at = datetime.now(UTC)
+            run.finished_at = now_kst()
             self.artifact_store.persist_agent_artifacts(task.id, run.id, result.artifacts)
             if result.status != AgentStatus.SUCCESS:
                 raise ValueError(f"Agent 실행 실패: {agent_name}: {result.error or result.summary}")
@@ -761,7 +766,7 @@ class OrchestrationService:
                 run.status = AgentStatus.FAILED.value
             if not run.error:
                 run.error = str(exc)
-            run.finished_at = datetime.now(UTC)
+            run.finished_at = now_kst()
             if not run.summary:
                 run.summary = f"{agent_name}가 완료 전에 실패했습니다."
             raise
@@ -816,8 +821,8 @@ class OrchestrationService:
         if value is None:
             return "not finished"
         if value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
-        return value.astimezone(ZoneInfo("Asia/Seoul")).strftime("%Y.%m.%d %H:%M:%S")
+            return value.strftime("%Y.%m.%d %H:%M:%S")
+        return value.astimezone(KST).strftime("%Y.%m.%d %H:%M:%S")
 
     def _extract_section(self, markdown: str, heading: str) -> list[str]:
         lines = markdown.splitlines()
@@ -1545,7 +1550,7 @@ class OrchestrationService:
         return f"🏗️ AI Plan: {task.title}"
 
     def _qa_requested_at(self) -> str:
-        return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y.%m.%d %H:%M:%S")
+        return now_kst().strftime("%Y.%m.%d %H:%M:%S")
 
     def _build_human_qa_comment(self, task: Task, rerun: bool) -> str:
         return "\n".join(

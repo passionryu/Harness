@@ -1,5 +1,6 @@
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -7,8 +8,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from orchestrator.db.session import Base
 
 
-def now_utc() -> datetime:
-    return datetime.now(UTC)
+KST = ZoneInfo("Asia/Seoul")
+
+
+def now_kst() -> datetime:
+    return datetime.now(KST)
 
 
 class Task(Base):
@@ -23,9 +27,9 @@ class Task(Base):
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     retry_limit: Mapped[int] = mapped_column(Integer, default=2)
     human_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=now_utc, onupdate=now_utc
+        DateTime(timezone=True), default=now_kst, onupdate=now_kst
     )
 
     runs: Mapped[list["Run"]] = relationship(back_populates="task")
@@ -38,7 +42,7 @@ class Run(Base):
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
     agent_name: Mapped[str] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(40))
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=900)
     summary: Mapped[str] = mapped_column(Text, default="")
@@ -56,7 +60,7 @@ class Artifact(Base):
     kind: Mapped[str] = mapped_column(String(80))
     path: Mapped[str] = mapped_column(Text)
     sha256: Mapped[str] = mapped_column(String(64))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
 
 
 class StateTransition(Base):
@@ -68,7 +72,7 @@ class StateTransition(Base):
     to_state: Mapped[str] = mapped_column(String(40))
     reason: Mapped[str] = mapped_column(Text, default="")
     actor: Mapped[str] = mapped_column(String(80), default="system")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
 
 
 class AuditLog(Base):
@@ -79,5 +83,4 @@ class AuditLog(Base):
     run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
     event_type: Mapped[str] = mapped_column(String(120))
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
-
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_kst)
