@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     develop_command: str = "@ai-harness develop"
     qa_command: str = "@ai-harness qa"
     reqa_command: str = "@ai-harness re-qa"
+    status_command: str = "@ai-harness status"
+    cancel_command: str = "@ai-harness cancel"
     allow_external_notifications: bool = False
     google_chat_webhook_url: str | None = None
     discord_webhook_url: str | None = None
