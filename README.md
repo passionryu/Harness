@@ -75,6 +75,7 @@ PLAN_TRIGGER_LABEL=ai-plan-ready
 PLAN_COMMAND=@ai-harness plan
 REPLAN_COMMAND=@ai-harness replan
 DEVELOP_COMMAND=@ai-harness develop
+REFACTOR_COMMAND=@ai-harness refactor
 QA_COMMAND=@ai-harness qa
 REQA_COMMAND=@ai-harness re-qa
 ALLOW_EXTERNAL_NOTIFICATIONS=false
@@ -96,6 +97,7 @@ Or through a GitHub webhook:
 - Initial plan command: add a new issue comment containing `@ai-harness plan`
 - Replan trigger: add a new issue comment containing `@ai-harness replan`
 - Develop trigger: add a new issue comment containing `@ai-harness develop`
+- Refactor trigger: add a new issue comment containing `@ai-harness refactor`
 - System QA trigger: add a new issue comment containing `@ai-harness qa`
 - System QA retry trigger: add a new issue comment containing `@ai-harness re-qa`
 
@@ -114,6 +116,18 @@ Use `@ai-harness develop` after the plan is reviewed and approved:
 ```
 
 The command requires a successful Plan Agent run. It moves the task from `Todo` to `In Progress` and runs the Dev Agent.
+
+Use `@ai-harness refactor` when the implementation exists but should be revised based on human feedback:
+
+```markdown
+@ai-harness refactor
+
+- 컨트롤러는 얇게 유지한다.
+- DTO는 별도 파일로 분리한다.
+- 에러 응답과 로깅 규칙을 반영한다.
+```
+
+The command requires a successful Dev Agent run. It records the comment body as a human refactor request, reruns the Dev Agent on the existing branch, and keeps or moves the task back to `In Progress` so System QA can be run again.
 
 Use `@ai-harness qa` after development commits are ready:
 

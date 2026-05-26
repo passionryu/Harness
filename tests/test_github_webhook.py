@@ -818,6 +818,88 @@ def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monk
     assert result["message"] == "dev agent continued"
 
 
+def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "plan_command", "@ai-harness plan")
+    monkeypatch.setattr(routes.settings, "develop_command", "@ai-harness develop")
+    monkeypatch.setattr(routes.settings, "refactor_command", "@ai-harness refactor")
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "github_token", None)
+    target_repo = tmp_path / "studyHub"
+    target_repo.mkdir()
+    repo = Repo.init(target_repo)
+    (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
+    (target_repo / "apps/web").mkdir(parents=True)
+    (target_repo / "apps/web/package.json").write_text(
+        json.dumps({"name": "@studyhub/web", "private": True, "scripts": {}}),
+        encoding="utf-8",
+    )
+    repo.index.add(["README.md"])
+    repo.index.commit("Initial commit")
+    monkeypatch.setattr(orchestration.settings, "target_repo_path", target_repo)
+
+    issue_number = uuid4().int % 1_000_000_000
+    issue = {
+        "number": issue_number,
+        "title": "[FE] 회원 가입 기능 구현",
+        "body": "회원가입 화면을 추가한다.",
+        "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        "labels": [{"name": "type: feFeature"}],
+    }
+
+    with TestClient(app) as client:
+        for command in ["@ai-harness plan", "@ai-harness develop"]:
+            payload = {"action": "created", "issue": issue, "comment": {"body": command}}
+            body = json.dumps(payload).encode("utf-8")
+            response = client.post(
+                "/webhooks/github",
+                content=body,
+                headers={
+                    "X-GitHub-Event": "issue_comment",
+                    "X-Hub-Signature-256": _signature(secret, body),
+                    "Content-Type": "application/json",
+                },
+            )
+            assert response.status_code == 200
+
+        refactor_payload = {
+            "action": "created",
+            "issue": issue,
+            "comment": {
+                "body": "\n".join(
+                    [
+                        "@ai-harness refactor",
+                        "",
+                        "- 컨트롤러는 얇게 유지한다.",
+                        "- DTO는 별도 파일로 분리한다.",
+                    ]
+                )
+            },
+        }
+        refactor_body = json.dumps(refactor_payload).encode("utf-8")
+        refactor_response = client.post(
+            "/webhooks/github",
+            content=refactor_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, refactor_body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert refactor_response.status_code == 200
+    result = refactor_response.json()
+    assert result["previous_state"] == "In Progress"
+    assert result["current_state"] == "In Progress"
+    assert result["message"] == "refactor request applied; task moved to In Progress"
+
+    dev_status = tmp_path / "artifacts" / result["task_id"] / "dev" / "dev-status.md"
+    assert "mode: `refactor`" in dev_status.read_text()
+    assert "컨트롤러는 얇게 유지한다" in dev_status.read_text()
+    assert "DTO는 별도 파일로 분리한다" in dev_status.read_text()
+
+
 def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     secret = "test-secret"
     monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)

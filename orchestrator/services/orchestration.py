@@ -293,6 +293,86 @@ class OrchestrationService:
             else "dev agent continued",
         )
 
+    def run_refactor_for_github_issue(
+        self,
+        issue_number: int,
+        title: str,
+        body: str,
+        issue_url: str,
+        refactor_request: str,
+        issue_labels: list[str] | None = None,
+    ) -> EventResult | dict[str, str]:
+        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        if task is None:
+            return self._skip_refactor_command(
+                issue_number,
+                "task not found; run plan and develop first",
+            )
+
+        task.title = title
+        task.body = self._append_refactor_request(
+            self._append_issue_metadata(body, issue_labels or [], issue_number),
+            refactor_request,
+        )
+        task.github_issue_url = issue_url
+
+        if not self.has_successful_agent_run(task.id, "dev"):
+            return self._skip_refactor_command(
+                issue_number,
+                "successful dev run not found; run @ai-harness develop first",
+                task.id,
+            )
+
+        if task.state not in {"In Progress", "System QA", "Human QA"}:
+            return self._skip_refactor_command(
+                issue_number,
+                f"task is in `{task.state}`; refactor can run only after development has started",
+                task.id,
+            )
+
+        previous = task.state
+        run_id = self._run_agent(task, "dev")
+        task.state = "In Progress"
+        self._record_transition(
+            task.id,
+            previous,
+            task.state,
+            f"refactor requested by {settings.refactor_command}",
+            "human",
+        )
+        self._audit(
+            task.id,
+            run_id,
+            "dev.refactored",
+            {
+                "issue_number": issue_number,
+                "issue_url": issue_url,
+                "has_refactor_request": bool(refactor_request),
+            },
+        )
+
+        if settings.github_token:
+            GitHubAdapter(settings.github_token).create_issue_comment(
+                settings.github_owner,
+                settings.github_repo,
+                issue_number,
+                self._build_refactor_comment(task, previous),
+            )
+            self._audit(
+                task.id,
+                run_id,
+                "github.refactor_commented",
+                {"issue_number": issue_number},
+            )
+
+        self.db.commit()
+        return EventResult(
+            task_id=task.id,
+            previous_state=previous,
+            current_state=task.state,
+            message="refactor request applied; task moved to In Progress",
+        )
+
     def run_qa_for_github_issue(
         self,
         issue_number: int,
@@ -766,6 +846,16 @@ class OrchestrationService:
             ]
         )
 
+    def _append_refactor_request(self, body: str, refactor_request: str) -> str:
+        return "\n".join(
+            [
+                body,
+                "",
+                "## Human Refactor Request",
+                refactor_request.strip(),
+            ]
+        )
+
     def _append_issue_metadata(
         self, body: str, issue_labels: list[str], issue_number: int | None = None
     ) -> str:
@@ -945,6 +1035,19 @@ class OrchestrationService:
                 settings.github_repo,
                 issue_number,
                 self._build_develop_not_ready_comment(reason, task_id),
+            )
+        self.db.commit()
+        return {"status": "ignored", "reason": reason}
+
+    def _skip_refactor_command(
+        self, issue_number: int, reason: str, task_id: str | None = None
+    ) -> dict[str, str]:
+        if settings.github_token:
+            GitHubAdapter(settings.github_token).create_issue_comment(
+                settings.github_owner,
+                settings.github_repo,
+                issue_number,
+                self._build_refactor_not_ready_comment(reason, task_id),
             )
         self.db.commit()
         return {"status": "ignored", "reason": reason}
@@ -1160,6 +1263,45 @@ class OrchestrationService:
             ]
         )
 
+    def _build_refactor_comment(self, task: Task, previous_state: str) -> str:
+        branch_name = self._branch_name_for_task(task)
+        refactor_request = self._extract_section(task.body, "Human Refactor Request")
+        return "\n".join(
+            [
+                "<!-- ai-harness-generated -->",
+                "",
+                f"## 🛠️ Refactor Completed: {task.title}",
+                "",
+                f"Task ID: `{task.id}`",
+                "",
+                "Human refactor request has been applied by Dev Agent.",
+                "",
+                "### State",
+                f"- previous: `{previous_state}`",
+                f"- current: `{task.state}`",
+                "",
+                "### Branch",
+                f"- `{branch_name}`",
+                "",
+                "### 반영 요청",
+                *(self._comment_bullets(refactor_request, ["Refactor requested without additional detail."])),
+                "",
+                "### Dev Artifacts",
+                f"- `artifacts/{task.id}/dev/commit-plan.md`",
+                f"- `artifacts/{task.id}/dev/dev-status.md`",
+                f"- `artifacts/{task.id}/dev/backend-style-checklist.md`",
+                f"- `artifacts/{task.id}/dev/implementation.patch`",
+                f"- `artifacts/{task.id}/dev/test-report.md`",
+                "",
+                "### Next Step",
+                "리팩터링으로 코드가 변경되었으므로 System QA를 다시 실행하세요.",
+                "",
+                "```markdown",
+                settings.qa_command,
+                "```",
+            ]
+        )
+
     def _build_develop_not_ready_comment(self, reason: str, task_id: str | None) -> str:
         lines = [
             "<!-- ai-harness-generated -->",
@@ -1179,6 +1321,30 @@ class OrchestrationService:
                 "### Next Command",
                 "```markdown",
                 settings.plan_command,
+                "```",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _build_refactor_not_ready_comment(self, reason: str, task_id: str | None) -> str:
+        lines = [
+            "<!-- ai-harness-generated -->",
+            "",
+            "## 🛠️ Refactor Not Started",
+            "",
+        ]
+        if task_id:
+            lines.extend([f"Task ID: `{task_id}`", ""])
+        lines.extend(
+            [
+                "Cannot start refactor yet.",
+                "",
+                "### Reason",
+                f"- {reason}",
+                "",
+                "### Next Command",
+                "```markdown",
+                settings.develop_command,
                 "```",
             ]
         )

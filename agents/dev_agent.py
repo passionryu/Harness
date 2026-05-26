@@ -46,6 +46,14 @@ def _extract_issue_type(markdown: str) -> str:
     return "unspecified"
 
 
+def _extract_refactor_request(markdown: str) -> list[str]:
+    return _extract_section(markdown, "Human Refactor Request")
+
+
+def _is_refactor_mode(markdown: str) -> bool:
+    return bool(_extract_refactor_request(markdown))
+
+
 def _branch_prefix(issue_type: str) -> str:
     return {
         "beFeature": "feature(BE)",
@@ -636,6 +644,8 @@ class DevAgent:
         feature_name = _feature_name(input_data.title)
         commit_units = _commit_units(issue_type)
         backend_style_lines = _backend_style_lines(issue_type)
+        refactor_request = _extract_refactor_request(input_data.body)
+        is_refactor_mode = _is_refactor_mode(input_data.body)
         repo_path = settings.target_repo_path.expanduser().resolve()
 
         repo: Repo | None = None
@@ -726,6 +736,7 @@ class DevAgent:
                     f"- branch: `{branch_name}`",
                     f"- branch_status: {branch_status}",
                     f"- selected_runner: `{runner_name}`",
+                    f"- mode: `{'refactor' if is_refactor_mode else 'develop'}`",
                     "",
                     "## Rule",
                     "",
@@ -736,6 +747,15 @@ class DevAgent:
                     "## Backend Style Skill",
                     *backend_style_lines,
                     "",
+                    *(
+                        [
+                            "## Human Refactor Request",
+                            *refactor_request,
+                            "",
+                        ]
+                        if is_refactor_mode
+                        else []
+                    ),
                     "## Commit Units",
                     *[
                         f"{index}. [{feature_name}] : {message}"
@@ -762,12 +782,22 @@ class DevAgent:
                     f"- branch: `{branch_name}`",
                     f"- branch_status: {branch_status}",
                     f"- selected_runner: `{runner_name}`",
+                    f"- mode: `{'refactor' if is_refactor_mode else 'develop'}`",
                     f"- current_step: {'completed' if commits else 'stopped before implementation'}",
                     "- visibility: GitHub issue comment + this artifact",
                     "",
                     "## Backend Style",
                     *backend_style_lines,
                     "",
+                    *(
+                        [
+                            "## Human Refactor Request",
+                            *refactor_request,
+                            "",
+                        ]
+                        if is_refactor_mode
+                        else []
+                    ),
                     "## Progress",
                     *progress_override,
                     "",
@@ -788,8 +818,19 @@ class DevAgent:
                 [
                     "# Backend Style Checklist",
                     "",
+                    f"- mode: `{'refactor' if is_refactor_mode else 'develop'}`",
+                    "",
                     *backend_style_lines,
                     "",
+                    *(
+                        [
+                            "## Human Refactor Request",
+                            *refactor_request,
+                            "",
+                        ]
+                        if is_refactor_mode
+                        else []
+                    ),
                     "## Review Items",
                     "- [ ] 메인 서비스 메서드가 조회, 검증, 수행/요청, 기록/상태 변경, 반환 흐름을 직접 보여준다.",
                     "- [ ] 정책적 의미가 있는 로직은 명확한 책임 객체로 분리되어 있다.",
@@ -840,13 +881,14 @@ class DevAgent:
             encoding="utf-8",
         )
 
+        action_label = "Refactor" if is_refactor_mode else "Dev implementation"
         summary = (
-            f"Dev implementation completed by {runner_name} on {branch_name}. {len(commits)} commit entries recorded."
+            f"{action_label} completed by {runner_name} on {branch_name}. {len(commits)} commit entries recorded."
             if commits
             else (
-                f"Dev runner stopped before implementation on {branch_name}: {runner_error}"
+                f"{action_label} runner stopped before implementation on {branch_name}: {runner_error}"
                 if runner_error
-                else f"Dev branch prepared: {branch_name}. Commit plan generated."
+                else f"{action_label} branch prepared: {branch_name}. Commit plan generated."
             )
         )
 

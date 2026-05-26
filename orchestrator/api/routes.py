@@ -186,6 +186,28 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
                 error=str(exc),
             )
 
+    if command == settings.refactor_command:
+        refactor_request = command_body or "Refactor requested without additional detail."
+        try:
+            return OrchestrationService(db).run_refactor_for_github_issue(
+                issue_number=issue_number,
+                title=issue_title,
+                body=issue_body,
+                issue_url=issue_url,
+                issue_labels=issue_labels,
+                refactor_request=refactor_request,
+            )
+        except ValueError as exc:
+            return OrchestrationService(db).comment_command_failure(
+                issue_number=issue_number,
+                title=issue_title,
+                body=issue_body,
+                issue_url=issue_url,
+                issue_labels=issue_labels,
+                command=command,
+                error=str(exc),
+            )
+
     if command == settings.qa_command:
         try:
             return OrchestrationService(db).run_qa_for_github_issue(
