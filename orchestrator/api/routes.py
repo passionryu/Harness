@@ -209,6 +209,7 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
             )
 
     if command == settings.qa_command:
+        qa_request = command_body or "추가 상세 내용 없이 QA가 요청되었습니다."
         try:
             return OrchestrationService(db).run_qa_for_github_issue(
                 issue_number=issue_number,
@@ -216,6 +217,7 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
                 body=issue_body,
                 issue_url=issue_url,
                 issue_labels=issue_labels,
+                qa_request=qa_request,
             )
         except ValueError as exc:
             return OrchestrationService(db).comment_command_failure(
@@ -229,6 +231,7 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
             )
 
     if command == settings.reqa_command:
+        qa_request = command_body or "추가 상세 내용 없이 재검증 QA가 요청되었습니다."
         try:
             return OrchestrationService(db).rerun_qa_for_github_issue(
                 issue_number=issue_number,
@@ -236,6 +239,7 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
                 body=issue_body,
                 issue_url=issue_url,
                 issue_labels=issue_labels,
+                qa_request=qa_request,
             )
         except ValueError as exc:
             return OrchestrationService(db).comment_command_failure(

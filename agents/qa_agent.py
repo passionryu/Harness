@@ -1,13 +1,17 @@
 import json
 import subprocess
+import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+from urllib.parse import urljoin
 
 from git import Repo
 
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
 from orchestrator.core.settings import settings
 
-HUMAN_QA_CHECKLIST = [
+FE_HUMAN_QA_CHECKLIST = [
     "브라우저에서 메인 화면에 접속했을 때 회원가입 진입 버튼 또는 링크가 보이는가",
     "회원가입 진입 버튼을 클릭하면 `/signup` 화면으로 정상 이동하는가",
     "이름, 이메일, 비밀번호, 전화번호, 관심 영역 입력 필드가 의도한 순서와 형태로 보이는가",
@@ -18,13 +22,43 @@ HUMAN_QA_CHECKLIST = [
     "로그인/메인 화면으로 돌아가는 흐름이 어색하지 않은가",
 ]
 
+BE_HUMAN_QA_CHECKLIST = [
+    "Swagger UI에서 회원가입 API의 summary와 description이 한국어로 보이는가",
+    "해피케이스 curl 결과가 의도대로 2xx 응답을 반환하는가",
+    "중복 이메일, 잘못된 이메일, 짧은 비밀번호 같은 최소 엣지 케이스가 의도한 오류 응답을 반환하는가",
+    "API 오류 메시지가 사용자에게 안전하고 이해 가능한 한국어로 반환되는가",
+    "회원가입 성공 후 DB에 회원과 관심 영역이 의도대로 저장되는가",
+    "비밀번호가 평문이 아니라 해싱된 값으로 저장되는가",
+]
+
 
 CHECK_NAME_KO = {
     "target repository exists": "대상 저장소 존재",
     "expected branch is checked out": "예상 브랜치 체크아웃 상태",
     "test:signup script exists": "test:signup 스크립트 존재",
     "test:signup passes": "test:signup 통과",
+    "StudyHub API server is reachable": "StudyHub API 서버 응답",
+    "backend happy smoke test passes": "백엔드 해피케이스 smoke test 통과",
 }
+
+
+@dataclass(frozen=True)
+class ApiSmokeCase:
+    name: str
+    path: str
+    request_json: dict[str, Any]
+    expected_status: int
+
+
+@dataclass(frozen=True)
+class ApiSmokeResult:
+    name: str
+    path: str
+    request_json: dict[str, Any]
+    response_json: str
+    status_code: int | None
+    curl_exit_code: int
+    passed: bool
 
 
 def _translate_check_name(name: str) -> str:
@@ -32,6 +66,8 @@ def _translate_check_name(name: str) -> str:
         return f"산출물 존재: {name.removeprefix('artifact exists: ')}"
     if name.startswith("signup file exists: "):
         return f"회원가입 파일 존재: {name.removeprefix('signup file exists: ')}"
+    if name.startswith("backend edge smoke test passes: "):
+        return f"백엔드 엣지케이스 smoke test 통과: {name.removeprefix('backend edge smoke test passes: ')}"
     return CHECK_NAME_KO.get(name, name)
 
 
@@ -98,11 +134,202 @@ def _run_command(command: list[str], cwd: Path, timeout_seconds: int) -> tuple[i
     return completed.returncode, completed.stdout, completed.stderr
 
 
+def _run_background_command(command: list[str], cwd: Path) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
 def _package_has_script(package_json: Path, script_name: str) -> bool:
     if not package_json.exists():
         return False
     data = json.loads(package_json.read_text(encoding="utf-8"))
     return script_name in data.get("scripts", {})
+
+
+def _curl_json(
+    method: str,
+    url: str,
+    payload: dict[str, Any] | None,
+    timeout_seconds: int,
+) -> tuple[int, str, str, int | None]:
+    command = [
+        "curl",
+        "-sS",
+        "-X",
+        method,
+        "-H",
+        "Content-Type: application/json",
+        "--max-time",
+        str(timeout_seconds),
+    ]
+    if payload is not None:
+        command.extend(["-d", json.dumps(payload, ensure_ascii=False)])
+    command.extend(["-w", "\n%{http_code}", url])
+    exit_code, stdout, stderr = _run_command(command, Path.cwd(), timeout_seconds + 5)
+    status_code: int | None = None
+    response_body = stdout
+    if stdout:
+        response_body, _, status_line = stdout.rpartition("\n")
+        try:
+            status_code = int(status_line.strip())
+        except ValueError:
+            status_code = None
+    return exit_code, response_body.strip(), stderr.strip(), status_code
+
+
+def _api_url(path: str) -> str:
+    return urljoin(settings.studyhub_api_base_url.rstrip("/") + "/", path.lstrip("/"))
+
+
+def _health_url() -> str:
+    return _api_url("/actuator/health")
+
+
+def _is_api_alive() -> bool:
+    exit_code, _, _, status_code = _curl_json("GET", _health_url(), None, 5)
+    return exit_code == 0 and status_code is not None and 200 <= status_code < 500
+
+
+def _start_studyhub_api_if_needed(repo_path: Path, timeout_seconds: int) -> tuple[subprocess.Popen[str] | None, str]:
+    if _is_api_alive():
+        return None, "이미 실행 중인 StudyHub API 서버를 사용했습니다."
+
+    server_root = repo_path / "apps/server"
+    if not server_root.exists():
+        return None, "StudyHub 서버 디렉토리를 찾지 못했습니다."
+
+    port = settings.studyhub_api_base_url.rsplit(":", 1)[-1].split("/", 1)[0]
+    process = _run_background_command(
+        [
+            "./gradlew",
+            ":modules:bootstrap:studyhub:bootRun",
+            f"--args=--server.port={port}",
+        ],
+        server_root,
+    )
+    deadline = time.time() + min(timeout_seconds, 90)
+    while time.time() < deadline:
+        if process.poll() is not None:
+            stdout, stderr = process.communicate(timeout=5)
+            return None, f"StudyHub API 서버 시작 실패. stdout={stdout[-1000:]}, stderr={stderr[-1000:]}"
+        if _is_api_alive():
+            return process, f"StudyHub API 서버를 {settings.studyhub_api_base_url} 에서 시작했습니다."
+        time.sleep(2)
+
+    process.terminate()
+    return None, "제한 시간 안에 StudyHub API 서버가 health 응답을 반환하지 않았습니다."
+
+
+def _stop_process(process: subprocess.Popen[str] | None) -> None:
+    if process is None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+
+
+def _signup_cases() -> tuple[ApiSmokeCase, list[ApiSmokeCase]]:
+    unique = int(time.time())
+    email = f"qa-smoke-{unique}@studyhub.local"
+    happy = ApiSmokeCase(
+        name="회원가입 해피케이스",
+        path="/api/members/signup",
+        request_json={
+            "name": "QA사용자",
+            "email": email,
+            "password": "password123!",
+            "phone": "010-1234-5678",
+            "interests": ["Kotlin", "Spring Boot"],
+        },
+        expected_status=201,
+    )
+    edges = [
+        ApiSmokeCase(
+            name="중복 이메일 가입 차단",
+            path="/api/members/signup",
+            request_json=happy.request_json,
+            expected_status=409,
+        ),
+        ApiSmokeCase(
+            name="잘못된 이메일 형식 차단",
+            path="/api/members/signup",
+            request_json={
+                "name": "QA사용자",
+                "email": "not-email",
+                "password": "password123!",
+                "phone": None,
+                "interests": [],
+            },
+            expected_status=400,
+        ),
+        ApiSmokeCase(
+            name="짧은 비밀번호 차단",
+            path="/api/members/signup",
+            request_json={
+                "name": "QA사용자",
+                "email": f"qa-short-password-{unique}@studyhub.local",
+                "password": "123",
+                "phone": None,
+                "interests": [],
+            },
+            expected_status=400,
+        ),
+    ]
+    return happy, edges
+
+
+def _run_api_case(case: ApiSmokeCase, timeout_seconds: int) -> ApiSmokeResult:
+    exit_code, response_body, stderr, status_code = _curl_json(
+        "POST",
+        _api_url(case.path),
+        case.request_json,
+        min(timeout_seconds, 30),
+    )
+    response_json = response_body or stderr or "(응답 없음)"
+    return ApiSmokeResult(
+        name=case.name,
+        path=case.path,
+        request_json=case.request_json,
+        response_json=response_json,
+        status_code=status_code,
+        curl_exit_code=exit_code,
+        passed=exit_code == 0 and status_code == case.expected_status,
+    )
+
+
+def _format_json(value: dict[str, Any] | str) -> str:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+        return json.dumps(parsed, ensure_ascii=False, indent=2)
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def _format_api_result(result: ApiSmokeResult) -> list[str]:
+    return [
+        f"* 테스트 명: {result.name}",
+        f"* 의도한 대로 성공했는지: {'Y' if result.passed else 'N'}",
+        f"* api path: {result.path}",
+        "* request json:",
+        "```json",
+        _format_json(result.request_json),
+        "```",
+        "* response json:",
+        "```json",
+        _format_json(result.response_json),
+        "```",
+        f"* http status: {result.status_code if result.status_code is not None else '확인 불가'}",
+        "",
+    ]
 
 
 class QAAgent:
@@ -119,6 +346,7 @@ class QAAgent:
 
         checks: list[tuple[str, bool, str]] = []
         command_sections: list[str] = []
+        api_result_sections: list[str] = []
 
         repo_exists = repo_path.exists()
         checks.append(("target repository exists", repo_exists, str(repo_path)))
@@ -188,12 +416,53 @@ class QAAgent:
                     ]
                 )
 
+        if issue_type in {"beFeature", "apiConnect"}:
+            process: subprocess.Popen[str] | None = None
+            try:
+                process, server_status = _start_studyhub_api_if_needed(
+                    repo_path,
+                    input_data.timeout_seconds,
+                )
+                checks.append(("StudyHub API server is reachable", _is_api_alive(), server_status))
+                if _is_api_alive():
+                    happy_case, edge_cases = _signup_cases()
+                    happy_result = _run_api_case(happy_case, input_data.timeout_seconds)
+                    edge_results = [_run_api_case(case, input_data.timeout_seconds) for case in edge_cases]
+                    checks.append(("backend happy smoke test passes", happy_result.passed, happy_result.name))
+                    for result in edge_results:
+                        checks.append((f"backend edge smoke test passes: {result.name}", result.passed, result.name))
+
+                    api_result_sections.extend(
+                        [
+                            "## API Smoke Test 결과",
+                            "",
+                            "### 해피 케이스",
+                            *_format_api_result(happy_result),
+                            "### 최소 엣지 케이스",
+                        ]
+                    )
+                    for result in edge_results:
+                        api_result_sections.extend(_format_api_result(result))
+                else:
+                    api_result_sections.extend(
+                        [
+                            "## API Smoke Test 결과",
+                            "",
+                            "- StudyHub API 서버가 응답하지 않아 curl smoke test를 실행하지 못했습니다.",
+                            f"- server_status: {server_status}",
+                        ]
+                    )
+            finally:
+                _stop_process(process)
+
         passed = all(passed for _, passed, _ in checks)
         checklist_lines = [
             f"- [{'x' if passed else ' '}] {_translate_check_name(name)} ({detail})"
             for name, passed, detail in checks
         ]
-        human_qa_lines = [f"- [ ] {item}" for item in HUMAN_QA_CHECKLIST]
+        checklist_source = BE_HUMAN_QA_CHECKLIST if issue_type in {"beFeature", "apiConnect"} else FE_HUMAN_QA_CHECKLIST
+        human_qa_lines = [f"- [ ] {item}" for item in checklist_source]
+        qa_request = _extract_section(input_data.body, "Human QA Request")
 
         report = task_dir / "qa-report.md"
         report.write_text(
@@ -206,11 +475,18 @@ class QAAgent:
                     f"- branch: `{branch_name}`",
                     f"- current_branch: `{current_branch}`",
                     f"- result: {'pass' if passed else 'fail'}",
+                    f"- swagger_url: `{settings.studyhub_swagger_url}`",
+                    f"- 확인 URL: `{settings.studyhub_api_base_url}`",
+                    "",
+                    "## QA 요청사항",
+                    *(qa_request or ["추가 QA 요청사항이 없습니다."]),
                     "",
                     "## 검증 체크리스트",
                     *checklist_lines,
                     "",
                     *(command_sections or ["## Commands", "", "- 이 이슈 타입에는 실행된 명령이 없습니다."]),
+                    "",
+                    *api_result_sections,
                     "",
                     "## Human QA 체크리스트",
                     *human_qa_lines,

@@ -1,5 +1,6 @@
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -379,13 +380,17 @@ class OrchestrationService:
         body: str,
         issue_url: str,
         issue_labels: list[str] | None = None,
+        qa_request: str | None = None,
     ) -> EventResult | dict[str, str]:
         task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
         if task is None:
             return self._skip_qa_command(issue_number, "작업을 찾을 수 없습니다. 먼저 plan과 develop을 실행하세요.")
 
         task.title = title
-        task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
+        task.body = self._append_qa_request(
+            self._append_issue_metadata(body, issue_labels or [], issue_number),
+            qa_request,
+        )
         task.github_issue_url = issue_url
 
         if task.state != "In Progress":
@@ -458,6 +463,7 @@ class OrchestrationService:
         body: str,
         issue_url: str,
         issue_labels: list[str] | None = None,
+        qa_request: str | None = None,
     ) -> EventResult | dict[str, str]:
         task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
         if task is None:
@@ -468,7 +474,10 @@ class OrchestrationService:
             )
 
         task.title = title
-        task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
+        task.body = self._append_qa_request(
+            self._append_issue_metadata(body, issue_labels or [], issue_number),
+            qa_request,
+        )
         task.github_issue_url = issue_url
 
         if task.state != "System QA":
@@ -856,6 +865,18 @@ class OrchestrationService:
             ]
         )
 
+    def _append_qa_request(self, body: str, qa_request: str | None) -> str:
+        if not qa_request:
+            return body
+        return "\n".join(
+            [
+                body,
+                "",
+                "## Human QA Request",
+                qa_request.strip(),
+            ]
+        )
+
     def _append_issue_metadata(
         self, body: str, issue_labels: list[str], issue_number: int | None = None
     ) -> str:
@@ -999,6 +1020,8 @@ class OrchestrationService:
             if latest_run.error:
                 run_lines.append(f"- error: `{latest_run.error}`")
 
+        artifact_lines = self._failure_artifact_open_lines(task, command, latest_run.agent_name if latest_run else None)
+
         return "\n".join(
             [
                 "<!-- ai-harness-generated -->",
@@ -1019,12 +1042,43 @@ class OrchestrationService:
                 "### 마지막 Agent 실행",
                 *run_lines,
                 "",
+                *artifact_lines,
+                "",
                 "### 다음 확인 명령",
                 "```markdown",
                 settings.status_command,
                 "```",
             ]
         )
+
+    def _failure_artifact_open_lines(
+        self,
+        task: Task,
+        command: str | None,
+        agent_name: str | None,
+    ) -> list[str]:
+        artifact_path: Path | None = None
+        if agent_name == "qa" or command in {settings.qa_command, settings.reqa_command}:
+            artifact_path = settings.artifact_root / task.id / "qa" / "qa-report.md"
+        elif agent_name == "dev" or command in {settings.develop_command, settings.refactor_command}:
+            artifact_path = settings.artifact_root / task.id / "dev" / "dev-status.md"
+        elif agent_name == "plan" or command in {settings.plan_command, settings.replan_command}:
+            artifact_path = settings.artifact_root / task.id / "plans" / "architecture.md"
+
+        if artifact_path is None:
+            return []
+
+        absolute_path = artifact_path.expanduser().resolve()
+        return [
+            "### 상세 리포트 바로 열기",
+            f"- artifact: `{absolute_path}`",
+            "",
+            "IntelliJ에서 바로 열려면 아래 명령을 실행하세요.",
+            "",
+            "```bash",
+            f"open -a \"IntelliJ IDEA\" {absolute_path}",
+            "```",
+        ]
 
     def _skip_develop_command(
         self, issue_number: int, reason: str, task_id: str | None = None
@@ -1387,13 +1441,24 @@ class OrchestrationService:
         report_lines = report_path.read_text(encoding="utf-8").splitlines()
         metadata: dict[str, str] = {}
         checklist: list[str] = []
+        api_smoke_lines: list[str] = []
         command = "기록 없음"
         output = "기록 없음"
         in_stdout = False
         in_checklist = False
+        in_api_smoke = False
 
         for line in report_lines:
             stripped = line.strip()
+            if stripped == "## API Smoke Test 결과":
+                in_api_smoke = True
+                in_checklist = False
+                continue
+            if in_api_smoke and stripped.startswith("## "):
+                in_api_smoke = False
+            if in_api_smoke:
+                api_smoke_lines.append(line)
+                continue
             if stripped == "## 검증 체크리스트":
                 in_checklist = True
                 continue
@@ -1436,6 +1501,8 @@ class OrchestrationService:
         summary.extend(checklist[:20] or ["- 기록된 체크리스트 항목이 없습니다."])
         if len(checklist) > 20:
             summary.append(f"- `qa-report.md`에 추가 검증 항목 {len(checklist) - 20}개가 더 있습니다.")
+        if api_smoke_lines:
+            summary.extend(["", "### API Smoke Test 결과", *api_smoke_lines[:80]])
         return summary
 
     def _build_human_qa_lines(self, task_id: str) -> list[str]:
@@ -1499,6 +1566,20 @@ class OrchestrationService:
         numbered_items = [
             f"{index}. {item}" for index, item in enumerate(human_qa_items[:7], start=1)
         ]
+        check_target_lines = (
+            [
+                "Swagger 주소:",
+                settings.studyhub_swagger_url,
+                "",
+                "확인 URL:",
+                settings.studyhub_api_base_url,
+            ]
+            if issue_type in {"beFeature", "apiConnect"}
+            else [
+                "확인 URL:",
+                "http://localhost:3000/signup",
+            ]
+        )
         return "\n".join(
             [
                 title_line,
@@ -1509,12 +1590,11 @@ class OrchestrationService:
                 f"* QA 요청 시각: {self._qa_requested_at()}",
                 "",
                 "System QA는 통과했습니다.",
-                "이제 화면에서 아래 항목을 직접 확인해주세요.",
+                "이제 아래 항목을 직접 확인해주세요.",
                 "",
                 *(numbered_items or ["1. 화면과 주요 동작을 직접 확인해주세요."]),
                 "",
-                "확인 URL:",
-                "http://localhost:3000/signup",
+                *check_target_lines,
                 "",
                 "GitHub Issue:",
                 task.github_issue_url or "",
