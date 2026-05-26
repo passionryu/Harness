@@ -5,6 +5,11 @@ from pathlib import Path
 from git import Repo
 
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
+from agents.runners.base import DevRunner, DevRunnerContext, DevRunnerResult
+from agents.runners.docs_runner import DocsRunner
+from agents.runners.infra_runner import InfraRunner
+from agents.runners.kotlin_spring_runner import KotlinSpringRunner
+from agents.runners.nextjs_runner import NextJsRunner
 from orchestrator.core.settings import settings
 
 
@@ -97,6 +102,51 @@ def _commit_units(issue_type: str) -> list[tuple[str, str]]:
         ("테스트 추가", "관련 테스트 코드 추가"),
         ("검증 정리", "빌드와 smoke test 검증"),
     ]
+
+
+def _requires_backend_style(issue_type: str) -> bool:
+    return issue_type in {"beFeature", "apiConnect", "bugfix", "hotfix"}
+
+
+def _backend_style_skill_path() -> Path:
+    return Path.home() / ".codex/skills/usecase-orchestration-style/SKILL.md"
+
+
+def _backend_style_lines(issue_type: str) -> list[str]:
+    if not _requires_backend_style(issue_type):
+        return ["- backend orchestration style skill: not required for this issue type"]
+
+    skill_path = _backend_style_skill_path()
+    backend_rules_path = Path("rules/backend-runner.md")
+    return [
+        "- backend orchestration style skill: required",
+        f"- skill_path: `{skill_path}`",
+        f"- backend_runner_rules: `{backend_rules_path}`",
+        "- 컨트롤러는 얇게 유지하고 request/response DTO는 컨트롤러 파일 밖의 별도 파일로 둔다.",
+        "- domain/application/port/infrastructure/bootstrap 경계를 지킨다.",
+        "- 메인 서비스 메서드는 유스케이스 흐름이 보이게 작성한다.",
+        "- 의미 없는 private 메서드와 한 줄 위임 메서드를 남발하지 않는다.",
+        "- 정책, 검증, 외부 연동, 상태 변경 책임은 이름이 명확한 외부 책임 객체로 분리한다.",
+        "- 책임 객체의 public 메서드에는 한국어 한 줄 주석을 작성한다.",
+        "- 클래스와 메서드는 유비쿼터스 언어와 주어/동사/목적어가 드러나게 명명한다.",
+        "- 사용자 응답 메시지는 안전하고 이해 가능하게 작성하고, 내부 로그에는 who/what/requestData/reason을 남긴다.",
+    ]
+
+
+def _dev_runners() -> list[DevRunner]:
+    return [
+        NextJsRunner(),
+        KotlinSpringRunner(),
+        DocsRunner(),
+        InfraRunner(),
+    ]
+
+
+def _select_runners(context: DevRunnerContext) -> list[DevRunner]:
+    matched = [runner for runner in _dev_runners() if runner.can_handle(context)]
+    if context.issue_type == "apiConnect":
+        return matched
+    return matched[:1]
 
 
 def _checkout_branch(repo_path: Path, branch_name: str) -> str:
@@ -585,12 +635,17 @@ class DevAgent:
         branch_name = _branch_name(issue_type, issue_number)
         feature_name = _feature_name(input_data.title)
         commit_units = _commit_units(issue_type)
+        backend_style_lines = _backend_style_lines(issue_type)
         repo_path = settings.target_repo_path.expanduser().resolve()
 
         repo: Repo | None = None
         commits: list[str] = []
         progress_override: list[str] | None = None
         verification: list[str] = []
+        runner_name = "none"
+        runner_error: str | None = None
+        runner_artifacts: list[ArtifactSpec] = []
+        result_status = AgentStatus.SUCCESS
 
         if repo_path.exists():
             repo = Repo(repo_path)
@@ -598,17 +653,66 @@ class DevAgent:
         else:
             branch_status = f"blocked: target repository does not exist: {repo_path}"
 
-        if repo is not None and _is_signup_feature(issue_type, input_data.title, input_data.body):
-            commits, progress_override, verification = _implement_signup_feature(
+        if repo is not None:
+            context = DevRunnerContext(
+                task_id=input_data.task_id,
+                title=input_data.title,
+                body=input_data.body,
+                issue_type=issue_type,
+                issue_number=issue_number,
+                branch_name=branch_name,
+                feature_name=feature_name,
                 repo=repo,
                 repo_path=repo_path,
-                feature_name=feature_name,
+                task_dir=task_dir,
                 timeout_seconds=input_data.timeout_seconds,
             )
-        else:
+            runners = _select_runners(context)
+            if not runners:
+                result_status = AgentStatus.NEEDS_HUMAN
+                runner_error = f"No dev runner can handle issue_type={issue_type}."
+                verification = [
+                    "## runner_selection",
+                    "",
+                    "- status: needs_human",
+                    f"- reason: {runner_error}",
+                ]
+            else:
+                runner_names: list[str] = []
+                progress_lines: list[str] = []
+                verification_lines: list[str] = []
+                errors: list[str] = []
+                for runner in runners:
+                    runner_names.append(runner.name)
+                    runner_result: DevRunnerResult = runner.run(context)
+                    if runner_result.status != AgentStatus.SUCCESS:
+                        result_status = runner_result.status
+                    commits.extend(runner_result.commits)
+                    progress_lines.extend(runner_result.progress)
+                    verification_lines.extend(runner_result.verification)
+                    runner_artifacts.extend(runner_result.artifacts)
+                    if runner_result.error:
+                        errors.append(f"{runner.name}: {runner_result.error}")
+
+                runner_name = ", ".join(runner_names)
+                progress_override = progress_lines
+                verification = verification_lines
+                runner_error = "; ".join(errors) if errors else None
+
+        if progress_override is None:
             progress_override = [
                 f"- [ ] step {index}: {title}"
                 for index, (title, _) in enumerate(commit_units, start=1)
+            ]
+
+        if repo is None:
+            result_status = AgentStatus.FAILED
+            runner_error = branch_status
+            verification = [
+                "## runner_selection",
+                "",
+                "- status: failed",
+                f"- reason: {branch_status}",
             ]
 
         commit_plan = task_dir / "commit-plan.md"
@@ -621,12 +725,16 @@ class DevAgent:
                     f"- issue_number: `{issue_number}`",
                     f"- branch: `{branch_name}`",
                     f"- branch_status: {branch_status}",
+                    f"- selected_runner: `{runner_name}`",
                     "",
                     "## Rule",
                     "",
                     "- 구현 단계 하나가 끝날 때마다 커밋한다.",
                     "- 빈 커밋은 만들지 않는다.",
                     "- 각 커밋 전에 관련 테스트를 추가하거나 갱신한다.",
+                    "",
+                    "## Backend Style Skill",
+                    *backend_style_lines,
                     "",
                     "## Commit Units",
                     *[
@@ -636,6 +744,10 @@ class DevAgent:
                     "",
                     "## Actual Commits",
                     *(commits or ["- pending implementation runner"]),
+                    "",
+                    "## Runner Result",
+                    f"- status: `{result_status.value}`",
+                    f"- error: `{runner_error or 'none'}`",
                 ]
             ),
             encoding="utf-8",
@@ -649,14 +761,42 @@ class DevAgent:
                     "",
                     f"- branch: `{branch_name}`",
                     f"- branch_status: {branch_status}",
-                    "- current_step: ready for implementation",
+                    f"- selected_runner: `{runner_name}`",
+                    f"- current_step: {'completed' if commits else 'stopped before implementation'}",
                     "- visibility: GitHub issue comment + this artifact",
+                    "",
+                    "## Backend Style",
+                    *backend_style_lines,
                     "",
                     "## Progress",
                     *progress_override,
                     "",
                     "## Commits",
                     *(commits or ["- pending implementation runner"]),
+                    "",
+                    "## Runner Result",
+                    f"- status: `{result_status.value}`",
+                    f"- error: `{runner_error or 'none'}`",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        style_guide = task_dir / "backend-style-checklist.md"
+        style_guide.write_text(
+            "\n".join(
+                [
+                    "# Backend Style Checklist",
+                    "",
+                    *backend_style_lines,
+                    "",
+                    "## Review Items",
+                    "- [ ] 메인 서비스 메서드가 조회, 검증, 수행/요청, 기록/상태 변경, 반환 흐름을 직접 보여준다.",
+                    "- [ ] 정책적 의미가 있는 로직은 명확한 책임 객체로 분리되어 있다.",
+                    "- [ ] 책임 객체 public 메서드에는 한국어 한 줄 주석이 있다.",
+                    "- [ ] validate/process/handle/execute 같은 모호한 이름을 남발하지 않는다.",
+                    "- [ ] 외부 시스템 호출 이름에 외부 경계 또는 제휴사가 드러난다.",
+                    "- [ ] 상태 변경, 정합성, 재시도, 멱등성 지점이 코드와 로그에서 추적 가능하다.",
                 ]
             ),
             encoding="utf-8",
@@ -687,6 +827,8 @@ class DevAgent:
                     "",
                     f"- branch: `{branch_name}`",
                     f"- branch_status: {branch_status}",
+                    f"- selected_runner: `{runner_name}`",
+                    f"- runner_status: `{result_status.value}`",
                     "- test code: required for each implementation unit",
                     "- smoke test: see command sections below when executed",
                     "- edge case test: covered by generated smoke checks when supported",
@@ -699,18 +841,25 @@ class DevAgent:
         )
 
         summary = (
-            f"Dev implementation completed on {branch_name}. {len(commits)} commit entries recorded."
+            f"Dev implementation completed by {runner_name} on {branch_name}. {len(commits)} commit entries recorded."
             if commits
-            else f"Dev branch prepared: {branch_name}. Commit plan generated."
+            else (
+                f"Dev runner stopped before implementation on {branch_name}: {runner_error}"
+                if runner_error
+                else f"Dev branch prepared: {branch_name}. Commit plan generated."
+            )
         )
 
         return AgentResult(
-            status=AgentStatus.SUCCESS,
+            status=result_status,
             summary=summary,
+            error=runner_error,
             artifacts=[
                 ArtifactSpec("commit-plan", Path(commit_plan)),
                 ArtifactSpec("dev-status", Path(status)),
+                ArtifactSpec("backend-style-checklist", Path(style_guide)),
                 ArtifactSpec("patch", Path(patch)),
                 ArtifactSpec("test-report", Path(report)),
+                *runner_artifacts,
             ],
         )
