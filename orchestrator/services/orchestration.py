@@ -6,6 +6,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from agents.base import AgentInput, AgentStatus
+from agents.plan_agent import (
+    _flow_chart_for_issue_type,
+    _profile_for_issue_type,
+    _sequence_diagram_for_issue_type,
+)
 from orchestrator.api.schemas import EventResult, HumanApproval, ManualEvent, TaskCreate
 from orchestrator.core.settings import settings
 from orchestrator.db.models import AuditLog, Run, StateTransition, Task
@@ -440,6 +445,124 @@ class OrchestrationService:
             message="qa rerun passed; task remains in System QA",
         )
 
+    def comment_status_for_github_issue(
+        self,
+        issue_number: int,
+        title: str,
+        body: str,
+        issue_url: str,
+        issue_labels: list[str] | None = None,
+    ) -> dict[str, str]:
+        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        if task is None:
+            task = self.upsert_github_issue_task(
+                issue_number=issue_number,
+                title=title,
+                body=self._append_issue_metadata(body, issue_labels or [], issue_number),
+                issue_url=issue_url,
+            )
+        else:
+            task.title = title
+            task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
+            task.github_issue_url = issue_url
+
+        if settings.github_token:
+            GitHubAdapter(settings.github_token).create_issue_comment(
+                settings.github_owner,
+                settings.github_repo,
+                issue_number,
+                self._build_status_comment(task),
+            )
+        self._audit(task.id, None, "status.commented", {"issue_number": issue_number})
+        self.db.commit()
+        return {"status": "ok", "message": "status comment created", "task_id": task.id}
+
+    def cancel_github_issue_task(
+        self,
+        issue_number: int,
+        title: str,
+        body: str,
+        issue_url: str,
+        issue_labels: list[str] | None = None,
+        reason: str = "cancel requested",
+    ) -> dict[str, str]:
+        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        if task is None:
+            task = self.upsert_github_issue_task(
+                issue_number=issue_number,
+                title=title,
+                body=self._append_issue_metadata(body, issue_labels or [], issue_number),
+                issue_url=issue_url,
+            )
+        else:
+            task.title = title
+            task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
+            task.github_issue_url = issue_url
+
+        previous = task.state
+        running_run = self._latest_running_run(task.id)
+        task.state = "Cancelled"
+        self._record_transition(task.id, previous, task.state, reason, "human")
+        self._audit(
+            task.id,
+            running_run.id if running_run else None,
+            "task.cancelled",
+            {
+                "issue_number": issue_number,
+                "reason": reason,
+                "had_running_run": bool(running_run),
+            },
+        )
+        if settings.github_token:
+            GitHubAdapter(settings.github_token).create_issue_comment(
+                settings.github_owner,
+                settings.github_repo,
+                issue_number,
+                self._build_cancel_comment(task, previous, reason, bool(running_run)),
+            )
+        self.db.commit()
+        return {"status": "ok", "message": "task cancelled", "task_id": task.id}
+
+    def comment_command_failure(
+        self,
+        issue_number: int,
+        title: str,
+        body: str,
+        issue_url: str,
+        issue_labels: list[str] | None,
+        command: str | None,
+        error: str,
+    ) -> dict[str, str]:
+        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        if task is None:
+            task = self.upsert_github_issue_task(
+                issue_number=issue_number,
+                title=title,
+                body=self._append_issue_metadata(body, issue_labels or [], issue_number),
+                issue_url=issue_url,
+            )
+        else:
+            task.title = title
+            task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
+            task.github_issue_url = issue_url
+
+        latest_run = self._latest_run(task.id)
+        self._audit(
+            task.id,
+            latest_run.id if latest_run else None,
+            "command.failed",
+            {"issue_number": issue_number, "command": command, "error": error},
+        )
+        if settings.github_token:
+            GitHubAdapter(settings.github_token).create_issue_comment(
+                settings.github_owner,
+                settings.github_repo,
+                issue_number,
+                self._build_command_failure_comment(task, command, error),
+            )
+        self.db.commit()
+        return {"status": "failed", "reason": error, "task_id": task.id}
+
     def handle_manual_event(self, payload: ManualEvent) -> EventResult:
         task = self.get_task(payload.task_id)
         if task is None:
@@ -544,6 +667,15 @@ class OrchestrationService:
             if result.status != AgentStatus.SUCCESS:
                 raise ValueError(f"agent failed: {agent_name}: {result.error or result.summary}")
             return run.id
+        except Exception as exc:
+            if run.status == "running":
+                run.status = AgentStatus.FAILED.value
+            if not run.error:
+                run.error = str(exc)
+            run.finished_at = datetime.now(UTC)
+            if not run.summary:
+                run.summary = f"{agent_name} failed before completion."
+            raise
         finally:
             logger.info(
                 "agent run finished",
@@ -567,6 +699,36 @@ class OrchestrationService:
         self, task_id: str | None, run_id: str | None, event_type: str, payload: dict
     ) -> None:
         self.db.add(AuditLog(task_id=task_id, run_id=run_id, event_type=event_type, payload=payload))
+
+    def _latest_run(self, task_id: str) -> Run | None:
+        return self.db.scalar(
+            select(Run).where(Run.task_id == task_id).order_by(Run.started_at.desc()).limit(1)
+        )
+
+    def _latest_running_run(self, task_id: str) -> Run | None:
+        return self.db.scalar(
+            select(Run)
+            .where(Run.task_id == task_id)
+            .where(Run.status == "running")
+            .where(Run.finished_at.is_(None))
+            .order_by(Run.started_at.desc())
+            .limit(1)
+        )
+
+    def _latest_transition(self, task_id: str) -> StateTransition | None:
+        return self.db.scalar(
+            select(StateTransition)
+            .where(StateTransition.task_id == task_id)
+            .order_by(StateTransition.created_at.desc())
+            .limit(1)
+        )
+
+    def _format_dt(self, value: datetime | None) -> str:
+        if value is None:
+            return "not finished"
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(ZoneInfo("Asia/Seoul")).strftime("%Y.%m.%d %H:%M:%S")
 
     def _extract_section(self, markdown: str, heading: str) -> list[str]:
         lines = markdown.splitlines()
@@ -621,6 +783,159 @@ class OrchestrationService:
             ]
         )
 
+    def _next_command_for_state(self, state: str) -> str:
+        return {
+            "Backlog": settings.plan_command,
+            "Todo": settings.develop_command,
+            "In Progress": settings.qa_command,
+            "System QA": settings.reqa_command,
+            "Human QA": "사람이 직접 검증 후 human approval",
+            "Done": "완료됨",
+            "Cancelled": "중지됨. 다시 시작하려면 replan 또는 plan부터 판단",
+        }.get(state, settings.status_command)
+
+    def _build_status_comment(self, task: Task) -> str:
+        latest_run = self._latest_run(task.id)
+        running_run = self._latest_running_run(task.id)
+        latest_transition = self._latest_transition(task.id)
+        branch_name = self._branch_name_for_task(task)
+
+        run_lines = [
+            "- 아직 실행된 Agent run이 없습니다.",
+        ]
+        if latest_run:
+            run_lines = [
+                f"- agent: `{latest_run.agent_name}`",
+                f"- status: `{latest_run.status}`",
+                f"- started_at: `{self._format_dt(latest_run.started_at)}`",
+                f"- finished_at: `{self._format_dt(latest_run.finished_at)}`",
+                f"- summary: {latest_run.summary or 'not recorded'}",
+            ]
+            if latest_run.error:
+                run_lines.append(f"- error: `{latest_run.error}`")
+
+        transition_lines = ["- 아직 상태 전이 기록이 없습니다."]
+        if latest_transition:
+            transition_lines = [
+                f"- from: `{latest_transition.from_state or 'none'}`",
+                f"- to: `{latest_transition.to_state}`",
+                f"- reason: {latest_transition.reason}",
+                f"- at: `{self._format_dt(latest_transition.created_at)}`",
+            ]
+
+        running_text = (
+            f"`{running_run.agent_name}` 실행 중"
+            if running_run
+            else "현재 실행 중인 Agent 없음"
+        )
+
+        return "\n".join(
+            [
+                "<!-- ai-harness-generated -->",
+                "",
+                f"## 📍 AI Harness Status: {task.title}",
+                "",
+                f"Task ID: `{task.id}`",
+                "",
+                "### 현재 상태",
+                f"- state: `{task.state}`",
+                f"- branch: `{branch_name}`",
+                f"- running: {running_text}",
+                f"- retry: `{task.retry_count}/{task.retry_limit}`",
+                "",
+                "### 마지막 Agent 실행",
+                *run_lines,
+                "",
+                "### 마지막 상태 전이",
+                *transition_lines,
+                "",
+                "### 다음 행동",
+                f"- 권장 명령: `{self._next_command_for_state(task.state)}`",
+                "",
+                "### 중지",
+                "```markdown",
+                settings.cancel_command,
+                "```",
+            ]
+        )
+
+    def _build_cancel_comment(
+        self, task: Task, previous_state: str, reason: str, had_running_run: bool
+    ) -> str:
+        interrupt_note = (
+            "실행 중인 Agent run이 감지되었습니다. 현재 구조에서는 이미 시작된 동기 작업을 강제 kill하지 않고, 이후 단계 진행을 중지합니다."
+            if had_running_run
+            else "현재 실행 중인 Agent는 없었고, 이후 단계 진행을 중지했습니다."
+        )
+        return "\n".join(
+            [
+                "<!-- ai-harness-generated -->",
+                "",
+                f"## 🛑 AI Harness Cancelled: {task.title}",
+                "",
+                f"Task ID: `{task.id}`",
+                "",
+                "### State",
+                f"- previous: `{previous_state}`",
+                f"- current: `{task.state}`",
+                "",
+                "### Reason",
+                f"- {reason}",
+                "",
+                "### Note",
+                f"- {interrupt_note}",
+                "",
+                "상태를 다시 확인하려면 아래 명령을 사용하세요.",
+                "",
+                "```markdown",
+                settings.status_command,
+                "```",
+            ]
+        )
+
+    def _build_command_failure_comment(
+        self, task: Task, command: str | None, error: str
+    ) -> str:
+        latest_run = self._latest_run(task.id)
+        run_lines = ["- Agent run 기록을 찾지 못했습니다."]
+        if latest_run:
+            run_lines = [
+                f"- agent: `{latest_run.agent_name}`",
+                f"- status: `{latest_run.status}`",
+                f"- started_at: `{self._format_dt(latest_run.started_at)}`",
+                f"- finished_at: `{self._format_dt(latest_run.finished_at)}`",
+                f"- summary: {latest_run.summary or 'not recorded'}",
+            ]
+            if latest_run.error:
+                run_lines.append(f"- error: `{latest_run.error}`")
+
+        return "\n".join(
+            [
+                "<!-- ai-harness-generated -->",
+                "",
+                f"## ⚠️ AI Harness Command Failed: {task.title}",
+                "",
+                f"Task ID: `{task.id}`",
+                "",
+                "### Command",
+                f"- `{command or 'unknown'}`",
+                "",
+                "### 실패 이유",
+                f"- {error}",
+                "",
+                "### 현재 상태",
+                f"- state: `{task.state}`",
+                "",
+                "### 마지막 Agent 실행",
+                *run_lines,
+                "",
+                "### 다음 확인 명령",
+                "```markdown",
+                settings.status_command,
+                "```",
+            ]
+        )
+
     def _skip_develop_command(
         self, issue_number: int, reason: str, task_id: str | None = None
     ) -> dict[str, str]:
@@ -661,24 +976,16 @@ class OrchestrationService:
         acceptance = self._extract_bullets(task.body, "완료 기준")
         replan_request = self._extract_section(task.body, "Human Replan Request")
         issue_type = self._extract_issue_type(task.body)
-        implementation_steps = [
-            "현재 메인/로그인 진입 화면에서 회원가입 진입 지점을 확인한다.",
-            "Next.js App Router 기준으로 `/signup` route를 추가한다.",
-            "이름, 이메일, 비밀번호, 전화번호, 관심 영역 입력 폼을 만든다.",
-            "submit handler는 실제 API 호출 전까지 TODO 또는 mock-safe 구조로 둔다.",
-            "기존 디자인 시스템과 반응형 레이아웃을 유지하며 빌드 검증을 수행한다.",
-        ]
-        expected_files = [
-            "`apps/web/app/page.tsx` 또는 현재 진입 화면",
-            "`apps/web/app/signup/page.tsx`",
-            "`apps/web/components` 하위 회원가입 폼 컴포넌트",
-        ]
-        open_questions = [
-            "실제 회원가입 API endpoint와 request/response contract",
-            "비밀번호 정책과 유효성 메시지",
-            "전화번호 인증 여부",
-            "관심 영역 option 목록과 복수 선택 허용 여부",
-        ]
+        profile = _profile_for_issue_type(issue_type)
+        implementation_steps = list(profile["steps"])
+        expected_files = list(profile["expected_files"])
+        open_questions = list(profile["open_questions"])
+        summary_fallback = [str(profile["summary_fallback"])]
+        scope_fallback = list(profile["scope_fallback"])
+        acceptance_fallback = list(profile["acceptance_fallback"])
+        flow_title = str(profile["flow_title"])
+        sequence_diagram = _sequence_diagram_for_issue_type(issue_type)
+        flow_chart = _flow_chart_for_issue_type(issue_type)
         task_id = task.id
 
         return "\n".join(
@@ -693,11 +1000,11 @@ class OrchestrationService:
                 issue_type,
                 "",
                 "### 구현 요약",
-                *(goal or ["StudyHub에 회원가입 진입 흐름과 회원가입 화면을 추가한다."]),
+                *(goal or summary_fallback),
                 "",
                 *(
                     [
-                        "### 반영된 수정 요청",
+                        "### 반영된 결정/수정 요청",
                         *replan_request,
                         "",
                     ]
@@ -710,17 +1017,17 @@ class OrchestrationService:
                 "### 작업 범위",
                 *self._comment_bullets(
                     scope,
-                    ["회원가입 진입 링크, `/signup` 페이지, 폼 UI를 추가한다."],
+                    scope_fallback,
                 ),
                 "",
-                "### 화면 흐름",
-                "```text",
-                "현재 진입 화면",
-                "-> 회원가입 버튼/링크 클릭",
-                "-> /signup",
-                "-> 회원가입 폼 입력",
-                "-> submit handler scaffold",
-                "-> 추후 백엔드 API 연동",
+                "### 시퀀스 다이어그램",
+                "```mermaid",
+                *sequence_diagram,
+                "```",
+                "",
+                f"### 플로우 차트 ({flow_title})",
+                "```mermaid",
+                *flow_chart,
                 "```",
                 "",
                 "### 구현 순서",
@@ -729,7 +1036,7 @@ class OrchestrationService:
                 "### 검증 기준",
                 *self._comment_bullets(
                     acceptance,
-                    ["회원가입 화면 이동 가능", "폼 표시", "프론트엔드 빌드 통과"],
+                    acceptance_fallback,
                 ),
                 "",
                 "### 미결정 사항",
@@ -737,7 +1044,9 @@ class OrchestrationService:
                 "",
                 "### 상세 Artifacts",
                 f"- `artifacts/{task_id}/plans/architecture.md`",
+                f"- `artifacts/{task_id}/plans/sequence-diagram.md`",
                 f"- `artifacts/{task_id}/plans/flow.md`",
+                f"- `artifacts/{task_id}/plans/flow-chart.md`",
                 f"- `artifacts/{task_id}/plans/edge-case-checklist.md`",
                 "",
                 "사람이 위 미결정 사항을 확인한 뒤 구현 단계로 이동하세요.",
