@@ -1097,7 +1097,7 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     assert "♻️ 🧑‍💻 Human QA Re-QA 요청" in captured_chat_messages[1]
     assert "System QA는 통과했습니다." in captured_chat_messages[1]
     assert "1. 브라우저에서 메인 화면에 접속했을 때 회원가입 진입 버튼 또는 링크가 보이는가" in captured_chat_messages[1]
-    assert "확인 URL:\nhttp://localhost:3000/signup" in captured_chat_messages[1]
+    assert "화면 확인 URL:\nhttp://localhost:3000/signup" in captured_chat_messages[1]
     assert f"GitHub Issue:\n{issue['html_url']}" in captured_chat_messages[1]
     assert len(captured_discord_messages) == 2
     assert captured_discord_messages == captured_chat_messages

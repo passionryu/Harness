@@ -1,6 +1,7 @@
 from git import Repo
 
 import agents.qa_agent as qa_agent
+import orchestrator.services.orchestration as orchestration
 from agents.base import AgentInput, AgentStatus
 
 
@@ -87,3 +88,57 @@ def test_be_qa_agent_reports_curl_smoke_details_and_human_checklist(tmp_path, mo
     assert "* api path: /api/members/signup" in content
     assert "## Human QA 체크리스트" in content
     assert "Swagger UI에서 회원가입 API의 summary와 description이 한국어로 보이는가" in content
+
+
+def test_qa_summary_keeps_api_smoke_code_fences_balanced(tmp_path, monkeypatch):
+    task_id = "task-1"
+    report = tmp_path / "artifacts" / task_id / "qa" / "qa-report.md"
+    report.parent.mkdir(parents=True)
+    smoke_lines = []
+    for index in range(6):
+        smoke_lines.extend(
+            [
+                f"* 테스트 명: 케이스 {index}",
+                "* 의도한 대로 성공했는지: Y",
+                "* api path: /api/members/signup",
+                "* request json:",
+                "```json",
+                '{"name":"QA사용자"}',
+                "```",
+                "* response json:",
+                "```json",
+                '{"message":"ok"}',
+                "```",
+                "* http status: 200",
+                "",
+            ]
+        )
+    report.write_text(
+        "\n".join(
+            [
+                "# System QA Report",
+                "",
+                "- result: pass",
+                "- branch: `feature(BE)-3`",
+                "",
+                "## 검증 체크리스트",
+                "- [x] 백엔드 해피케이스 smoke test 통과",
+                "",
+                "## API Smoke Test 결과",
+                *smoke_lines,
+                "",
+                "## Human QA 체크리스트",
+                "- [ ] Swagger 확인",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+
+    service = orchestration.OrchestrationService(db=None)  # type: ignore[arg-type]
+    summary = service._build_qa_summary_lines(task_id)
+    rendered = "\n".join(summary)
+
+    assert rendered.count("```json") == 12
+    assert rendered.count("```") % 2 == 0
+    assert "* 테스트 명: 케이스 5" in rendered

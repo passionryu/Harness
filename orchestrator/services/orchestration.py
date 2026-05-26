@@ -1502,7 +1502,7 @@ class OrchestrationService:
         if len(checklist) > 20:
             summary.append(f"- `qa-report.md`에 추가 검증 항목 {len(checklist) - 20}개가 더 있습니다.")
         if api_smoke_lines:
-            summary.extend(["", "### API Smoke Test 결과", *api_smoke_lines[:80]])
+            summary.extend(["", "### API Smoke Test 결과", *api_smoke_lines])
         return summary
 
     def _build_human_qa_lines(self, task_id: str) -> list[str]:
@@ -1568,15 +1568,18 @@ class OrchestrationService:
         ]
         check_target_lines = (
             [
+                "화면 확인 URL:",
+                "http://localhost:3000/signup",
+                "",
                 "Swagger 주소:",
                 settings.studyhub_swagger_url,
                 "",
-                "확인 URL:",
+                "API 확인 URL:",
                 settings.studyhub_api_base_url,
             ]
             if issue_type in {"beFeature", "apiConnect"}
             else [
-                "확인 URL:",
+                "화면 확인 URL:",
                 "http://localhost:3000/signup",
             ]
         )
