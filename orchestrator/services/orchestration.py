@@ -293,9 +293,9 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="Plan이 승인되어 Dev Agent를 실행했습니다."
+            message="Plan이 승인되어 Dev Agent 실행이 완료되었습니다."
             if previous == "Todo"
-            else "Dev Agent를 다시 실행했습니다.",
+            else "Dev Agent 재실행이 완료되었습니다.",
         )
 
     def run_refactor_for_github_issue(
@@ -1284,22 +1284,31 @@ class OrchestrationService:
 
     def _build_develop_comment(self, task: Task, previous_state: str = "Todo") -> str:
         branch_name = self._branch_name_for_task(task)
+        latest_run = self._latest_run(task.id)
+        run_status = latest_run.status if latest_run else "unknown"
+        run_summary = latest_run.summary if latest_run else "Dev Agent 실행 기록을 찾지 못했습니다."
+        run_error = latest_run.error if latest_run and latest_run.error else None
         return "\n".join(
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## 🛠️ 개발 시작: {task.title}",
+                f"## 🛠️ 개발 완료: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
-                "사람의 명령으로 Plan이 승인되었습니다.",
+                "사람의 명령으로 Plan이 승인되었고 Dev Agent 실행이 끝났습니다.",
                 "",
                 "### 상태",
                 f"- previous: `{previous_state}`",
                 f"- current: `{task.state}`",
+                f"- dev status: `{run_status}`",
                 "",
                 "### 브랜치",
                 f"- `{branch_name}`",
+                "",
+                "### 실행 결과",
+                f"- {run_summary}",
+                *(["", "### 실패 이유", f"- {run_error}"] if run_error else []),
                 "",
                 "### 커밋 규칙",
                 "- 구현 단계 하나가 끝날 때마다 커밋한다.",
@@ -1318,7 +1327,12 @@ class OrchestrationService:
                 "- `commit-plan.md`에서 실제 커밋 해시와 커밋 단위를 확인한다.",
                 "- `test-report.md`에서 자동 검증 결과를 확인한다.",
                 "",
-                "현재 Dev Agent는 지원되는 작업 타입부터 실제 구현, 단계별 커밋, smoke test를 수행합니다.",
+                "### 다음 단계",
+                "개발 결과를 System QA로 검증하세요.",
+                "",
+                "```markdown",
+                settings.qa_command,
+                "```",
             ]
         )
 

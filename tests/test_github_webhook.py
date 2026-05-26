@@ -600,7 +600,7 @@ def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monk
     result = develop_response.json()
     assert result["previous_state"] == "Todo"
     assert result["current_state"] == "In Progress"
-    assert result["message"] == "Plan이 승인되어 Dev Agent를 실행했습니다."
+    assert result["message"] == "Plan이 승인되어 Dev Agent 실행이 완료되었습니다."
     assert repo.active_branch.name == expected_branch
     commit_plan = tmp_path / "artifacts" / result["task_id"] / "dev" / "commit-plan.md"
     dev_status = tmp_path / "artifacts" / result["task_id"] / "dev" / "dev-status.md"
@@ -833,7 +833,7 @@ def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monk
     result = continue_response.json()
     assert result["previous_state"] == "In Progress"
     assert result["current_state"] == "In Progress"
-    assert result["message"] == "Dev Agent를 다시 실행했습니다."
+    assert result["message"] == "Dev Agent 재실행이 완료되었습니다."
 
 
 def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypatch):
