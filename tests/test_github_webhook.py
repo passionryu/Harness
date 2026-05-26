@@ -749,6 +749,24 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
         target_repo
         / "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/presentation/member/MemberSignupController.kt"
     ).exists()
+    controller = (
+        target_repo
+        / "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/presentation/member/MemberSignupController.kt"
+    ).read_text()
+    request_dto = target_repo / (
+        "apps/server/modules/bootstrap/studyhub/src/main/kotlin/"
+        "com/studyhub/server/bootstrap/presentation/member/MemberSignupRequest.kt"
+    )
+    response_dto = target_repo / (
+        "apps/server/modules/bootstrap/studyhub/src/main/kotlin/"
+        "com/studyhub/server/bootstrap/presentation/member/MemberSignupResponse.kt"
+    )
+    assert "@Operation(" in controller
+    assert "summary = \"회원가입\"" in controller
+    assert "description = \"이름, 이메일, 비밀번호" in controller
+    assert "ApiResponse" not in controller
+    assert "Schema" not in request_dto.read_text()
+    assert "Schema" not in response_dto.read_text()
 
 
 def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monkeypatch):

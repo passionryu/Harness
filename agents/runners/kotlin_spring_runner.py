@@ -500,6 +500,7 @@ def _write_member_bootstrap_files(context: DevRunnerContext) -> list[str]:
         base / "MemberSignupController.kt": """package com.studyhub.server.bootstrap.presentation.member
 
 import com.studyhub.server.application.member.RegisterMemberService
+import io.swagger.v3.oas.annotations.Operation
 import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -514,6 +515,10 @@ class MemberSignupController(
     private val registerMemberService: RegisterMemberService,
 ) {
     @PostMapping("/signup")
+    @Operation(
+        summary = "회원가입",
+        description = "이름, 이메일, 비밀번호, 선택 전화번호, 관심 영역을 입력받아 새 회원 계정을 생성합니다.",
+    )
     fun signUp(
         @Valid @RequestBody request: MemberSignupRequest,
     ): ResponseEntity<MemberSignupResponse> {
@@ -567,7 +572,9 @@ data class MemberSignupRequest(
 
 data class MemberSignupResponse(
     val memberId: Long,
+
     val name: String,
+
     val email: String,
 )
 """,

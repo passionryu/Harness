@@ -140,6 +140,7 @@ def _backend_style_lines(issue_type: str) -> list[str]:
         "- 클래스와 메서드는 유비쿼터스 언어와 주어/동사/목적어가 드러나게 명명한다.",
         "- 사용자 응답, 프론트엔드 검증 메시지, 내부 예외, 로그는 한국어를 우선 사용한다.",
         "- 사용자 응답 메시지는 안전하고 이해 가능하게 작성하고, 내부 로그에는 who/what/requestData/reason을 남긴다.",
+        "- 모든 백엔드 API에는 한국어 Swagger/OpenAPI summary와 description만 작성한다.",
     ]
 
 

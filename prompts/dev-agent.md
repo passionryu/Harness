@@ -17,6 +17,11 @@ thin, put request/response DTOs in separate files, preserve domain/application/
 port/adapter/presentation boundaries, and stop with a clear report instead of
 generating backend code that violates those boundaries.
 
+Every generated backend API must include a lightweight Swagger/OpenAPI
+`@Operation` annotation with Korean `summary` and `description`. Do not add
+`@ApiResponse` or DTO field `@Schema` metadata unless the issue explicitly asks
+for detailed Swagger documentation.
+
 All generated StudyHub user-facing messages must follow `rules/localization.md`.
 Frontend labels, validation messages, backend API error responses, internal
 exception messages, logs, GitHub comments, and human-facing reports should be

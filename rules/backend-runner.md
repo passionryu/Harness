@@ -22,6 +22,15 @@ bootstrap/presentation/{domain}/
 └── ApiExceptionHandler.kt
 ```
 
+## Swagger/OpenAPI 문서화
+
+- 모든 API endpoint에는 `@Operation`을 작성한다.
+- `summary`에는 기능 이름을 짧게 작성한다.
+- `description`에는 사용자가 이해할 수 있는 간단한 API 설명을 작성한다.
+- Swagger 설명은 한국어로 작성한다.
+- `@ApiResponse`, DTO field `@Schema` 등 상세 문서화는 기본 생성하지 않는다. 명시적으로 요청된 경우에만 추가한다.
+- 단순히 기능 이름만 반복하지 말고, API가 언제 쓰이고 어떤 결과를 반환하는지 한두 문장으로 설명한다.
+
 ## DDD와 헥사고날 경계
 
 - `domain`은 Spring, JPA, web API에 의존하지 않는 domain model과 domain rule을 둔다.
