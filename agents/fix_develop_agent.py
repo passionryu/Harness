@@ -128,6 +128,8 @@ def _classify_failure(report_text: str, status_text: str) -> FailureClassificati
             "Status expected:<200> but was:<401>" in haystack
             or "Status = 401" in haystack
             or "Unauthorized" in haystack
+            or "localhost 3000 web origin can send signup preflight request() FAILED" in haystack
+            or "AssertionError at WebCorsConfigurationTest.kt" in haystack
         )
     ):
         return FailureClassification(
