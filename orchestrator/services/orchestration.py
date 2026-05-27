@@ -298,6 +298,75 @@ class OrchestrationService:
             else "Dev Agent 재실행이 완료되었습니다.",
         )
 
+    # 최근 실패한 Dev run을 분석해 자동 복구 가능한 개발 실패를 수정한다.
+    def run_fix_develop_for_github_issue(
+        self,
+        issue_number: int,
+        title: str,
+        body: str,
+        issue_url: str,
+        issue_labels: list[str] | None = None,
+    ) -> EventResult | dict[str, str]:
+        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        if task is None:
+            return self._skip_develop_command(
+                issue_number,
+                "작업을 찾을 수 없습니다. 먼저 plan과 develop을 실행하세요.",
+            )
+
+        task.title = title
+        task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
+        task.github_issue_url = issue_url
+
+        failed_dev_run = self._latest_failed_dev_run(task.id)
+        if failed_dev_run is None:
+            return self._skip_develop_command(
+                issue_number,
+                "수리할 실패한 Dev 실행 기록이 없습니다.",
+                task.id,
+            )
+
+        previous = task.state
+        run_id = self._run_agent(task, "fix_develop")
+        if task.state != "In Progress":
+            task.state = "In Progress"
+            self._record_transition(
+                task.id,
+                previous,
+                task.state,
+                f"develop failure fixed by {settings.fix_develop_command}",
+                "agent",
+            )
+
+        self._audit(
+            task.id,
+            run_id,
+            "dev.failure_fixed",
+            {"issue_number": issue_number, "failed_run_id": failed_dev_run.id},
+        )
+
+        if settings.github_token:
+            GitHubAdapter(settings.github_token).create_issue_comment(
+                settings.github_owner,
+                settings.github_repo,
+                issue_number,
+                self._build_fix_develop_comment(task, previous, failed_dev_run.id),
+            )
+            self._audit(
+                task.id,
+                run_id,
+                "github.fix_develop_commented",
+                {"issue_number": issue_number},
+            )
+
+        self.db.commit()
+        return EventResult(
+            task_id=task.id,
+            previous_state=previous,
+            current_state=task.state,
+            message="최근 Dev 실패를 수정했고 QA 실행 가능한 상태로 전환했습니다.",
+        )
+
     def run_refactor_for_github_issue(
         self,
         issue_number: int,
@@ -809,6 +878,17 @@ class OrchestrationService:
             .limit(1)
         )
 
+    # 가장 최근 실패한 Dev run을 찾아 fix-develop의 입력 기준으로 사용한다.
+    def _latest_failed_dev_run(self, task_id: str) -> Run | None:
+        return self.db.scalar(
+            select(Run)
+            .where(Run.task_id == task_id)
+            .where(Run.agent_name == "dev")
+            .where(Run.status == AgentStatus.FAILED.value)
+            .order_by(Run.started_at.desc())
+            .limit(1)
+        )
+
     def _latest_transition(self, task_id: str) -> StateTransition | None:
         return self.db.scalar(
             select(StateTransition)
@@ -944,6 +1024,11 @@ class OrchestrationService:
             if running_run
             else "현재 실행 중인 Agent 없음"
         )
+        recommended_command = (
+            settings.fix_develop_command
+            if latest_run and latest_run.agent_name == "dev" and latest_run.status == AgentStatus.FAILED.value
+            else self._next_command_for_state(task.state)
+        )
 
         return "\n".join(
             [
@@ -966,7 +1051,7 @@ class OrchestrationService:
                 *transition_lines,
                 "",
                 "### 다음 행동",
-                f"- 권장 명령: `{self._next_command_for_state(task.state)}`",
+                f"- 권장 명령: `{recommended_command}`",
                 "",
                 "### 중지",
                 "```markdown",
@@ -1025,7 +1110,17 @@ class OrchestrationService:
             if latest_run.error:
                 run_lines.append(f"- error: `{latest_run.error}`")
 
-        artifact_lines = self._failure_artifact_open_lines(task, command, latest_run.agent_name if latest_run else None)
+        artifact_lines = self._failure_artifact_open_lines(
+            task,
+            command,
+            latest_run.agent_name if latest_run else None,
+        )
+        next_command = (
+            settings.fix_develop_command
+            if latest_run and latest_run.agent_name == "dev"
+            else settings.status_command
+        )
+        next_heading = "### 다음 추천 명령" if next_command == settings.fix_develop_command else "### 다음 확인 명령"
 
         return "\n".join(
             [
@@ -1049,9 +1144,9 @@ class OrchestrationService:
                 "",
                 *artifact_lines,
                 "",
-                "### 다음 확인 명령",
+                next_heading,
                 "```markdown",
-                settings.status_command,
+                next_command,
                 "```",
             ]
         )
@@ -1065,8 +1160,13 @@ class OrchestrationService:
         artifact_path: Path | None = None
         if agent_name == "qa" or command in {settings.qa_command, settings.reqa_command}:
             artifact_path = settings.artifact_root / task.id / "qa" / "qa-report.md"
-        elif agent_name == "dev" or command in {settings.develop_command, settings.refactor_command}:
+        elif agent_name == "dev" or command in {
+            settings.develop_command,
+            settings.refactor_command,
+        }:
             artifact_path = settings.artifact_root / task.id / "dev" / "dev-status.md"
+        elif agent_name == "fix_develop" or command == settings.fix_develop_command:
+            artifact_path = settings.artifact_root / task.id / "dev" / "fix-develop-report.md"
         elif agent_name == "plan" or command in {settings.plan_command, settings.replan_command}:
             artifact_path = settings.artifact_root / task.id / "plans" / "architecture.md"
 
@@ -1335,6 +1435,50 @@ class OrchestrationService:
                 "",
                 "### 다음 단계",
                 "개발 결과를 System QA로 검증하세요.",
+                "",
+                "```markdown",
+                settings.qa_command,
+                "```",
+            ]
+        )
+
+    # fix-develop 결과와 다음 QA 명령을 GitHub 댓글로 요약한다.
+    def _build_fix_develop_comment(
+        self, task: Task, previous_state: str, failed_run_id: str
+    ) -> str:
+        branch_name = self._branch_name_for_task(task)
+        latest_run = self._latest_run(task.id)
+        run_summary = latest_run.summary if latest_run else "Fix Develop Agent 실행 기록을 찾지 못했습니다."
+        run_error = latest_run.error if latest_run and latest_run.error else None
+        return "\n".join(
+            [
+                "<!-- ai-harness-generated -->",
+                "",
+                f"## 🛠️ Dev 실패 수정 완료: {task.title}",
+                "",
+                f"Task ID: `{task.id}`",
+                "",
+                "최근 실패한 Dev 실행을 분석했고 자동 수리 가능한 문제를 수정했습니다.",
+                "",
+                "### 상태",
+                f"- previous: `{previous_state}`",
+                f"- current: `{task.state}`",
+                f"- failed_dev_run: `{failed_run_id}`",
+                "",
+                "### 브랜치",
+                f"- `{branch_name}`",
+                "",
+                "### 실행 결과",
+                f"- {run_summary}",
+                *(["", "### 남은 문제", f"- {run_error}"] if run_error else []),
+                "",
+                "### Fix 산출물",
+                f"- `artifacts/{task.id}/dev/fix-develop-report.md`",
+                f"- `artifacts/{task.id}/dev/test-report.md`",
+                f"- `artifacts/{task.id}/dev/dev-status.md`",
+                "",
+                "### 다음 단계",
+                "수정된 개발 결과를 System QA로 검증하세요.",
                 "",
                 "```markdown",
                 settings.qa_command,

@@ -661,6 +661,87 @@ def test_issue_comment_develop_command_without_plan_is_ignored(monkeypatch):
     }
 
 
+def test_fix_develop_command_uses_latest_failed_dev_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "github_token", "token")
+    monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "studyHub")
+
+    captured: dict[str, str] = {}
+
+    class FakeGitHubAdapter:
+        def __init__(self, token: str):
+            self.token = token
+
+        def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> None:
+            captured["body"] = body
+
+    def fake_run_agent(self, task, agent_name):
+        from orchestrator.db.models import Run
+
+        assert agent_name == "fix_develop"
+        run = Run(
+            task_id=task.id,
+            agent_name=agent_name,
+            status="success",
+            summary="CORS preflight 실패를 수정했고 Gradle 테스트가 통과했습니다.",
+        )
+        self.db.add(run)
+        self.db.flush()
+        return run.id
+
+    monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
+    monkeypatch.setattr(orchestration.OrchestrationService, "_run_agent", fake_run_agent)
+
+    from orchestrator.db.models import Run, Task
+    from orchestrator.db.session import SessionLocal, create_db
+    from orchestrator.services.orchestration import OrchestrationService
+
+    create_db()
+    issue_number = uuid4().int % 1_000_000_000
+    with SessionLocal() as db:
+        task = Task(
+            title="[FS] 로그인 아이디 기반 회원가입/로그인 구조를 추가한다.",
+            body="\n".join(
+                [
+                    "## 목표",
+                    "로그인 아이디 기반 회원가입/로그인 구조를 추가한다.",
+                    "",
+                    "## Harness Metadata",
+                    f"- issue_number: {issue_number}",
+                    "- labels: type: fullstackFeature",
+                ]
+            ),
+            github_issue_number=issue_number,
+            github_issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            state="Todo",
+        )
+        db.add(task)
+        db.flush()
+        db.add(
+            Run(
+                task_id=task.id,
+                agent_name="dev",
+                status="failed",
+                summary="fullstack_runner가 Gradle 테스트에서 실패했습니다.",
+                error="Kotlin/Spring 구현 후 Gradle 테스트가 실패했습니다.",
+            )
+        )
+        db.commit()
+
+        event = OrchestrationService(db).run_fix_develop_for_github_issue(
+            issue_number=issue_number,
+            title=task.title,
+            body=task.body,
+            issue_url=task.github_issue_url or "",
+            issue_labels=["type: fullstackFeature"],
+        )
+
+    assert event.current_state == "In Progress"
+    assert "Dev 실패 수정 완료" in captured["body"]
+    assert "@ai-harness qa" in captured["body"]
+
+
 def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
     tmp_path, monkeypatch
 ):

@@ -186,6 +186,26 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
                 error=str(exc),
             )
 
+    if command == settings.fix_develop_command:
+        try:
+            return OrchestrationService(db).run_fix_develop_for_github_issue(
+                issue_number=issue_number,
+                title=issue_title,
+                body=issue_body,
+                issue_url=issue_url,
+                issue_labels=issue_labels,
+            )
+        except ValueError as exc:
+            return OrchestrationService(db).comment_command_failure(
+                issue_number=issue_number,
+                title=issue_title,
+                body=issue_body,
+                issue_url=issue_url,
+                issue_labels=issue_labels,
+                command=command,
+                error=str(exc),
+            )
+
     if command == settings.refactor_command:
         refactor_request = command_body or "추가 상세 내용 없이 리팩터링이 요청되었습니다."
         try:

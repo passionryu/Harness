@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     plan_command: str = "@ai-harness plan"
     replan_command: str = "@ai-harness replan"
     develop_command: str = "@ai-harness develop"
+    fix_develop_command: str = "@ai-harness fix-develop"
     refactor_command: str = "@ai-harness refactor"
     qa_command: str = "@ai-harness qa"
     reqa_command: str = "@ai-harness re-qa"
