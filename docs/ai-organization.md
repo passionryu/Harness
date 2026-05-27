@@ -34,6 +34,7 @@
 - DB Migration Runner는 명시된 `sql` code block이 있으면 Flyway migration 파일을 생성할 수 있다.
 - API Implementation Runner는 명시된 `METHOD /api/...` endpoint가 있으면 API contract 초안을 생성할 수 있다.
 - Test Implementation Runner는 기존 프론트엔드/백엔드 테스트 명령을 찾아 실제로 실행할 수 있다.
+- Refactoring Runner는 명확한 요청이 있으면 Controller 내부 `data class`를 별도 Kotlin 파일로 분리할 수 있다.
 
 아직 구현되지 않은 부분:
 
