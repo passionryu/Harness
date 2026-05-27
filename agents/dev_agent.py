@@ -6,11 +6,16 @@ from git import Repo
 
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
 from agents.runners.base import DevRunner, DevRunnerContext, DevRunnerResult
-from agents.runners.docs_runner import DocsRunner
-from agents.runners.fullstack_runner import FullstackRunner
-from agents.runners.infra_runner import InfraRunner
-from agents.runners.kotlin_spring_runner import KotlinSpringRunner
-from agents.runners.nextjs_runner import NextJsRunner
+from agents.runners.responsibility_runners import (
+    APIConnectRunner,
+    APIImplementationRunner,
+    DBMigrationRunner,
+    DDDModelingRunner,
+    EventFlowRunner,
+    FrontendImplementationRunner,
+    RefactoringRunner,
+    TestImplementationRunner,
+)
 from orchestrator.core.settings import settings
 
 
@@ -160,20 +165,20 @@ def _backend_style_lines(issue_type: str) -> list[str]:
 # Dev Agent가 선택할 수 있는 러너 목록을 우선순위대로 반환한다.
 def _dev_runners() -> list[DevRunner]:
     return [
-        FullstackRunner(),
-        NextJsRunner(),
-        KotlinSpringRunner(),
-        DocsRunner(),
-        InfraRunner(),
+        DDDModelingRunner(),
+        DBMigrationRunner(),
+        APIImplementationRunner(),
+        FrontendImplementationRunner(),
+        APIConnectRunner(),
+        EventFlowRunner(),
+        RefactoringRunner(),
+        TestImplementationRunner(),
     ]
 
 
 # 이슈 컨텍스트에 맞는 러너를 선택하고 조합 실행 여부를 결정한다.
 def _select_runners(context: DevRunnerContext) -> list[DevRunner]:
-    matched = [runner for runner in _dev_runners() if runner.can_handle(context)]
-    if context.issue_type in {"apiConnect", "fullstackFeature"}:
-        return matched
-    return matched[:1]
+    return [runner for runner in _dev_runners() if runner.can_handle(context)]
 
 
 def _checkout_branch(repo_path: Path, branch_name: str) -> str:

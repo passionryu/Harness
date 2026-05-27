@@ -605,22 +605,24 @@ def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monk
     assert plan_response.status_code == 200
     assert develop_response.status_code == 200
     result = develop_response.json()
-    assert result["previous_state"] == "Todo"
-    assert result["current_state"] == "In Progress"
-    assert result["message"] == "Plan이 승인되어 Dev Agent 실행이 완료되었습니다."
+    assert result["status"] == "failed"
+    assert "frontend_implementation_runner" in result["reason"]
+    assert "test_implementation_runner" in result["reason"]
     assert repo.active_branch.name == expected_branch
-    commit_plan = tmp_path / "artifacts" / result["task_id"] / "dev" / "commit-plan.md"
-    dev_status = tmp_path / "artifacts" / result["task_id"] / "dev" / "dev-status.md"
+    task_id = plan_response.json()["task_id"]
+    commit_plan = tmp_path / "artifacts" / task_id / "dev" / "commit-plan.md"
+    dev_status = tmp_path / "artifacts" / task_id / "dev" / "dev-status.md"
     assert commit_plan.exists()
     assert dev_status.exists()
     assert expected_branch in commit_plan.read_text()
-    assert "[회원 가입 기능 구현] : 버튼/라우팅 추가" in commit_plan.read_text()
-    assert "[회원 가입 기능 구현] : 프론트엔드 테스트 코드 추가" in commit_plan.read_text()
-    assert "회원가입 화면 smoke 검증 통과" in (
-        tmp_path / "artifacts" / result["task_id"] / "dev" / "test-report.md"
-    ).read_text()
-    assert (tmp_path / "artifacts" / result["task_id"] / "dev" / "implementation.patch").exists()
-    assert (tmp_path / "artifacts" / result["task_id"] / "dev" / "test-report.md").exists()
+    assert "selected_runner: `frontend_implementation_runner, test_implementation_runner`" in (
+        commit_plan.read_text()
+    )
+    assert "status: `needs_human`" in dev_status.read_text()
+    assert (tmp_path / "artifacts" / task_id / "dev" / "frontend_implementation_runner.md").exists()
+    assert (tmp_path / "artifacts" / task_id / "dev" / "test_implementation_runner.md").exists()
+    assert (tmp_path / "artifacts" / task_id / "dev" / "implementation.patch").exists()
+    assert (tmp_path / "artifacts" / task_id / "dev" / "test-report.md").exists()
 
 
 def test_issue_comment_develop_command_without_plan_is_ignored(monkeypatch):
@@ -823,38 +825,31 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
     assert develop_response.status_code == 200
     result = develop_response.json()
     assert result["status"] == "failed"
-    assert "Kotlin/Spring 구현 후 Gradle 테스트가 실패했습니다." in result["reason"]
+    assert "ddd_modeling_runner" in result["reason"]
+    assert "db_migration_runner" in result["reason"]
+    assert "api_implementation_runner" in result["reason"]
+    assert "test_implementation_runner" in result["reason"]
 
     task_id = plan_response.json()["task_id"]
     dev_dir = tmp_path / "artifacts" / task_id / "dev"
-    assert "selected_runner: `kotlin_spring_runner`" in (dev_dir / "commit-plan.md").read_text()
-    assert (dev_dir / "kotlin-spring-runner.md").exists()
     assert (
-        target_repo
-        / "apps/server/modules/application/src/main/kotlin/com/studyhub/server/application/member/RegisterMemberService.kt"
-    ).exists()
-    assert (
-        target_repo
-        / "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/presentation/member/MemberSignupController.kt"
-    ).exists()
-    controller = (
-        target_repo
-        / "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/presentation/member/MemberSignupController.kt"
+        "selected_runner: `ddd_modeling_runner, db_migration_runner, "
+        "api_implementation_runner, test_implementation_runner`"
+    ) in (dev_dir / "commit-plan.md").read_text()
+    assert (dev_dir / "ddd_modeling_runner.md").exists()
+    assert (dev_dir / "db_migration_runner.md").exists()
+    assert (dev_dir / "api_implementation_runner.md").exists()
+    assert (dev_dir / "test_implementation_runner.md").exists()
+    assert "자동 구현은 아직 수행하지 않습니다" in (
+        dev_dir / "ddd_modeling_runner.md"
     ).read_text()
-    request_dto = target_repo / (
-        "apps/server/modules/bootstrap/studyhub/src/main/kotlin/"
-        "com/studyhub/server/bootstrap/presentation/member/MemberSignupRequest.kt"
-    )
-    response_dto = target_repo / (
-        "apps/server/modules/bootstrap/studyhub/src/main/kotlin/"
-        "com/studyhub/server/bootstrap/presentation/member/MemberSignupResponse.kt"
-    )
-    assert "@Operation(" in controller
-    assert "summary = \"회원가입\"" in controller
-    assert "description = \"이름, 이메일, 비밀번호" in controller
-    assert "ApiResponse" not in controller
-    assert "Schema" not in request_dto.read_text()
-    assert "Schema" not in response_dto.read_text()
+    assert "backend orchestration style skill: required" in (
+        dev_dir / "backend-style-checklist.md"
+    ).read_text()
+    assert not (
+        target_repo
+        / "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/presentation/member/MemberSignupController.kt"
+    ).exists()
 
 
 def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monkeypatch):
@@ -876,6 +871,26 @@ def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monk
     repo.index.add(["README.md"])
     repo.index.commit("Initial commit")
     monkeypatch.setattr(orchestration.settings, "target_repo_path", target_repo)
+
+    original_run_agent = orchestration.OrchestrationService._run_agent
+
+    def fake_run_agent(self, task, agent_name):
+        from orchestrator.db.models import Run
+
+        if agent_name != "dev":
+            return original_run_agent(self, task, agent_name)
+
+        run = Run(
+            task_id=task.id,
+            agent_name=agent_name,
+            status="success",
+            summary="테스트용 Dev Agent 실행 성공",
+        )
+        self.db.add(run)
+        self.db.flush()
+        return run.id
+
+    monkeypatch.setattr(orchestration.OrchestrationService, "_run_agent", fake_run_agent)
 
     issue_number = uuid4().int % 1_000_000_000
     issue = {
@@ -945,6 +960,30 @@ def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypa
     repo.index.commit("Initial commit")
     monkeypatch.setattr(orchestration.settings, "target_repo_path", target_repo)
 
+    original_run_agent = orchestration.OrchestrationService._run_agent
+
+    def fake_develop_success_then_real_refactor(self, task, agent_name):
+        from orchestrator.db.models import Run
+
+        if agent_name != "dev" or self.has_successful_agent_run(task.id, "dev"):
+            return original_run_agent(self, task, agent_name)
+
+        run = Run(
+            task_id=task.id,
+            agent_name=agent_name,
+            status="success",
+            summary="테스트용 Dev Agent 실행 성공",
+        )
+        self.db.add(run)
+        self.db.flush()
+        return run.id
+
+    monkeypatch.setattr(
+        orchestration.OrchestrationService,
+        "_run_agent",
+        fake_develop_success_then_real_refactor,
+    )
+
     issue_number = uuid4().int % 1_000_000_000
     issue = {
         "number": issue_number,
@@ -996,11 +1035,11 @@ def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypa
 
     assert refactor_response.status_code == 200
     result = refactor_response.json()
-    assert result["previous_state"] == "In Progress"
-    assert result["current_state"] == "In Progress"
-    assert result["message"] == "리팩터링 요청을 반영했고 작업 상태를 In Progress로 변경했습니다."
+    assert result["status"] == "failed"
+    assert "refactoring_runner" in result["reason"]
 
-    dev_status = tmp_path / "artifacts" / result["task_id"] / "dev" / "dev-status.md"
+    task_id = result["task_id"]
+    dev_status = tmp_path / "artifacts" / task_id / "dev" / "dev-status.md"
     assert "mode: `refactor`" in dev_status.read_text()
     assert "컨트롤러는 얇게 유지한다" in dev_status.read_text()
     assert "DTO는 별도 파일로 분리한다" in dev_status.read_text()
@@ -1078,6 +1117,60 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     repo.index.add(["README.md"])
     repo.index.commit("Initial commit")
     monkeypatch.setattr(orchestration.settings, "target_repo_path", target_repo)
+
+    original_run_agent = orchestration.OrchestrationService._run_agent
+
+    def fake_dev_success_then_real_qa(self, task, agent_name):
+        from orchestrator.db.models import Run
+
+        if agent_name != "dev":
+            return original_run_agent(self, task, agent_name)
+
+        branch_name = f"feature(FE)-{task.github_issue_number}"
+        if branch_name not in {head.name for head in repo.heads}:
+            repo.git.checkout("-b", branch_name)
+        else:
+            repo.git.checkout(branch_name)
+        dev_dir = orchestration.settings.artifact_root / task.id / "dev"
+        dev_dir.mkdir(parents=True, exist_ok=True)
+        for filename in ["commit-plan.md", "dev-status.md", "implementation.patch", "test-report.md"]:
+            (dev_dir / filename).write_text(f"# {filename}\n", encoding="utf-8")
+        (target_repo / "apps/web/app/signup").mkdir(parents=True, exist_ok=True)
+        (target_repo / "apps/web/components/signup").mkdir(parents=True, exist_ok=True)
+        (target_repo / "apps/web/lib").mkdir(parents=True, exist_ok=True)
+        (target_repo / "apps/web/scripts").mkdir(parents=True, exist_ok=True)
+        (target_repo / "apps/web/app/signup/page.tsx").write_text("SignupForm\n", encoding="utf-8")
+        (target_repo / "apps/web/components/signup/signup-form.tsx").write_text(
+            "confirmPassword interests\n",
+            encoding="utf-8",
+        )
+        (target_repo / "apps/web/lib/signup-validation.ts").write_text(
+            "비밀번호가 서로 일치하지 않습니다.\n",
+            encoding="utf-8",
+        )
+        (target_repo / "apps/web/scripts/verify-signup-page.mjs").write_text(
+            "console.log('회원가입 화면 smoke 검증 통과')\n",
+            encoding="utf-8",
+        )
+        (target_repo / "apps/web/package.json").write_text(
+            json.dumps({"name": "@studyhub/web", "private": True, "scripts": {"test:signup": "node scripts/verify-signup-page.mjs"}}),
+            encoding="utf-8",
+        )
+        run = Run(
+            task_id=task.id,
+            agent_name=agent_name,
+            status="success",
+            summary="테스트용 Dev Agent 실행 성공",
+        )
+        self.db.add(run)
+        self.db.flush()
+        return run.id
+
+    monkeypatch.setattr(
+        orchestration.OrchestrationService,
+        "_run_agent",
+        fake_dev_success_then_real_qa,
+    )
 
     issue_number = uuid4().int % 1_000_000_000
     issue = {
