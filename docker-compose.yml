@@ -26,11 +26,10 @@ services:
       ARTIFACT_ROOT: /app/artifacts
       LOG_LEVEL: INFO
     ports:
-      - "8080:8080"
+      - "3002:3002"
     volumes:
       - ./artifacts:/app/artifacts
       - ./logs:/app/logs
 
 volumes:
   postgres-data:
-

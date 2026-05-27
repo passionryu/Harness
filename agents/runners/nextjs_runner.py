@@ -180,7 +180,7 @@ export class SignupApiError extends Error {
   }
 }
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_STUDYHUB_API_BASE_URL ?? "http://localhost:8080"
+const apiBaseUrl = process.env.NEXT_PUBLIC_STUDYHUB_API_BASE_URL ?? "http://localhost:3001"
 
 export function toSignupMemberRequest(values: SignupFormValues): SignupMemberRequest {
   return {

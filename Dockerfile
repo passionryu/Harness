@@ -21,7 +21,6 @@ COPY rules ./rules
 
 RUN pip install --no-cache-dir -e .
 
-EXPOSE 8080
+EXPOSE 3002
 
-CMD ["uvicorn", "orchestrator.main:app", "--host", "0.0.0.0", "--port", "8080"]
-
+CMD ["uvicorn", "orchestrator.main:app", "--host", "0.0.0.0", "--port", "3002"]

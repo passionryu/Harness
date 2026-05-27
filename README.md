@@ -47,7 +47,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
 pytest
-uvicorn orchestrator.main:app --reload
+uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 3002
 ```
 
 Docker:
@@ -59,7 +59,13 @@ docker compose up --build
 Health check:
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:3002/health
+```
+
+ngrok:
+
+```bash
+ngrok http --url=uproot-relax-retaliate.ngrok-free.dev --web-addr=localhost:3003 3002
 ```
 
 ## GitHub Issue Plan Workflow
@@ -86,7 +92,7 @@ DISCORD_WEBHOOK_URL=
 Initial planning can be triggered in two ways:
 
 ```bash
-curl -X POST http://localhost:8080/sync/github/issues/1/plan
+curl -X POST http://localhost:3002/sync/github/issues/1/plan
 ```
 
 Or through a GitHub webhook:

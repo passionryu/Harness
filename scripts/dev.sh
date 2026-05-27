@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 8080
-
+uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 3002
