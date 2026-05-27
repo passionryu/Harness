@@ -1,5 +1,6 @@
-from pathlib import Path
+import re
 import subprocess
+from pathlib import Path
 
 from agents.base import AgentStatus, ArtifactSpec
 from agents.runners.base import DevRunnerContext, DevRunnerResult
@@ -58,6 +59,57 @@ class DBMigrationRunner(ResponsibilityCapabilityRunner):
     name = "db_migration_runner"
     responsibility = "DB schema, nullable, unique, index, migration 구현"
     supported_issue_types = {"beFeature", "fullstackFeature", "config", "infra"}
+
+    # 이슈 본문이나 Plan 산출물에 명시된 SQL DDL을 Flyway migration으로 생성한다.
+    def run(self, context: DevRunnerContext) -> DevRunnerResult:
+        ddl = _extract_sql_ddl(context)
+        if ddl is None:
+            return super().run(context)
+
+        migration_path = _next_migration_path(context)
+        _write_text(migration_path, ddl.rstrip() + "\n")
+        relative = _relative(context, migration_path)
+        commit_hash = _stage_and_commit(
+            context,
+            [relative],
+            f"[{context.feature_name}] : DB migration 추가",
+        )
+        report = context.task_dir / f"{self.name}.md"
+        snapshot = inspect_codebase(context)
+        report.write_text(
+            "\n".join(
+                [
+                    f"# {self.name}",
+                    "",
+                    f"- branch: `{context.branch_name}`",
+                    f"- issue_type: `{context.issue_type}`",
+                    f"- responsibility: {self.responsibility}",
+                    f"- migration: `{relative}`",
+                    f"- commit: `{commit_hash}`",
+                    "",
+                    *render_codebase_snapshot(snapshot),
+                    "## Applied DDL",
+                    "",
+                    "```sql",
+                    ddl.rstrip(),
+                    "```",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return DevRunnerResult(
+            status=AgentStatus.SUCCESS,
+            summary=f"{self.name}가 명시된 DDL을 migration으로 생성했습니다.",
+            commits=[f"1. {commit_hash} [{context.feature_name}] : DB migration 추가"],
+            progress=["- [x] DDL 추출", "- [x] Flyway migration 생성"],
+            verification=[
+                f"## {self.name}",
+                "",
+                "- status: success",
+                f"- migration: `{relative}`",
+            ],
+            artifacts=[ArtifactSpec(self.name, report)],
+        )
 
 
 class APIImplementationRunner(ResponsibilityCapabilityRunner):
@@ -343,6 +395,45 @@ def _frontend_page_scaffold(context: DevRunnerContext, route: str) -> str:
             "",
         ]
     )
+
+
+# 이슈 본문과 Plan 산출물에서 SQL code block을 추출한다.
+def _extract_sql_ddl(context: DevRunnerContext) -> str | None:
+    sources = [context.body]
+    plans_dir = context.task_dir.parent / "plans"
+    for name in ["architecture.md", "ddl.md"]:
+        path = plans_dir / name
+        if path.exists():
+            sources.append(path.read_text(encoding="utf-8"))
+
+    for source in sources:
+        match = re.search(r"```sql\s+(.*?)```", source, re.DOTALL | re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+# 기존 Flyway migration 번호 다음 번호로 새 migration 경로를 만든다.
+def _next_migration_path(context: DevRunnerContext) -> Path:
+    migration_dir = (
+        context.repo_path
+        / "apps/server/modules/bootstrap/studyhub/src/main/resources/db/migration"
+    )
+    migration_dir.mkdir(parents=True, exist_ok=True)
+    versions = []
+    for path in migration_dir.glob("V*__*.sql"):
+        match = re.match(r"V(\d+)__", path.name)
+        if match:
+            versions.append(int(match.group(1)))
+    next_version = max(versions, default=0) + 1
+    slug = _migration_slug(context.feature_name)
+    return migration_dir / f"V{next_version}__{slug}.sql"
+
+
+# migration 파일명에 사용할 안전한 slug를 만든다.
+def _migration_slug(value: str) -> str:
+    slug = re.sub(r"[^0-9a-zA-Z가-힣]+", "_", value).strip("_")
+    return slug or "harness_migration"
 
 
 # 이슈 타입에 맞는 테스트 명령 목록을 결정한다.
