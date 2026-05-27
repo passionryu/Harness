@@ -131,6 +131,9 @@ def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
     assert "### 미결정 사항" in captured["body"]
     assert "### 시퀀스 다이어그램" in captured["body"]
     assert "### 플로우 차트" in captured["body"]
+    assert "### 다음 추천 명령어" in captured["body"]
+    assert "`@ai-harness develop`" in captured["body"]
+    assert "`@ai-harness replan`" in captured["body"]
 
 
 def test_issue_comment_replan_command_forces_new_plan(tmp_path, monkeypatch):

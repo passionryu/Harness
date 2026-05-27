@@ -1211,7 +1211,9 @@ class OrchestrationService:
                 f"- `artifacts/{task_id}/plans/flow-chart.md`",
                 f"- `artifacts/{task_id}/plans/edge-case-checklist.md`",
                 "",
-                "사람이 위 미결정 사항을 확인한 뒤 구현 단계로 이동하세요.",
+                "### 다음 추천 명령어",
+                f"- 계획이 충분하면 `{settings.develop_command}`",
+                f"- 계획을 수정하고 싶으면 `{settings.replan_command}` 아래에 수정 요청을 적어 다시 논의하세요.",
             ]
         )
 
