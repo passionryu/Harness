@@ -10,6 +10,7 @@ from agents.dev_agent import (
     _extract_metadata_value,
     _feature_name,
 )
+from agents.organization import FIX_DEVELOP_RUNNERS, render_runner_definitions
 from orchestrator.core.settings import settings
 
 
@@ -72,6 +73,7 @@ class FixDevelopAgent:
                     f"- changed_paths: `{', '.join(changed_paths) if changed_paths else 'none'}`",
                     f"- commit: `{commit_hash}`",
                     "",
+                    *render_runner_definitions("Fix Develop Agent 책임 러너", FIX_DEVELOP_RUNNERS),
                     "## Command",
                     f"- command: `{' '.join(command)}`",
                     f"- exit_code: {exit_code}",
@@ -252,6 +254,8 @@ def _write_needs_human_report(fix_report: Path, title: str, reason: str) -> Agen
                 "- status: needs_human",
                 f"- title: {title}",
                 f"- reason: {reason}",
+                "",
+                *render_runner_definitions("Fix Develop Agent 책임 러너", FIX_DEVELOP_RUNNERS),
             ]
         ),
         encoding="utf-8",

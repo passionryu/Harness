@@ -63,6 +63,20 @@ HUMAN_QA_SUPPORT_RUNNERS = [
 ]
 
 
+# 러너 정의 목록을 제목이 있는 Markdown 섹션으로 렌더링한다.
+def render_runner_definitions(title: str, runners: list[RunnerDefinition]) -> list[str]:
+    lines: list[str] = []
+    lines.extend([f"## {title}", ""])
+    lines.extend(
+        [
+            f"- {runner.name}: {runner.responsibility} 현재 능력: {runner.current_capability}"
+            for runner in runners
+        ]
+    )
+    lines.append("")
+    return lines
+
+
 # 하네스에 등록된 AI 조직과 각 러너의 현재 능력을 Markdown으로 렌더링한다.
 def render_ai_organization_catalog() -> list[str]:
     sections = [
@@ -74,14 +88,7 @@ def render_ai_organization_catalog() -> list[str]:
     ]
     lines: list[str] = []
     for title, runners in sections:
-        lines.extend([f"## {title}", ""])
-        lines.extend(
-            [
-                f"- {runner.name}: {runner.responsibility} 현재 능력: {runner.current_capability}"
-                for runner in runners
-            ]
-        )
-        lines.append("")
+        lines.extend(render_runner_definitions(title, runners))
     return lines
 
 

@@ -9,6 +9,7 @@ from urllib.parse import urljoin
 from git import Repo
 
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
+from agents.organization import HUMAN_QA_SUPPORT_RUNNERS, QA_RUNNERS, render_runner_definitions
 from orchestrator.core.settings import settings
 
 FE_HUMAN_QA_CHECKLIST = [
@@ -731,6 +732,8 @@ class QAAgent:
                     "## QA 요청사항",
                     *(qa_request or ["추가 QA 요청사항이 없습니다."]),
                     "",
+                    *render_runner_definitions("QA Agent 책임 러너", QA_RUNNERS),
+                    *render_runner_definitions("Human QA Support 책임 러너", HUMAN_QA_SUPPORT_RUNNERS),
                     "## 검증 체크리스트",
                     *checklist_lines,
                     "",
@@ -751,6 +754,7 @@ class QAAgent:
                 [
                     "# QA 체크리스트",
                     "",
+                    *render_runner_definitions("QA Agent 책임 러너", QA_RUNNERS),
                     *checklist_lines,
                     "",
                     "## Human QA 체크리스트",
