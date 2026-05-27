@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from agents.base import AgentInput, AgentStatus
+from agents.organization import render_work_units
 from agents.plan_agent import (
     _flow_chart_for_issue_type,
     _profile_for_issue_type,
@@ -1248,6 +1249,7 @@ class OrchestrationService:
         flow_title = str(profile["flow_title"])
         sequence_diagram = _sequence_diagram_for_issue_type(issue_type)
         flow_chart = _flow_chart_for_issue_type(issue_type)
+        work_units = render_work_units(issue_type)
         task_id = task.id
 
         return "\n".join(
@@ -1295,6 +1297,9 @@ class OrchestrationService:
                 "### 구현 순서",
                 *[f"{index}. {step}" for index, step in enumerate(implementation_steps, start=1)],
                 "",
+                "### 책임 기반 Work Units",
+                *work_units,
+                "",
                 "### 검증 기준",
                 *self._comment_bullets(
                     acceptance,
@@ -1309,6 +1314,8 @@ class OrchestrationService:
                 f"- `artifacts/{task_id}/plans/sequence-diagram.md`",
                 f"- `artifacts/{task_id}/plans/flow.md`",
                 f"- `artifacts/{task_id}/plans/flow-chart.md`",
+                f"- `artifacts/{task_id}/plans/work-units.md`",
+                f"- `artifacts/{task_id}/plans/ai-organization.md`",
                 f"- `artifacts/{task_id}/plans/edge-case-checklist.md`",
                 "",
                 "### 다음 추천 명령어",

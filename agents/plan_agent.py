@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
+from agents.organization import render_ai_organization_catalog, render_work_units
 
 
 def _extract_section(markdown: str, heading: str) -> list[str]:
@@ -402,6 +403,7 @@ class PlanAgent:
         acceptance_fallback = list(profile["acceptance_fallback"])
         sequence_diagram = _sequence_diagram_for_issue_type(issue_type)
         flow_chart = _flow_chart_for_issue_type(issue_type)
+        work_units = render_work_units(issue_type)
 
         architecture = task_dir / "architecture.md"
         architecture.write_text(
@@ -437,6 +439,9 @@ class PlanAgent:
                     "",
                     "## Implementation Steps",
                     *_format_bullets(implementation_steps, []),
+                    "",
+                    "## Work Units",
+                    *work_units,
                     "",
                     "## Acceptance Criteria",
                     *_format_bullets(acceptance, acceptance_fallback),
@@ -482,6 +487,32 @@ class PlanAgent:
         flow_chart_file = task_dir / "flow-chart.md"
         flow_chart_file.write_text(flow_content, encoding="utf-8")
 
+        work_units_file = task_dir / "work-units.md"
+        work_units_file.write_text(
+            "\n".join(
+                [
+                    "# Work Units",
+                    "",
+                    "이 계획은 Development Agent가 책임 기반 runner로 처리해야 할 작업 단위입니다.",
+                    "",
+                    *work_units,
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        organization = task_dir / "ai-organization.md"
+        organization.write_text(
+            "\n".join(
+                [
+                    "# AI Organization",
+                    "",
+                    *render_ai_organization_catalog(),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
         checklist = task_dir / "edge-case-checklist.md"
         checklist.write_text(
             "\n".join(
@@ -502,6 +533,8 @@ class PlanAgent:
                 ArtifactSpec("sequence-diagram", Path(sequence)),
                 ArtifactSpec("flow", Path(flow)),
                 ArtifactSpec("flow-chart", Path(flow_chart_file)),
+                ArtifactSpec("work-units", Path(work_units_file)),
+                ArtifactSpec("ai-organization", Path(organization)),
                 ArtifactSpec("edge-case-checklist", Path(checklist)),
             ],
         )
