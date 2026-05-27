@@ -5,8 +5,12 @@ from git import Repo
 
 from agents.base import AgentStatus
 from agents.runners.base import DevRunnerContext
-from agents.runners.codebase_inspector import extract_frontend_route, inspect_codebase
-from agents.runners.responsibility_runners import DBMigrationRunner
+from agents.runners.codebase_inspector import (
+    extract_api_endpoint,
+    extract_frontend_route,
+    inspect_codebase,
+)
+from agents.runners.responsibility_runners import APIImplementationRunner, DBMigrationRunner
 
 
 # 테스트용 DevRunnerContext를 최소 StudyHub 저장소 구조와 함께 만든다.
@@ -45,6 +49,12 @@ def test_extract_frontend_route_ignores_api_paths():
     assert extract_frontend_route(body) == "/signup"
 
 
+def test_extract_api_endpoint_reads_method_and_path():
+    body = "회원가입 API는 `POST /api/members/signup`으로 제공한다."
+
+    assert extract_api_endpoint(body) == ("POST", "/api/members/signup")
+
+
 def test_inspect_codebase_reads_server_migrations(tmp_path):
     context = _make_context(tmp_path, "DDL 없음")
 
@@ -77,3 +87,15 @@ def test_db_migration_runner_applies_explicit_sql(tmp_path):
     assert migration.exists()
     assert "login_id" in migration.read_text(encoding="utf-8")
     assert context.repo.head.commit.message == "[테스트 기능] : DB migration 추가"
+
+
+def test_api_implementation_runner_creates_contract_draft(tmp_path):
+    context = _make_context(tmp_path, "API는 `POST /api/members/signup`으로 제공한다.")
+
+    result = APIImplementationRunner().run(context)
+
+    assert result.status == AgentStatus.NEEDS_HUMAN
+    contract = context.repo_path / "docs/api/harness-12-post-api-members-signup.md"
+    assert contract.exists()
+    assert "POST /api/members/signup" in contract.read_text(encoding="utf-8")
+    assert context.repo.head.commit.message == "[테스트 기능] : API contract 초안 추가"

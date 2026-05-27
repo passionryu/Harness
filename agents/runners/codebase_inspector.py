@@ -64,6 +64,18 @@ def extract_frontend_route(markdown: str) -> str | None:
     return None
 
 
+# 이슈 본문에서 HTTP method와 API path를 추출한다.
+def extract_api_endpoint(markdown: str) -> tuple[str, str] | None:
+    match = re.search(
+        r"\b(GET|POST|PUT|PATCH|DELETE)\s+`?(/api/[a-zA-Z0-9/_{}-]+)`?",
+        markdown,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return match.group(1).upper(), match.group(2)
+
+
 # Next.js app router 기준 route 경로를 page.tsx 파일 경로로 변환한다.
 def next_page_path(repo_path: Path, route: str) -> Path:
     normalized = route.strip("/")

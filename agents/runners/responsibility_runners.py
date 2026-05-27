@@ -6,6 +6,7 @@ from agents.base import AgentStatus, ArtifactSpec
 from agents.runners.base import DevRunnerContext, DevRunnerResult
 from agents.runners.codebase_inspector import (
     backend_test_commands,
+    extract_api_endpoint,
     extract_frontend_route,
     frontend_test_commands,
     inspect_codebase,
@@ -116,6 +117,65 @@ class APIImplementationRunner(ResponsibilityCapabilityRunner):
     name = "api_implementation_runner"
     responsibility = "API endpoint, request/response, application 연결 구현"
     supported_issue_types = {"beFeature", "fullstackFeature", "apiConnect"}
+
+    # 명시된 API endpoint를 기준으로 contract 문서를 생성하고 구현 경계를 기록한다.
+    def run(self, context: DevRunnerContext) -> DevRunnerResult:
+        endpoint = extract_api_endpoint(f"{context.title}\n{context.body}")
+        if endpoint is None:
+            return super().run(context)
+
+        method, path = endpoint
+        contract_path = _api_contract_path(context, method, path)
+        _write_text(contract_path, _api_contract_content(context, method, path))
+        relative = _relative(context, contract_path)
+        commit_hash = _stage_and_commit(
+            context,
+            [relative],
+            f"[{context.feature_name}] : API contract 초안 추가",
+        )
+        report = context.task_dir / f"{self.name}.md"
+        snapshot = inspect_codebase(context)
+        report.write_text(
+            "\n".join(
+                [
+                    f"# {self.name}",
+                    "",
+                    f"- branch: `{context.branch_name}`",
+                    f"- issue_type: `{context.issue_type}`",
+                    f"- responsibility: {self.responsibility}",
+                    f"- endpoint: `{method} {path}`",
+                    f"- contract: `{relative}`",
+                    f"- commit: `{commit_hash}`",
+                    "",
+                    *render_codebase_snapshot(snapshot),
+                    "## Capability",
+                    "",
+                    "- status: partial",
+                    "- 명시된 endpoint를 기준으로 API contract 초안을 생성합니다.",
+                    "- Controller, DTO, UseCase, Repository 구현은 아직 사람이 검토해야 합니다.",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return DevRunnerResult(
+            status=AgentStatus.NEEDS_HUMAN,
+            summary=f"{self.name}가 {method} {path} API contract 초안을 생성했습니다.",
+            commits=[f"1. {commit_hash} [{context.feature_name}] : API contract 초안 추가"],
+            progress=[
+                "- [x] API endpoint 추출",
+                "- [x] API contract 초안 생성",
+                "- [ ] Controller/DTO/UseCase 구현",
+            ],
+            verification=[
+                f"## {self.name}",
+                "",
+                "- status: needs_human",
+                f"- endpoint: `{method} {path}`",
+                "- reason: contract 이후 실제 API 구현 capability가 부족합니다.",
+            ],
+            artifacts=[ArtifactSpec(self.name, report)],
+            error=f"{self.name}: contract 이후 실제 API 구현 capability가 부족합니다. {report.name}을 확인하세요.",
+        )
 
 
 class FrontendImplementationRunner(ResponsibilityCapabilityRunner):
@@ -434,6 +494,51 @@ def _next_migration_path(context: DevRunnerContext) -> Path:
 def _migration_slug(value: str) -> str:
     slug = re.sub(r"[^0-9a-zA-Z가-힣]+", "_", value).strip("_")
     return slug or "harness_migration"
+
+
+# API contract 문서를 저장할 경로를 만든다.
+def _api_contract_path(context: DevRunnerContext, method: str, path: str) -> Path:
+    slug = re.sub(r"[^0-9a-zA-Z]+", "-", f"{method}-{path}").strip("-").lower()
+    return context.repo_path / "docs/api" / f"harness-{context.issue_number}-{slug}.md"
+
+
+# API contract 초안 내용을 생성한다.
+def _api_contract_content(context: DevRunnerContext, method: str, path: str) -> str:
+    return "\n".join(
+        [
+            f"# {context.feature_name} API Contract",
+            "",
+            "## Endpoint",
+            "",
+            f"- method/path: `{method} {path}`",
+            "- auth: 결정 필요",
+            "",
+            "## Request",
+            "",
+            "```json",
+            "{}",
+            "```",
+            "",
+            "## Response",
+            "",
+            "```json",
+            "{}",
+            "```",
+            "",
+            "## Error Policy",
+            "",
+            "- 사용자에게 반환되는 메시지는 한국어로 작성한다.",
+            "- 내부 구현 정보나 민감정보를 사용자 응답에 노출하지 않는다.",
+            "- 로그에는 who/what/requestData/reason 형식을 우선 사용한다.",
+            "",
+            "## Implementation Boundary",
+            "",
+            "- Controller는 얇게 유지한다.",
+            "- Request/Response DTO는 Controller 파일에서 분리한다.",
+            "- UseCase 흐름은 application service에서 읽히도록 유지한다.",
+            "- 실제 구현 전 이 contract를 사람 또는 Plan Agent가 보강해야 한다.",
+        ]
+    )
 
 
 # 이슈 타입에 맞는 테스트 명령 목록을 결정한다.
