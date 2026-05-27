@@ -1118,7 +1118,9 @@ class OrchestrationService:
         )
         next_command = (
             settings.fix_develop_command
-            if latest_run and latest_run.agent_name == "dev"
+            if latest_run
+            and latest_run.agent_name == "dev"
+            and latest_run.status == AgentStatus.FAILED.value
             else settings.status_command
         )
         next_heading = "### 다음 추천 명령" if next_command == settings.fix_develop_command else "### 다음 확인 명령"
