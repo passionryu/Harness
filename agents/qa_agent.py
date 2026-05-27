@@ -31,6 +31,15 @@ BE_HUMAN_QA_CHECKLIST = [
     "비밀번호가 평문이 아니라 해싱된 값으로 저장되는가",
 ]
 
+CONFIG_HUMAN_QA_CHECKLIST = [
+    "Spring Security 설정 테스트가 실제로 통과했는가",
+    "백엔드 health가 UP으로 반환되는가",
+    "Swagger UI에 접근 가능한가",
+    "인증 없이 허용해야 하는 API는 정상 접근 가능한가",
+    "보호된 API는 인증 없이 접근했을 때 401 Unauthorized를 반환하는가",
+    "Redis 컨테이너가 실행 중이며 health에 반영되는가",
+]
+
 
 CHECK_NAME_KO = {
     "target repository exists": "대상 저장소 존재",
@@ -39,6 +48,12 @@ CHECK_NAME_KO = {
     "test:signup passes": "test:signup 통과",
     "StudyHub API server is reachable": "StudyHub API 서버 응답",
     "backend happy smoke test passes": "백엔드 해피케이스 smoke test 통과",
+    "config security test passes": "Config Security 설정 테스트 통과",
+    "config backend health is UP": "Config 백엔드 health UP",
+    "config swagger is reachable": "Config Swagger 접근 가능",
+    "config signup endpoint is permitted": "Config 회원가입 API 인증 없이 접근 가능",
+    "config protected api returns 401": "Config 보호 API 미인증 401 반환",
+    "config redis container is running": "Config Redis 컨테이너 실행",
 }
 
 
@@ -59,6 +74,16 @@ class ApiSmokeResult:
     status_code: int | None
     curl_exit_code: int
     passed: bool
+
+
+@dataclass(frozen=True)
+class ConfigQaCheckResult:
+    name: str
+    passed: bool
+    target: str
+    expected: str
+    actual: str
+    detail: str = ""
 
 
 def _translate_check_name(name: str) -> str:
@@ -188,6 +213,10 @@ def _api_url(path: str) -> str:
 
 def _health_url() -> str:
     return _api_url("/actuator/health")
+
+
+def _is_success_status(status_code: int | None) -> bool:
+    return status_code is not None and 200 <= status_code < 300
 
 
 def _is_api_alive() -> bool:
@@ -332,6 +361,158 @@ def _format_api_result(result: ApiSmokeResult) -> list[str]:
     ]
 
 
+def _is_security_jwt_redis_config(title: str, body: str) -> bool:
+    haystack = f"{title}\n{body}".lower()
+    has_security = "security" in haystack or "spring security" in haystack or "보안" in haystack
+    has_token = "jwt" in haystack or "token" in haystack or "토큰" in haystack
+    has_redis = "redis" in haystack
+    return has_security and has_token and has_redis
+
+
+def _run_config_security_test(repo_path: Path, timeout_seconds: int) -> tuple[ConfigQaCheckResult, list[str]]:
+    server_root = repo_path / "apps/server"
+    command = ["./gradlew", ":modules:bootstrap:studyhub:test", "--tests", "*SecurityConfigurationTest"]
+    if not server_root.exists():
+        result = ConfigQaCheckResult(
+            name="Security 설정 테스트",
+            passed=False,
+            target="apps/server",
+            expected="Gradle 서버 프로젝트 존재",
+            actual="apps/server 디렉토리 없음",
+        )
+        return result, []
+
+    exit_code, stdout, stderr = _run_command(command, server_root, timeout_seconds)
+    result = ConfigQaCheckResult(
+        name="Security 설정 테스트",
+        passed=exit_code == 0,
+        target=" ".join(command),
+        expected="exit_code=0",
+        actual=f"exit_code={exit_code}",
+        detail=(stdout[-1500:] or stderr[-1500:]).strip(),
+    )
+    command_section = [
+        "## Command: ./gradlew :modules:bootstrap:studyhub:test --tests '*SecurityConfigurationTest'",
+        "",
+        f"- exit_code: {exit_code}",
+        "",
+        "### stdout",
+        "```text",
+        stdout.strip() or "(비어 있음)",
+        "```",
+        "",
+        "### stderr",
+        "```text",
+        stderr.strip() or "(비어 있음)",
+        "```",
+    ]
+    return result, command_section
+
+
+def _verify_config_backend_health(timeout_seconds: int) -> ConfigQaCheckResult:
+    exit_code, response_body, stderr, status_code = _curl_json("GET", _health_url(), None, min(timeout_seconds, 10))
+    passed = exit_code == 0 and status_code == 200 and '"UP"' in response_body
+    return ConfigQaCheckResult(
+        name="백엔드 Health",
+        passed=passed,
+        target=f"GET {_health_url()}",
+        expected='http_status=200, response.status="UP"',
+        actual=f"http_status={status_code}, response={response_body or stderr or '(응답 없음)'}",
+    )
+
+
+def _verify_config_swagger(timeout_seconds: int) -> ConfigQaCheckResult:
+    exit_code, response_body, stderr, status_code = _curl_json(
+        "GET",
+        settings.studyhub_swagger_url,
+        None,
+        min(timeout_seconds, 10),
+    )
+    return ConfigQaCheckResult(
+        name="Swagger 접근",
+        passed=exit_code == 0 and status_code is not None and 200 <= status_code < 400,
+        target=f"GET {settings.studyhub_swagger_url}",
+        expected="http_status=2xx 또는 3xx",
+        actual=f"http_status={status_code}, response={response_body[:300] or stderr or '(응답 없음)'}",
+    )
+
+
+def _verify_config_signup_endpoint(timeout_seconds: int) -> ConfigQaCheckResult:
+    happy_case, _ = _signup_cases()
+    result = _run_api_case(happy_case, timeout_seconds)
+    return ConfigQaCheckResult(
+        name="회원가입 API 인증 예외",
+        passed=result.curl_exit_code == 0 and result.status_code not in {401, 403},
+        target=f"POST {_api_url(happy_case.path)}",
+        expected="401/403이 아닌 응답",
+        actual=f"http_status={result.status_code}, response={result.response_json}",
+    )
+
+
+def _verify_config_protected_api(timeout_seconds: int) -> ConfigQaCheckResult:
+    path = "/api/protected-resource"
+    exit_code, response_body, stderr, status_code = _curl_json("GET", _api_url(path), None, min(timeout_seconds, 10))
+    return ConfigQaCheckResult(
+        name="보호 API 미인증 차단",
+        passed=exit_code == 0 and status_code == 401,
+        target=f"GET {_api_url(path)}",
+        expected="http_status=401",
+        actual=f"http_status={status_code}, response={response_body or stderr or '(응답 없음)'}",
+    )
+
+
+def _verify_config_redis_container(repo_path: Path, timeout_seconds: int) -> ConfigQaCheckResult:
+    server_root = repo_path / "apps/server"
+    compose_file = server_root / "docker-compose.infra.local.yml"
+    if not compose_file.exists():
+        return ConfigQaCheckResult(
+            name="Redis 컨테이너",
+            passed=False,
+            target=str(compose_file),
+            expected="docker-compose.infra.local.yml 존재",
+            actual="파일 없음",
+        )
+
+    exit_code, stdout, stderr = _run_command(
+        ["docker", "compose", "-f", "docker-compose.infra.local.yml", "ps", "redis", "--status", "running"],
+        server_root,
+        min(timeout_seconds, 15),
+    )
+    output = stdout.strip() or stderr.strip()
+    return ConfigQaCheckResult(
+        name="Redis 컨테이너",
+        passed=exit_code == 0 and "redis" in output.lower(),
+        target="docker compose -f docker-compose.infra.local.yml ps redis --status running",
+        expected="redis container running",
+        actual=output or f"exit_code={exit_code}",
+    )
+
+
+def _format_config_qa_results(results: list[ConfigQaCheckResult]) -> list[str]:
+    lines = ["## Config Runtime QA 결과", ""]
+    for result in results:
+        lines.extend(
+            [
+                f"### {result.name}",
+                f"- 의도한 대로 성공했는지: {'Y' if result.passed else 'N'}",
+                f"- 대상: `{result.target}`",
+                f"- 기대값: {result.expected}",
+                f"- 실제값: {result.actual}",
+            ]
+        )
+        if result.detail:
+            lines.extend(
+                [
+                    "- 상세:",
+                    "```text",
+                    result.detail,
+                    "```",
+                ]
+            )
+        lines.append("")
+    return lines
+
+
 class QAAgent:
     name = "qa"
 
@@ -455,12 +636,78 @@ class QAAgent:
             finally:
                 _stop_process(process)
 
+        if issue_type == "config":
+            config_results: list[ConfigQaCheckResult] = []
+            security_config = _is_security_jwt_redis_config(input_data.title, input_data.body)
+            if security_config:
+                security_test, command_section = _run_config_security_test(repo_path, input_data.timeout_seconds)
+                config_results.append(security_test)
+                command_sections.extend(command_section)
+
+                process: subprocess.Popen[str] | None = None
+                try:
+                    process, server_status = _start_studyhub_api_if_needed(
+                        repo_path,
+                        input_data.timeout_seconds,
+                    )
+                    checks.append(("StudyHub API server is reachable", _is_api_alive(), server_status))
+                    if _is_api_alive():
+                        config_results.extend(
+                            [
+                                _verify_config_backend_health(input_data.timeout_seconds),
+                                _verify_config_swagger(input_data.timeout_seconds),
+                                _verify_config_signup_endpoint(input_data.timeout_seconds),
+                                _verify_config_protected_api(input_data.timeout_seconds),
+                                _verify_config_redis_container(repo_path, input_data.timeout_seconds),
+                            ]
+                        )
+                    else:
+                        config_results.append(
+                            ConfigQaCheckResult(
+                                name="백엔드 런타임",
+                                passed=False,
+                                target=settings.studyhub_api_base_url,
+                                expected="StudyHub API 서버 응답",
+                                actual=server_status,
+                            )
+                        )
+                finally:
+                    _stop_process(process)
+            else:
+                config_results.append(
+                    ConfigQaCheckResult(
+                        name="Config QA 지원 범위",
+                        passed=False,
+                        target=issue_type,
+                        expected="지원되는 config 패턴(Security/JWT/Redis 등)",
+                        actual="현재 config QA Runner가 이 설정 패턴을 식별하지 못했습니다.",
+                    )
+                )
+
+            for result in config_results:
+                check_name = {
+                    "Security 설정 테스트": "config security test passes",
+                    "백엔드 Health": "config backend health is UP",
+                    "Swagger 접근": "config swagger is reachable",
+                    "회원가입 API 인증 예외": "config signup endpoint is permitted",
+                    "보호 API 미인증 차단": "config protected api returns 401",
+                    "Redis 컨테이너": "config redis container is running",
+                }.get(result.name, f"config runtime check: {result.name}")
+                checks.append((check_name, result.passed, result.actual))
+
+            api_result_sections.extend(_format_config_qa_results(config_results))
+
         passed = all(passed for _, passed, _ in checks)
         checklist_lines = [
             f"- [{'x' if passed else ' '}] {_translate_check_name(name)} ({detail})"
             for name, passed, detail in checks
         ]
-        checklist_source = BE_HUMAN_QA_CHECKLIST if issue_type in {"beFeature", "apiConnect"} else FE_HUMAN_QA_CHECKLIST
+        if issue_type == "config":
+            checklist_source = CONFIG_HUMAN_QA_CHECKLIST
+        elif issue_type in {"beFeature", "apiConnect"}:
+            checklist_source = BE_HUMAN_QA_CHECKLIST
+        else:
+            checklist_source = FE_HUMAN_QA_CHECKLIST
         human_qa_lines = [f"- [ ] {item}" for item in checklist_source]
         qa_request = _extract_section(input_data.body, "Human QA Request")
 

@@ -90,6 +90,114 @@ def test_be_qa_agent_reports_curl_smoke_details_and_human_checklist(tmp_path, mo
     assert "Swagger UI에서 회원가입 API의 summary와 description이 한국어로 보이는가" in content
 
 
+def test_config_qa_agent_runs_security_runtime_checks(tmp_path, monkeypatch):
+    target_repo = tmp_path / "studyHub"
+    target_repo.mkdir()
+    repo = Repo.init(target_repo)
+    (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
+    (target_repo / "apps/server").mkdir(parents=True)
+    (target_repo / "apps/server/docker-compose.infra.local.yml").write_text(
+        "services:\n  redis:\n    image: redis:7-alpine\n",
+        encoding="utf-8",
+    )
+    repo.index.add(["README.md", "apps/server/docker-compose.infra.local.yml"])
+    repo.index.commit("Initial commit")
+    repo.git.checkout("-b", "config-5")
+
+    artifact_root = tmp_path / "artifacts"
+    task_id = "task-config"
+    for path in [
+        artifact_root / task_id / "plans" / "architecture.md",
+        artifact_root / task_id / "plans" / "edge-case-checklist.md",
+        artifact_root / task_id / "dev" / "commit-plan.md",
+        artifact_root / task_id / "dev" / "dev-status.md",
+        artifact_root / task_id / "dev" / "implementation.patch",
+        artifact_root / task_id / "dev" / "test-report.md",
+    ]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("ok\n", encoding="utf-8")
+
+    monkeypatch.setattr(qa_agent.settings, "target_repo_path", target_repo)
+    monkeypatch.setattr(qa_agent.settings, "studyhub_api_base_url", "http://localhost:3001")
+    monkeypatch.setattr(
+        qa_agent.settings,
+        "studyhub_swagger_url",
+        "http://localhost:3001/swagger-ui/index.html",
+    )
+    monkeypatch.setattr(
+        qa_agent,
+        "_start_studyhub_api_if_needed",
+        lambda repo_path, timeout_seconds: (None, "테스트 서버 사용"),
+    )
+    monkeypatch.setattr(qa_agent, "_is_api_alive", lambda: True)
+
+    def fake_run_command(command, cwd, timeout_seconds):
+        command_text = " ".join(command)
+        if "SecurityConfigurationTest" in command_text:
+            return 0, "BUILD SUCCESSFUL", ""
+        if command[:3] == ["docker", "compose", "-f"]:
+            return 0, "NAME             STATUS\nserver-redis-1   running", ""
+        return 0, "", ""
+
+    def fake_curl_json(method, url, payload, timeout_seconds):
+        if url.endswith("/actuator/health"):
+            return 0, '{"status":"UP"}', "", 200
+        if url.endswith("/swagger-ui/index.html"):
+            return 0, "<html>swagger</html>", "", 200
+        if url.endswith("/api/protected-resource"):
+            return 0, "", "", 401
+        return 0, '{"message":"ok"}', "", 200
+
+    def fake_run_api_case(case, timeout_seconds):
+        return qa_agent.ApiSmokeResult(
+            name=case.name,
+            path=case.path,
+            request_json=case.request_json,
+            response_json='{"memberId":1}',
+            status_code=201,
+            curl_exit_code=0,
+            passed=True,
+        )
+
+    monkeypatch.setattr(qa_agent, "_run_command", fake_run_command)
+    monkeypatch.setattr(qa_agent, "_curl_json", fake_curl_json)
+    monkeypatch.setattr(qa_agent, "_run_api_case", fake_run_api_case)
+
+    result = qa_agent.QAAgent().run(
+        AgentInput(
+            task_id=task_id,
+            title="Spring Security + JWT + Redis 인증 기반 설정 추가",
+            body="\n".join(
+                [
+                    "Spring Security, JWT, Redis 설정을 추가한다.",
+                    "",
+                    "## Harness Metadata",
+                    "- issue_number: 5",
+                    "- labels: type: config",
+                ]
+            ),
+            state="In Progress",
+            artifacts_root=artifact_root,
+            timeout_seconds=30,
+            retry_count=0,
+            retry_limit=2,
+        )
+    )
+
+    assert result.status == AgentStatus.SUCCESS
+    report = artifact_root / task_id / "qa" / "qa-report.md"
+    content = report.read_text(encoding="utf-8")
+    assert "## Config Runtime QA 결과" in content
+    assert "Security 설정 테스트" in content
+    assert "백엔드 Health" in content
+    assert "Swagger 접근" in content
+    assert "회원가입 API 인증 예외" in content
+    assert "보호 API 미인증 차단" in content
+    assert "Redis 컨테이너" in content
+    assert "Spring Security 설정 테스트가 실제로 통과했는가" in content
+    assert "이 이슈 타입에는 실행된 명령이 없습니다." not in content
+
+
 def test_qa_summary_keeps_api_smoke_code_fences_balanced(tmp_path, monkeypatch):
     task_id = "task-1"
     report = tmp_path / "artifacts" / task_id / "qa" / "qa-report.md"
