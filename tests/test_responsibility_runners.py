@@ -13,6 +13,7 @@ from agents.runners.codebase_inspector import (
 from agents.runners.responsibility_runners import (
     APIImplementationRunner,
     DBMigrationRunner,
+    DDDModelingRunner,
     RefactoringRunner,
 )
 
@@ -103,6 +104,29 @@ def test_api_implementation_runner_creates_contract_draft(tmp_path):
     assert contract.exists()
     assert "POST /api/members/signup" in contract.read_text(encoding="utf-8")
     assert context.repo.head.commit.message == "[테스트 기능] : API contract 초안 추가"
+
+
+def test_ddd_modeling_runner_creates_usecase_scaffold(tmp_path):
+    context = _make_context(tmp_path, "회원가입 API는 `POST /api/members/signup`으로 제공한다.")
+
+    result = DDDModelingRunner().run(context)
+
+    assert result.status == AgentStatus.NEEDS_HUMAN
+    base_dir = (
+        context.repo_path
+        / "apps/server/modules/application/src/main/kotlin/com/studyhub/server/application/member"
+    )
+    command = base_dir / "RegisterMemberCommand.kt"
+    service = base_dir / "RegisterMemberService.kt"
+    policy_checker = base_dir / "MemberPolicyChecker.kt"
+    assert command.exists()
+    assert (base_dir / "RegisterMemberResult.kt").exists()
+    assert service.exists()
+    assert policy_checker.exists()
+    assert "fun registerMember(command: RegisterMemberCommand)" in service.read_text(encoding="utf-8")
+    assert "memberPolicyChecker.validateMemberCanRegister(command)" in service.read_text(encoding="utf-8")
+    assert "// Member 유스케이스를 수행할 수 있는 도메인 정책 상태인지 검증한다." in policy_checker.read_text(encoding="utf-8")
+    assert context.repo.head.commit.message == "[테스트 기능] : DDD usecase scaffold 추가"
 
 
 def test_refactoring_runner_splits_controller_data_classes(tmp_path):

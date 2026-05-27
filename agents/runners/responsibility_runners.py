@@ -23,6 +23,23 @@ class RefactorSplitResult:
         self.changed_paths = changed_paths
 
 
+class DDDScaffoldSpec:
+    # DDD 유스케이스 scaffold 생성에 필요한 이름과 경로 정보를 보관한다.
+    def __init__(
+        self,
+        domain: str,
+        domain_class: str,
+        usecase_name: str,
+        method_name: str,
+        policy_method_name: str,
+    ) -> None:
+        self.domain = domain
+        self.domain_class = domain_class
+        self.usecase_name = usecase_name
+        self.method_name = method_name
+        self.policy_method_name = policy_method_name
+
+
 class ResponsibilityCapabilityRunner:
     name = "responsibility_capability_runner"
     responsibility = "정의되지 않은 책임"
@@ -62,6 +79,72 @@ class DDDModelingRunner(ResponsibilityCapabilityRunner):
     name = "ddd_modeling_runner"
     responsibility = "도메인 모델, 정책, 유스케이스 흐름 구현"
     supported_issue_types = {"beFeature", "fullstackFeature", "bugfix", "hotfix"}
+
+    # 명시된 API 요구사항을 기준으로 DDD application 유스케이스 scaffold를 생성한다.
+    def run(self, context: DevRunnerContext) -> DevRunnerResult:
+        spec = _ddd_model_from_context(context)
+        if spec is None:
+            return super().run(context)
+
+        changed_paths = _write_ddd_scaffold(context, spec)
+        commit_hash = _stage_and_commit(
+            context,
+            changed_paths,
+            f"[{context.feature_name}] : DDD usecase scaffold 추가",
+        )
+        report = context.task_dir / f"{self.name}.md"
+        snapshot = inspect_codebase(context)
+        report.write_text(
+            "\n".join(
+                [
+                    f"# {self.name}",
+                    "",
+                    f"- branch: `{context.branch_name}`",
+                    f"- issue_type: `{context.issue_type}`",
+                    f"- responsibility: {self.responsibility}",
+                    f"- domain: `{spec.domain}`",
+                    f"- usecase: `{spec.usecase_name}`",
+                    f"- method: `{spec.method_name}`",
+                    f"- commit: `{commit_hash}`",
+                    f"- changed_paths: `{', '.join(changed_paths)}`",
+                    "",
+                    *render_codebase_snapshot(snapshot),
+                    "## Applied Skill",
+                    "",
+                    "- skill: `usecase-orchestration-style`",
+                    "- 메인 서비스는 유스케이스 orchestration 흐름이 보이도록 생성합니다.",
+                    "- 정책 검증 책임은 별도 책임 객체로 분리합니다.",
+                    "- 책임 객체의 public method에는 한국어 한 줄 주석을 남깁니다.",
+                    "",
+                    "## Capability",
+                    "",
+                    "- status: partial",
+                    "- DDD application layer의 Command, Result, Service, PolicyChecker scaffold를 생성합니다.",
+                    "- 실제 조회, 저장, 외부 연동, 상세 정책은 사람이 확정한 뒤 구현해야 합니다.",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return DevRunnerResult(
+            status=AgentStatus.NEEDS_HUMAN,
+            summary=f"{self.name}가 {spec.usecase_name} 유스케이스 scaffold를 생성했습니다.",
+            commits=[f"1. {commit_hash} [{context.feature_name}] : DDD usecase scaffold 추가"],
+            progress=[
+                "- [x] API 요구사항에서 도메인과 유스케이스 이름 추출",
+                "- [x] Command/Result/Service/PolicyChecker scaffold 생성",
+                "- [ ] 상세 도메인 정책과 저장소 연결 구현",
+            ],
+            verification=[
+                f"## {self.name}",
+                "",
+                "- status: needs_human",
+                f"- domain: `{spec.domain}`",
+                f"- usecase: `{spec.usecase_name}`",
+                "- reason: scaffold 이후 실제 도메인 정책과 저장소 연결은 사람 검토가 필요합니다.",
+            ],
+            artifacts=[ArtifactSpec(self.name, report)],
+            error=f"{self.name}: scaffold 이후 실제 도메인 정책과 저장소 연결 capability가 부족합니다. {report.name}을 확인하세요.",
+        )
 
 
 class DBMigrationRunner(ResponsibilityCapabilityRunner):
@@ -529,6 +612,182 @@ def _frontend_page_scaffold(context: DevRunnerContext, route: str) -> str:
             "      </section>",
             "    </main>",
             "  )",
+            "}",
+            "",
+        ]
+    )
+
+
+# API 요구사항에서 DDD scaffold 생성에 필요한 도메인과 유스케이스 이름을 추론한다.
+def _ddd_model_from_context(context: DevRunnerContext) -> DDDScaffoldSpec | None:
+    endpoint = extract_api_endpoint(f"{context.title}\n{context.body}")
+    if endpoint is None:
+        return None
+
+    method, path = endpoint
+    segments = [segment for segment in path.split("/") if segment and segment != "api"]
+    if not segments:
+        return None
+
+    domain = _singular_domain(segments[0])
+    domain_class = _pascal_case(domain)
+    operation = _operation_name(method, segments, domain)
+    usecase_name = f"{operation}{domain_class}"
+    return DDDScaffoldSpec(
+        domain=domain,
+        domain_class=domain_class,
+        usecase_name=usecase_name,
+        method_name=_camel_case(usecase_name),
+        policy_method_name=f"validate{domain_class}Can{operation}",
+    )
+
+
+# 복수형 path segment를 StudyHub 도메인 단수 표현으로 변환한다.
+def _singular_domain(value: str) -> str:
+    aliases = {
+        "members": "member",
+        "studies": "study",
+        "comments": "comment",
+        "messages": "message",
+        "notifications": "notification",
+        "reviews": "review",
+        "notes": "note",
+    }
+    if value in aliases:
+        return aliases[value]
+    if value.endswith("ies") and len(value) > 3:
+        return f"{value[:-3]}y"
+    if value.endswith("s") and len(value) > 1:
+        return value[:-1]
+    return value
+
+
+# API method와 path를 유스케이스 동사로 변환한다.
+def _operation_name(method: str, segments: list[str], domain: str) -> str:
+    action_segment = segments[-1]
+    action_aliases = {
+        "signup": "Register",
+        "login": "Login",
+        "logout": "Logout",
+        "invite": "Invite",
+        "join": "Join",
+        "leave": "Leave",
+        "publish": "Publish",
+        "cancel": "Cancel",
+        "approve": "Approve",
+        "reject": "Reject",
+    }
+    if action_segment in action_aliases:
+        return action_aliases[action_segment]
+
+    domain_plural = f"{domain}s"
+    if action_segment in {domain, domain_plural}:
+        method_aliases = {
+            "POST": "Create",
+            "GET": "Read",
+            "PUT": "Update",
+            "PATCH": "Update",
+            "DELETE": "Delete",
+        }
+        return method_aliases.get(method.upper(), "Change")
+
+    return _pascal_case(action_segment)
+
+
+# kebab, snake, path 문자열을 PascalCase로 변환한다.
+def _pascal_case(value: str) -> str:
+    words = [word for word in re.split(r"[^0-9a-zA-Z가-힣]+", value) if word]
+    return "".join(word[:1].upper() + word[1:] for word in words) or "Usecase"
+
+
+# PascalCase 이름을 camelCase 메서드 이름으로 변환한다.
+def _camel_case(value: str) -> str:
+    if not value:
+        return value
+    return value[:1].lower() + value[1:]
+
+
+# DDD application layer scaffold 파일들을 생성하고 상대 경로 목록을 반환한다.
+def _write_ddd_scaffold(context: DevRunnerContext, spec: DDDScaffoldSpec) -> list[str]:
+    base_dir = (
+        context.repo_path
+        / "apps/server/modules/application/src/main/kotlin/com/studyhub/server/application"
+        / spec.domain
+    )
+    files = {
+        base_dir / f"{spec.usecase_name}Command.kt": _ddd_command_content(spec),
+        base_dir / f"{spec.usecase_name}Result.kt": _ddd_result_content(spec),
+        base_dir / f"{spec.usecase_name}Service.kt": _ddd_service_content(spec),
+        base_dir / f"{spec.domain_class}PolicyChecker.kt": _ddd_policy_checker_content(spec),
+    }
+    changed_paths = []
+    for path, content in files.items():
+        if path.exists():
+            continue
+        _write_text(path, content)
+        changed_paths.append(_relative(context, path))
+    return changed_paths
+
+
+# DDD Command data class의 Kotlin 소스 내용을 생성한다.
+def _ddd_command_content(spec: DDDScaffoldSpec) -> str:
+    return "\n".join(
+        [
+            f"package com.studyhub.server.application.{spec.domain}",
+            "",
+            f"data class {spec.usecase_name}Command(",
+            "    val requestedBy: String? = null,",
+            ")",
+            "",
+        ]
+    )
+
+
+# DDD Result data class의 Kotlin 소스 내용을 생성한다.
+def _ddd_result_content(spec: DDDScaffoldSpec) -> str:
+    return "\n".join(
+        [
+            f"package com.studyhub.server.application.{spec.domain}",
+            "",
+            f"data class {spec.usecase_name}Result(",
+            "    val id: Long? = null,",
+            ")",
+            "",
+        ]
+    )
+
+
+# usecase-orchestration-style을 반영한 application service 내용을 생성한다.
+def _ddd_service_content(spec: DDDScaffoldSpec) -> str:
+    return "\n".join(
+        [
+            f"package com.studyhub.server.application.{spec.domain}",
+            "",
+            f"class {spec.usecase_name}Service(",
+            f"    private val {spec.domain}PolicyChecker: {spec.domain_class}PolicyChecker,",
+            ") {",
+            f"    fun {spec.method_name}(command: {spec.usecase_name}Command): {spec.usecase_name}Result {{",
+            f"        {spec.domain}PolicyChecker.{spec.policy_method_name}(command)",
+            "",
+            f'        TODO("{spec.usecase_name} 유스케이스의 조회, 수행, 기록, 반환 흐름을 구현해야 합니다.")',
+            "    }",
+            "}",
+            "",
+        ]
+    )
+
+
+# 책임 객체 public method에 한국어 한 줄 주석을 포함한 정책 검증 scaffold를 생성한다.
+def _ddd_policy_checker_content(spec: DDDScaffoldSpec) -> str:
+    return "\n".join(
+        [
+            f"package com.studyhub.server.application.{spec.domain}",
+            "",
+            f"class {spec.domain_class}PolicyChecker {{",
+            f"    // {spec.domain_class} 유스케이스를 수행할 수 있는 도메인 정책 상태인지 검증한다.",
+            f"    fun {spec.policy_method_name}(command: {spec.usecase_name}Command) {{",
+            '        TODO("도메인 정책 검증을 구현해야 합니다.")',
+            "    }",
             "}",
             "",
         ]

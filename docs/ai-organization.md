@@ -30,6 +30,7 @@
 현재 구현된 1차 capability:
 
 - 모든 Development Runner는 코드베이스 스냅샷을 읽고 artifact에 남긴다.
+- DDD Modeling Runner는 명시된 `METHOD /api/...` endpoint가 있으면 `usecase-orchestration-style`을 참고해 application layer의 Command, Result, Service, PolicyChecker scaffold를 생성할 수 있다.
 - Frontend Implementation Runner는 명시된 화면 route가 있으면 Next.js page scaffold를 생성할 수 있다.
 - DB Migration Runner는 명시된 `sql` code block이 있으면 Flyway migration 파일을 생성할 수 있다.
 - API Implementation Runner는 명시된 `METHOD /api/...` endpoint가 있으면 API contract 초안을 생성할 수 있다.
@@ -38,7 +39,7 @@
 
 아직 구현되지 않은 부분:
 
-- 도메인 모델과 application service의 범용 자동 구현
+- 실제 도메인 정책, 저장소 연결, 상태 변경까지 포함한 완전한 application service 구현
 - Controller, DTO, Repository adapter의 범용 자동 구현
 - 기존 화면에 자연스럽게 UI를 삽입하는 범용 자동 구현
 - 복잡한 FE/BE contract mismatch 자동 수정
