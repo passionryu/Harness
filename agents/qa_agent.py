@@ -129,10 +129,12 @@ def _extract_issue_type(markdown: str) -> str:
     return "미지정"
 
 
+# 이슈 타입에 맞는 QA 대상 브랜치 prefix를 결정한다.
 def _branch_prefix(issue_type: str) -> str:
     return {
         "beFeature": "feature(BE)",
         "feFeature": "feature(FE)",
+        "fullstackFeature": "feature(FS)",
         "apiConnect": "api-connect",
         "bugfix": "bugfix",
         "hotfix": "hotfix",
@@ -516,6 +518,7 @@ def _format_config_qa_results(results: list[ConfigQaCheckResult]) -> list[str]:
 class QAAgent:
     name = "qa"
 
+    # 이슈 타입에 맞는 System QA 검증을 실행하고 QA 산출물을 생성한다.
     def run(self, input_data: AgentInput) -> AgentResult:
         task_dir = input_data.artifacts_root / input_data.task_id / "qa"
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -597,7 +600,7 @@ class QAAgent:
                     ]
                 )
 
-        if issue_type in {"beFeature", "apiConnect"}:
+        if issue_type in {"beFeature", "apiConnect", "fullstackFeature"}:
             process: subprocess.Popen[str] | None = None
             try:
                 process, server_status = _start_studyhub_api_if_needed(
@@ -704,7 +707,7 @@ class QAAgent:
         ]
         if issue_type == "config":
             checklist_source = CONFIG_HUMAN_QA_CHECKLIST
-        elif issue_type in {"beFeature", "apiConnect"}:
+        elif issue_type in {"beFeature", "apiConnect", "fullstackFeature"}:
             checklist_source = BE_HUMAN_QA_CHECKLIST
         else:
             checklist_source = FE_HUMAN_QA_CHECKLIST

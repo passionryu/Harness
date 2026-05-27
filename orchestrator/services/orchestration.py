@@ -1226,10 +1226,12 @@ class OrchestrationService:
                     return label.removeprefix("type: ").strip()
         return "unspecified"
 
+    # GitHub 댓글과 알림에 표시할 이슈 타입명을 사람이 읽기 좋게 변환한다.
     def _issue_type_label(self, issue_type: str) -> str:
         return {
             "beFeature": "BE feature",
             "feFeature": "FE feature",
+            "fullstackFeature": "Full Stack feature",
             "apiConnect": "API connect",
             "bugfix": "bugfix",
             "hotfix": "hotfix",
@@ -1245,12 +1247,14 @@ class OrchestrationService:
                 return line.removeprefix("- issue_number:").strip()
         return "unknown"
 
+    # 작업의 이슈 타입과 번호를 기준으로 표준 브랜치명을 만든다.
     def _branch_name_for_task(self, task: Task) -> str:
         issue_type = self._extract_issue_type(task.body)
         issue_number = self._extract_issue_number(task.body)
         prefix = {
             "beFeature": "feature(BE)",
             "feFeature": "feature(FE)",
+            "fullstackFeature": "feature(FS)",
             "apiConnect": "api-connect",
             "bugfix": "bugfix",
             "hotfix": "hotfix",
@@ -1575,6 +1579,7 @@ class OrchestrationService:
             ]
         )
 
+    # Human QA 담당자가 확인할 수 있는 댓글과 외부 알림 메시지를 만든다.
     def _build_human_qa_message(self, task: Task, rerun: bool, github_comment: bool) -> str:
         title_prefix = "♻️ 🧑‍💻 Human QA Re-QA 요청" if rerun else "🧑‍💻 Human QA 요청"
         title = f"{title_prefix}: {task.title}"
@@ -1596,7 +1601,7 @@ class OrchestrationService:
                 "API 확인 URL:",
                 settings.studyhub_api_base_url,
             ]
-            if issue_type in {"beFeature", "apiConnect"}
+            if issue_type in {"beFeature", "apiConnect", "fullstackFeature"}
             else [
                 "화면 확인 URL:",
                 "http://localhost:3000/signup",

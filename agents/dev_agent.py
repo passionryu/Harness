@@ -7,6 +7,7 @@ from git import Repo
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
 from agents.runners.base import DevRunner, DevRunnerContext, DevRunnerResult
 from agents.runners.docs_runner import DocsRunner
+from agents.runners.fullstack_runner import FullstackRunner
 from agents.runners.infra_runner import InfraRunner
 from agents.runners.kotlin_spring_runner import KotlinSpringRunner
 from agents.runners.nextjs_runner import NextJsRunner
@@ -54,10 +55,12 @@ def _is_refactor_mode(markdown: str) -> bool:
     return bool(_extract_refactor_request(markdown))
 
 
+# 이슈 타입에 맞는 개발 브랜치 prefix를 결정한다.
 def _branch_prefix(issue_type: str) -> str:
     return {
         "beFeature": "feature(BE)",
         "feFeature": "feature(FE)",
+        "fullstackFeature": "feature(FS)",
         "apiConnect": "api-connect",
         "bugfix": "bugfix",
         "hotfix": "hotfix",
@@ -77,6 +80,7 @@ def _feature_name(title: str) -> str:
     return cleaned or title.strip() or "작업"
 
 
+# 이슈 타입별로 커밋 단위와 구현 단계를 정의한다.
 def _commit_units(issue_type: str) -> list[tuple[str, str]]:
     if issue_type == "feFeature":
         return [
@@ -99,6 +103,14 @@ def _commit_units(issue_type: str) -> list[tuple[str, str]]:
             ("테스트 추가", "contract와 실패 케이스 테스트 추가"),
             ("검증 정리", "FE/BE smoke test 검증"),
         ]
+    if issue_type == "fullstackFeature":
+        return [
+            ("사용자 흐름/API contract 정리", "화면 UX와 request/response schema 확정"),
+            ("백엔드 구현", "도메인, usecase, endpoint, persistence 구현"),
+            ("프론트엔드 구현", "화면, 상태, 검증 UI 구현"),
+            ("연동 구현", "FE API client와 submit 흐름 연결"),
+            ("통합 검증", "API 호출과 FE/BE smoke test 검증"),
+        ]
     if issue_type in {"bugfix", "hotfix"}:
         return [
             ("재현 테스트 추가", "버그 재현 또는 회귀 테스트 추가"),
@@ -112,8 +124,9 @@ def _commit_units(issue_type: str) -> list[tuple[str, str]]:
     ]
 
 
+# 백엔드 구현 규칙을 반드시 적용해야 하는 이슈 타입인지 판단한다.
 def _requires_backend_style(issue_type: str) -> bool:
-    return issue_type in {"beFeature", "apiConnect", "bugfix", "hotfix"}
+    return issue_type in {"beFeature", "apiConnect", "fullstackFeature", "bugfix", "hotfix"}
 
 
 def _backend_style_skill_path() -> Path:
@@ -144,8 +157,10 @@ def _backend_style_lines(issue_type: str) -> list[str]:
     ]
 
 
+# Dev Agent가 선택할 수 있는 러너 목록을 우선순위대로 반환한다.
 def _dev_runners() -> list[DevRunner]:
     return [
+        FullstackRunner(),
         NextJsRunner(),
         KotlinSpringRunner(),
         DocsRunner(),
@@ -153,9 +168,10 @@ def _dev_runners() -> list[DevRunner]:
     ]
 
 
+# 이슈 컨텍스트에 맞는 러너를 선택하고 조합 실행 여부를 결정한다.
 def _select_runners(context: DevRunnerContext) -> list[DevRunner]:
     matched = [runner for runner in _dev_runners() if runner.can_handle(context)]
-    if context.issue_type == "apiConnect":
+    if context.issue_type in {"apiConnect", "fullstackFeature"}:
         return matched
     return matched[:1]
 

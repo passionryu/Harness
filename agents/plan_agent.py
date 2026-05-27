@@ -51,6 +51,7 @@ def _extract_issue_type(markdown: str) -> str:
     return "unspecified"
 
 
+# 이슈 타입별 Plan 산출물의 기본 구조와 질문을 결정한다.
 def _profile_for_issue_type(issue_type: str) -> dict[str, list[str] | str]:
     profiles: dict[str, dict[str, list[str] | str]] = {
         "feFeature": {
@@ -147,6 +148,44 @@ def _profile_for_issue_type(issue_type: str) -> dict[str, list[str] | str]:
                 "동일 요청 반복",
             ],
         },
+        "fullstackFeature": {
+            "flow_title": "Fullstack Feature Flow",
+            "summary_fallback": "사용자 화면 경험, API contract, 백엔드 처리, 프론트엔드 연동까지 하나의 기능 흐름으로 구현한다.",
+            "scope_fallback": [
+                "화면 UX, API contract, Kotlin/Spring Boot backend, Next.js frontend, FE/BE 연동, smoke test를 함께 정의한다."
+            ],
+            "acceptance_fallback": [
+                "사용자가 화면에서 기능을 정상 수행할 수 있다.",
+                "API contract와 실제 FE/BE 구현이 일치한다.",
+                "백엔드 테스트와 프론트엔드 smoke test가 통과한다.",
+            ],
+            "expected_files": [
+                "docs/api 하위 API contract 문서",
+                "apps/server 하위 controller/usecase/domain/persistence/test 파일",
+                "apps/web 하위 route/component/API client/test 파일",
+            ],
+            "steps": [
+                "사용자 시나리오와 화면 제공 방식을 먼저 정리한다.",
+                "프론트-백엔드 API contract를 확정한다.",
+                "백엔드 도메인/usecase/API/persistence와 테스트를 먼저 구현한다.",
+                "프론트엔드 화면, 상태, 검증, API client를 구현한다.",
+                "FE submit 흐름과 BE endpoint를 연결하고 smoke test를 수행한다.",
+            ],
+            "open_questions": [
+                "최종 사용자 플로우와 성공 후 이동 위치",
+                "API endpoint, request/response/error contract",
+                "인증/인가 필요 여부",
+                "DB 변경과 migration 필요 여부",
+                "모바일 화면에서 우선적으로 보장할 UX",
+            ],
+            "edge_cases": [
+                "FE validation과 BE validation 불일치",
+                "중복 submit",
+                "네트워크 timeout 또는 5xx",
+                "4xx 에러 메시지 표시",
+                "DB 저장 성공 후 FE 상태 반영 실패",
+            ],
+        },
         "bugfix": {
             "flow_title": "Bugfix Investigation Flow",
             "summary_fallback": "재현 가능한 문제를 기준으로 원인을 좁히고 최소 수정과 회귀 테스트를 추가한다.",
@@ -180,6 +219,7 @@ def _profile_for_issue_type(issue_type: str) -> dict[str, list[str] | str]:
     return profiles.get(issue_type, default_profile)
 
 
+# 이슈 타입에 맞는 기본 Mermaid 시퀀스 다이어그램을 만든다.
 def _sequence_diagram_for_issue_type(issue_type: str) -> list[str]:
     diagrams = {
         "feFeature": [
@@ -229,6 +269,27 @@ def _sequence_diagram_for_issue_type(issue_type: str) -> list[str]:
             "    Client-->>UI: 상태 반영",
             "    UI-->>User: 성공/오류 피드백",
         ],
+        "fullstackFeature": [
+            "sequenceDiagram",
+            "    actor User",
+            "    participant UI as Next.js UI",
+            "    participant Client as API Client",
+            "    participant Controller as Spring Controller",
+            "    participant UseCase as Application UseCase",
+            "    participant Domain",
+            "    participant DB",
+            "    User->>UI: 화면 진입 및 입력",
+            "    UI->>Client: request 생성",
+            "    Client->>Controller: HTTP 요청",
+            "    Controller->>UseCase: command 전달",
+            "    UseCase->>Domain: 도메인 규칙 검증",
+            "    UseCase->>DB: 저장/조회",
+            "    DB-->>UseCase: 처리 결과",
+            "    UseCase-->>Controller: response model",
+            "    Controller-->>Client: response/error",
+            "    Client-->>UI: 상태 반영",
+            "    UI-->>User: 성공/오류 피드백",
+        ],
         "bugfix": [
             "sequenceDiagram",
             "    actor User",
@@ -256,6 +317,7 @@ def _sequence_diagram_for_issue_type(issue_type: str) -> list[str]:
     )
 
 
+# 이슈 타입에 맞는 기본 Mermaid 플로우 차트를 만든다.
 def _flow_chart_for_issue_type(issue_type: str) -> list[str]:
     charts = {
         "feFeature": [
@@ -287,6 +349,18 @@ def _flow_chart_for_issue_type(issue_type: str) -> list[str]:
             "    D -- 2xx --> E[성공 UI 반영]",
             "    D -- 4xx --> F[검증/권한 오류 표시]",
             "    D -- 5xx/timeout --> G[재시도 또는 실패 안내]",
+        ],
+        "fullstackFeature": [
+            "flowchart TD",
+            "    A[사용자 시나리오 정의] --> B[API Contract 확정]",
+            "    B --> C[백엔드 도메인/UseCase 구현]",
+            "    C --> D[백엔드 API/DB 연결]",
+            "    D --> E[프론트 화면/상태 구현]",
+            "    E --> F[FE API client 연동]",
+            "    F --> G{통합 검증 통과?}",
+            "    G -- 아니오 --> H[BE/FE contract 재조정]",
+            "    H --> F",
+            "    G -- 예 --> I[System QA]",
         ],
         "bugfix": [
             "flowchart TD",
