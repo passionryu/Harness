@@ -421,8 +421,10 @@ def test_plan_agent_uses_backend_feature_profile(tmp_path, monkeypatch):
     assert "## Issue Type\nbeFeature" in architecture
     assert "apps/server/modules/application 하위 usecase" in architecture
     assert "트랜잭션 경계와 repository port를 확정한다." in architecture
-    assert "Controller" in sequence
-    assert "UseCase" in sequence
+    assert "StudyHub 서비스" in sequence
+    assert "도메인 정책" in sequence
+    assert "Controller" not in sequence
+    assert "UseCase" not in sequence
 
 
 def test_backend_plan_comment_uses_backend_profile(tmp_path, monkeypatch):
@@ -468,8 +470,10 @@ def test_backend_plan_comment_uses_backend_profile(tmp_path, monkeypatch):
 
     assert "### 이슈 타입\nbeFeature" in captured["body"]
     assert "apps/server/modules/application 하위 usecase" in captured["body"]
-    assert "Controller" in captured["body"]
-    assert "UseCase" in captured["body"]
+    assert "StudyHub 서비스" in captured["body"]
+    assert "도메인 정책" in captured["body"]
+    assert "Controller" not in captured["body"]
+    assert "UseCase" not in captured["body"]
     assert "apps/web/app/signup/page.tsx" not in captured["body"]
     assert "회원가입 진입 버튼" not in captured["body"]
 
