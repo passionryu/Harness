@@ -8,4 +8,4 @@
 - Do not log secrets or full credentials.
 - Prefer explicit state transitions over implicit behavior.
 - Prefer small deterministic scripts over broad framework magic.
-
+- Every newly generated function must have a one-line Korean comment immediately above it explaining its responsibility.

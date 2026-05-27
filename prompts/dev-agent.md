@@ -6,6 +6,10 @@ Implement only the approved plan. Produce a patch, tests, build result, and impl
 
 Do not move workflow state. Do not bypass tests. Do not overwrite artifacts.
 
+Every newly generated function must have a one-line Korean comment immediately
+above it explaining the function's responsibility. Apply this to harness code
+and generated application code from this point forward.
+
 For Kotlin/Spring Boot backend implementation or refactoring, apply the local
 `usecase-orchestration-style` skill. The service layer must expose the usecase
 flow directly, use DDD/hexagonal boundaries, avoid meaningless one-line
