@@ -10,7 +10,11 @@ from agents.runners.codebase_inspector import (
     extract_frontend_route,
     inspect_codebase,
 )
-from agents.runners.responsibility_runners import APIImplementationRunner, DBMigrationRunner
+from agents.runners.responsibility_runners import (
+    APIImplementationRunner,
+    DBMigrationRunner,
+    RefactoringRunner,
+)
 
 
 # 테스트용 DevRunnerContext를 최소 StudyHub 저장소 구조와 함께 만든다.
@@ -99,3 +103,49 @@ def test_api_implementation_runner_creates_contract_draft(tmp_path):
     assert contract.exists()
     assert "POST /api/members/signup" in contract.read_text(encoding="utf-8")
     assert context.repo.head.commit.message == "[테스트 기능] : API contract 초안 추가"
+
+
+def test_refactoring_runner_splits_controller_data_classes(tmp_path):
+    context = _make_context(
+        tmp_path,
+        "\n".join(
+            [
+                "## Human Refactor Request",
+                "- 컨트롤러 안의 data class를 별도 파일로 분리한다.",
+            ]
+        ),
+    )
+    controller_dir = (
+        context.repo_path
+        / "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/presentation/member"
+    )
+    controller_dir.mkdir(parents=True)
+    controller = controller_dir / "MemberController.kt"
+    controller.write_text(
+        "\n".join(
+            [
+                "package com.studyhub.server.bootstrap.presentation.member",
+                "",
+                "import org.springframework.web.bind.annotation.RestController",
+                "",
+                "@RestController",
+                "class MemberController",
+                "",
+                "data class MemberRequest(",
+                "    val name: String,",
+                ")",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    context.repo.index.add([str(controller.relative_to(context.repo_path))])
+    context.repo.index.commit("Add controller")
+
+    result = RefactoringRunner().run(context)
+
+    assert result.status == AgentStatus.SUCCESS
+    dto = controller_dir / "MemberRequest.kt"
+    assert dto.exists()
+    assert "data class MemberRequest" in dto.read_text(encoding="utf-8")
+    assert "data class MemberRequest" not in controller.read_text(encoding="utf-8")
+    assert context.repo.head.commit.message == "[테스트 기능] : controller data class 분리"

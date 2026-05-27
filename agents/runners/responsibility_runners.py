@@ -15,6 +15,14 @@ from agents.runners.codebase_inspector import (
 )
 
 
+class RefactorSplitResult:
+    # controller data class 분리 결과와 변경 경로를 보관한다.
+    def __init__(self, controller: str, extracted_classes: list[str], changed_paths: list[str]) -> None:
+        self.controller = controller
+        self.extracted_classes = extracted_classes
+        self.changed_paths = changed_paths
+
+
 class ResponsibilityCapabilityRunner:
     name = "responsibility_capability_runner"
     responsibility = "정의되지 않은 책임"
@@ -287,6 +295,76 @@ class RefactoringRunner(ResponsibilityCapabilityRunner):
     def can_handle(self, context: DevRunnerContext) -> bool:
         return super().can_handle(context) and "## Human Refactor Request" in context.body
 
+    # 명확한 controller data class 분리 요청은 자동으로 별도 Kotlin 파일로 분리한다.
+    def run(self, context: DevRunnerContext) -> DevRunnerResult:
+        if not _requests_controller_data_class_split(context.body):
+            return super().run(context)
+
+        results = _split_controller_data_classes(context)
+        report = context.task_dir / f"{self.name}.md"
+        snapshot = inspect_codebase(context)
+        changed_paths = sorted({path for result in results for path in result.changed_paths})
+        commit_hash = "no commit"
+        if changed_paths:
+            commit_hash = _stage_and_commit(
+                context,
+                changed_paths,
+                f"[{context.feature_name}] : controller data class 분리",
+            )
+
+        report.write_text(
+            "\n".join(
+                [
+                    f"# {self.name}",
+                    "",
+                    f"- branch: `{context.branch_name}`",
+                    f"- issue_type: `{context.issue_type}`",
+                    f"- responsibility: {self.responsibility}",
+                    f"- commit: `{commit_hash}`",
+                    f"- changed_paths: `{', '.join(changed_paths) if changed_paths else 'none'}`",
+                    "",
+                    *render_codebase_snapshot(snapshot),
+                    "## Refactoring Result",
+                    "",
+                    *[
+                        line
+                        for result in results
+                        for line in _format_refactor_result(result)
+                    ],
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        if not changed_paths:
+            return DevRunnerResult(
+                status=AgentStatus.NEEDS_HUMAN,
+                summary="Controller 내부 data class 분리 대상이 없습니다.",
+                progress=["- [ ] Controller 내부 data class 탐지"],
+                verification=[
+                    f"## {self.name}",
+                    "",
+                    "- status: needs_human",
+                    "- reason: 분리할 controller 내부 data class를 찾지 못했습니다.",
+                ],
+                artifacts=[ArtifactSpec(self.name, report)],
+                error=f"{self.name}: 분리할 controller 내부 data class를 찾지 못했습니다.",
+            )
+
+        return DevRunnerResult(
+            status=AgentStatus.SUCCESS,
+            summary=f"Controller 내부 data class {len(results)}개를 별도 파일로 분리했습니다.",
+            commits=[f"1. {commit_hash} [{context.feature_name}] : controller data class 분리"],
+            progress=["- [x] Controller 내부 data class 탐지", "- [x] 별도 Kotlin 파일 분리"],
+            verification=[
+                f"## {self.name}",
+                "",
+                "- status: success",
+                f"- changed_paths: `{', '.join(changed_paths)}`",
+            ],
+            artifacts=[ArtifactSpec(self.name, report)],
+        )
+
 
 class TestImplementationRunner(ResponsibilityCapabilityRunner):
     name = "test_implementation_runner"
@@ -539,6 +617,121 @@ def _api_contract_content(context: DevRunnerContext, method: str, path: str) -> 
             "- 실제 구현 전 이 contract를 사람 또는 Plan Agent가 보강해야 한다.",
         ]
     )
+
+
+# 리팩터링 요청에 controller data class 분리 의도가 있는지 판단한다.
+def _requests_controller_data_class_split(markdown: str) -> bool:
+    normalized = markdown.lower()
+    return (
+        "controller" in normalized
+        or "컨트롤러" in markdown
+    ) and (
+        "data class" in normalized
+        or "데이터클래스" in markdown
+        or "dto" in normalized
+    ) and (
+        "분리" in markdown
+        or "별도" in markdown
+        or "thin" in normalized
+        or "얇게" in markdown
+    )
+
+
+# controller 파일 안의 data class를 같은 패키지의 별도 파일로 분리한다.
+def _split_controller_data_classes(context: DevRunnerContext) -> list[RefactorSplitResult]:
+    source_root = (
+        context.repo_path
+        / "apps/server/modules/bootstrap/studyhub/src/main/kotlin"
+    )
+    if not source_root.exists():
+        return []
+
+    results: list[RefactorSplitResult] = []
+    for controller in source_root.rglob("*Controller.kt"):
+        text = controller.read_text(encoding="utf-8")
+        extracted = _extract_top_level_data_classes(text)
+        if not extracted:
+            continue
+
+        updated_text = text
+        changed_paths = [_relative(context, controller)]
+        class_names: list[str] = []
+        package_name = _extract_package_name(text)
+        for class_name, class_text in extracted:
+            dto_path = controller.parent / f"{class_name}.kt"
+            if dto_path.exists():
+                updated_text = updated_text.replace(class_text, "").strip() + "\n"
+                continue
+            _write_text(dto_path, f"package {package_name}\n\n{class_text.strip()}\n")
+            updated_text = updated_text.replace(class_text, "").strip() + "\n"
+            changed_paths.append(_relative(context, dto_path))
+            class_names.append(class_name)
+
+        if updated_text != text:
+            controller.write_text(updated_text, encoding="utf-8")
+            results.append(
+                RefactorSplitResult(
+                    controller=_relative(context, controller),
+                    extracted_classes=class_names,
+                    changed_paths=changed_paths,
+                )
+            )
+    return results
+
+
+# Kotlin 파일에서 top-level data class 선언 블록을 추출한다.
+def _extract_top_level_data_classes(text: str) -> list[tuple[str, str]]:
+    results: list[tuple[str, str]] = []
+    pattern = re.compile(r"^data class\s+(\w+)\s*\(", re.MULTILINE)
+    for match in pattern.finditer(text):
+        start = match.start()
+        end = _find_kotlin_class_end(text, match.end() - 1)
+        if end <= start:
+            continue
+        results.append((match.group(1), text[start:end].strip()))
+    return results
+
+
+# Kotlin data class 선언의 끝 위치를 괄호와 중괄호 균형으로 찾는다.
+def _find_kotlin_class_end(text: str, start_index: int) -> int:
+    paren_depth = 0
+    brace_depth = 0
+    seen_paren = False
+    index = start_index
+    while index < len(text):
+        char = text[index]
+        if char == "(":
+            paren_depth += 1
+            seen_paren = True
+        elif char == ")":
+            paren_depth -= 1
+            if seen_paren and paren_depth == 0 and brace_depth == 0:
+                line_end = text.find("\n", index)
+                return len(text) if line_end == -1 else line_end + 1
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+            if seen_paren and paren_depth == 0 and brace_depth == 0:
+                line_end = text.find("\n", index)
+                return len(text) if line_end == -1 else line_end + 1
+        index += 1
+    return len(text)
+
+
+# Kotlin package 선언을 추출한다.
+def _extract_package_name(text: str) -> str:
+    match = re.search(r"^package\s+([A-Za-z0-9_.]+)", text, re.MULTILINE)
+    return match.group(1) if match else "com.studyhub.server.bootstrap"
+
+
+# 리팩터링 결과를 Markdown으로 변환한다.
+def _format_refactor_result(result: RefactorSplitResult) -> list[str]:
+    return [
+        f"- controller: `{result.controller}`",
+        f"- extracted_classes: `{', '.join(result.extracted_classes) if result.extracted_classes else 'none'}`",
+        f"- changed_paths: `{', '.join(result.changed_paths) if result.changed_paths else 'none'}`",
+    ]
 
 
 # 이슈 타입에 맞는 테스트 명령 목록을 결정한다.
