@@ -24,8 +24,23 @@
 - Refactoring Runner: 사람의 수정 요구를 기존 구현에 반영한다.
 - Test Implementation Runner: 단위, 통합, smoke 테스트를 작성하고 실행한다.
 
-현재 Development Agent의 책임 러너들은 우선 capability gate로 동작한다.
+현재 Development Agent의 책임 러너들은 capability gate를 기본으로 동작한다.
 즉, 필요한 책임을 식별하고 artifact로 남기되, 범용 자동 구현 능력이 없는 경우 `needs_human`으로 중단한다.
+
+현재 구현된 1차 capability:
+
+- 모든 Development Runner는 코드베이스 스냅샷을 읽고 artifact에 남긴다.
+- Frontend Implementation Runner는 명시된 화면 route가 있으면 Next.js page scaffold를 생성할 수 있다.
+- DB Migration Runner는 명시된 `sql` code block이 있으면 Flyway migration 파일을 생성할 수 있다.
+- API Implementation Runner는 명시된 `METHOD /api/...` endpoint가 있으면 API contract 초안을 생성할 수 있다.
+- Test Implementation Runner는 기존 프론트엔드/백엔드 테스트 명령을 찾아 실제로 실행할 수 있다.
+
+아직 구현되지 않은 부분:
+
+- 도메인 모델과 application service의 범용 자동 구현
+- Controller, DTO, Repository adapter의 범용 자동 구현
+- 기존 화면에 자연스럽게 UI를 삽입하는 범용 자동 구현
+- 복잡한 FE/BE contract mismatch 자동 수정
 
 ## Fix Develop Agent
 
