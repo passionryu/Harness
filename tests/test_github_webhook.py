@@ -1045,6 +1045,72 @@ def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypa
     assert "DTO는 별도 파일로 분리한다" in dev_status.read_text()
 
 
+def test_refactor_command_allows_successful_fix_develop_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "github_token", None)
+
+    from orchestrator.db.models import Run, Task
+    from orchestrator.db.session import SessionLocal, create_db
+    from orchestrator.services.orchestration import OrchestrationService
+
+    def fake_refactor_agent(self, task, agent_name):
+        assert agent_name == "dev"
+        run = Run(
+            task_id=task.id,
+            agent_name=agent_name,
+            status="success",
+            summary="리팩터링 실행 성공",
+        )
+        self.db.add(run)
+        self.db.flush()
+        return run.id
+
+    monkeypatch.setattr(orchestration.OrchestrationService, "_run_agent", fake_refactor_agent)
+
+    create_db()
+    issue_number = uuid4().int % 1_000_000_000
+    with SessionLocal() as db:
+        task = Task(
+            title="[FS] [기능 수정] 로그인 아이디 기반 회원가입/로그인 구조를 추가한다.",
+            body="로그인 아이디 기반 회원가입/로그인 구조를 추가한다.",
+            github_issue_number=issue_number,
+            github_issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            state="System QA",
+        )
+        db.add(task)
+        db.flush()
+        db.add_all(
+            [
+                Run(
+                    task_id=task.id,
+                    agent_name="dev",
+                    status="failed",
+                    summary="Gradle 테스트 실패",
+                    error="Kotlin/Spring 구현 후 Gradle 테스트가 실패했습니다.",
+                ),
+                Run(
+                    task_id=task.id,
+                    agent_name="fix_develop",
+                    status="success",
+                    summary="개발 실패를 복구했습니다.",
+                ),
+            ]
+        )
+        db.commit()
+
+        event = OrchestrationService(db).run_refactor_for_github_issue(
+            issue_number=issue_number,
+            title=task.title,
+            body=task.body,
+            issue_url=task.github_issue_url or "",
+            refactor_request="DDD/Hexagonal 경계를 유지하며 구현을 정리한다.",
+            issue_labels=["type: fullstackFeature"],
+        )
+
+    assert event.current_state == "In Progress"
+    assert event.message == "리팩터링 요청을 반영했고 작업 상태를 In Progress로 변경했습니다."
+
+
 def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     secret = "test-secret"
     monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)

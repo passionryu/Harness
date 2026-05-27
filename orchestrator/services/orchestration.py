@@ -112,6 +112,19 @@ class OrchestrationService:
             is not None
         )
 
+    # Dev가 직접 성공했거나 fix-develop로 복구된 작업인지 판단한다.
+    def has_successful_development_run(self, task_id: str) -> bool:
+        return (
+            self.db.scalar(
+                select(Run.id)
+                .where(Run.task_id == task_id)
+                .where(Run.agent_name.in_(["dev", "fix_develop"]))
+                .where(Run.status == AgentStatus.SUCCESS.value)
+                .limit(1)
+            )
+            is not None
+        )
+
     def run_plan_for_github_issue(
         self,
         issue_number: int,
@@ -391,10 +404,10 @@ class OrchestrationService:
         )
         task.github_issue_url = issue_url
 
-        if not self.has_successful_agent_run(task.id, "dev"):
+        if not self.has_successful_development_run(task.id):
             return self._skip_refactor_command(
                 issue_number,
-                "성공한 Dev 실행 기록이 없습니다. 먼저 @ai-harness develop을 실행하세요.",
+                "성공한 개발 또는 개발 수정 실행 기록이 없습니다. 먼저 @ai-harness develop 또는 @ai-harness fix-develop을 실행하세요.",
                 task.id,
             )
 
