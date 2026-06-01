@@ -1,10 +1,11 @@
+from datetime import datetime
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 import orchestrator.api.dashboard as dashboard
 import orchestrator.services.orchestration as orchestration
-from orchestrator.db.models import Artifact, Run, Task
+from orchestrator.db.models import Artifact, Run, StateTransition, Task
 from orchestrator.db.session import SessionLocal, create_db
 from orchestrator.main import app
 
@@ -148,13 +149,10 @@ def test_dashboard_task_detail_renders_command_panel(tmp_path, monkeypatch):
     assert "Develop" in response.text
     assert "Refactor" in response.text
     assert "사람이 Plan을 승인하고 개발 에이전트를 실행합니다." in response.text
-    assert "Plan 산출물" in response.text
-    assert "Dev 산출물" in response.text
-    assert "QA 산출물" in response.text
     assert "설계 요약" in response.text
-    assert "시스템 QA 리포트" in response.text
     assert "작업 메모" in response.text
     assert "Agent 호출 이력" in response.text
+    assert "State 변경 흐름" in response.text
     assert "테스트용 Plan 실행 성공" in response.text
     assert "Agent 반환 데이터" in response.text
     assert "sequenceDiagram" in response.text
@@ -176,6 +174,55 @@ def test_dashboard_memo_save_persists_in_task_body(monkeypatch):
 
     assert save_response.status_code == 303
     assert "loginId 정책은 QA에서 꼭 확인한다." in detail_response.text
+
+
+# State 변경은 최신순을 유지하되 번호는 최초 변경부터 계산한다.
+def test_dashboard_state_changes_keep_latest_first_with_oldest_number_one(monkeypatch):
+    monkeypatch.setattr(orchestration.settings, "github_token", None)
+    task = _create_dashboard_task()
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                StateTransition(
+                    task_id=task.id,
+                    from_state=None,
+                    to_state="Todo",
+                    reason="transition-alpha",
+                    created_at=datetime(2026, 1, 1, 9, 0, 0),
+                ),
+                StateTransition(
+                    task_id=task.id,
+                    from_state="Todo",
+                    to_state="In Progress",
+                    reason="transition-beta",
+                    created_at=datetime(2026, 1, 1, 10, 0, 0),
+                ),
+                StateTransition(
+                    task_id=task.id,
+                    from_state="In Progress",
+                    to_state="System QA",
+                    reason="transition-gamma",
+                    created_at=datetime(2026, 1, 1, 11, 0, 0),
+                ),
+            ]
+        )
+        db.commit()
+
+    with TestClient(app) as client:
+        response = client.get(f"/dashboard/tasks/{task.id}")
+
+    assert response.status_code == 200
+    assert (
+        response.text.index("transition-gamma")
+        < response.text.index("transition-beta")
+        < response.text.index("transition-alpha")
+    )
+    assert response.text.index('<div class="step-index">3</div>') < response.text.index(
+        '<div class="step-index">2</div>'
+    )
+    assert response.text.index('<div class="step-index">2</div>') < response.text.index(
+        '<div class="step-index">1</div>'
+    )
 
 
 # 대시보드 버튼 요청이 기존 하네스 명령 실행 흐름으로 위임되는지 검증한다.

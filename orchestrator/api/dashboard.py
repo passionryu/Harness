@@ -168,21 +168,12 @@ def dashboard_task_detail(
                 {_command_panel(task)}
               </article>
             </section>
-            <section class="grid three">
-              <article class="panel">
-                <h2>Run Timeline</h2>
-                {_run_list(service, runs)}
-              </article>
-              <article class="panel">
-                <h2>Artifacts</h2>
-                <p class="section-help">
-                  에이전트가 남긴 증거 파일입니다. 설계는 구현 전 판단 자료, 개발은 커밋/패치/테스트 결과,
-                  QA는 사람이 검증할 때 참고하는 결과 보고서입니다.
-                </p>
-                {_artifact_list(artifacts)}
-              </article>
-              <article class="panel">
-                <h2>State 변경</h2>
+            <section class="state-section">
+              <article class="panel state-panel">
+                <div class="subhead">
+                  <h2>State 변경 흐름</h2>
+                  <span>최신 변경이 위에 표시되며, 번호는 최초 변경부터 순서대로 부여됩니다.</span>
+                </div>
                 {_transition_list(service, transitions)}
               </article>
             </section>
@@ -839,17 +830,29 @@ def _artifact_label_and_description(artifact: Artifact) -> tuple[str, str]:
 def _transition_list(service: OrchestrationService, transitions: list[StateTransition]) -> str:
     if not transitions:
         return '<p class="empty">상태 변경 이력이 없습니다.</p>'
-    items = [
-        f"""
-        <li>
-          <strong>{_e(item.from_state or 'none')} → {_e(item.to_state)}</strong>
-          <span>{_e(service._format_dt(item.created_at))}</span>
-          <p>{_e(item.reason)}</p>
-        </li>
-        """
-        for item in transitions
-    ]
-    return "<ol class=\"timeline\">" + "\n".join(items) + "</ol>"
+    total = len(transitions)
+    items = []
+    for index, item in enumerate(transitions):
+        display_number = total - index
+        connector = '<div class="state-arrow">↑ 이전 단계</div>' if index < total - 1 else ""
+        items.append(
+            f"""
+            <li class="state-step">
+              <div class="step-index">{display_number}</div>
+              <div class="step-body">
+                <div class="state-route">
+                  <span>{_e(item.from_state or 'none')}</span>
+                  <strong>→</strong>
+                  <span>{_e(item.to_state)}</span>
+                </div>
+                <time>{_e(service._format_dt(item.created_at))}</time>
+                <p>{_e(item.reason)}</p>
+                {connector}
+              </div>
+            </li>
+            """
+        )
+    return "<ol class=\"state-flow\">" + "\n".join(items) + "</ol>"
 
 
 # GitHub issue 링크를 안전한 HTML로 만든다.
@@ -913,6 +916,8 @@ def _style() -> str:
     .panel { border: 1px solid #273241; background: #151d27; border-radius: 8px; padding: 18px; overflow: hidden; }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 0.62fr); gap: 18px; margin-bottom: 18px; }
     .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
+    .state-section { margin-top: 18px; }
+    .state-panel { overflow: visible; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { text-align: left; padding: 13px 12px; border-bottom: 1px solid #273241; vertical-align: middle; }
     th { color: #94a3b8; font-weight: 600; }
@@ -965,6 +970,16 @@ def _style() -> str:
     .timeline, .artifact-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 14px; }
     .timeline li span { display: block; margin: 4px 0; color: #94a3b8; font-size: 12px; }
     .timeline li p { margin: 4px 0 0; color: #cbd5e1; line-height: 1.45; }
+    .state-flow { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+    .state-step { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 12px; align-items: start; }
+    .step-index { width: 34px; height: 34px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: #2563eb; color: #fff; font-weight: 800; border: 1px solid #60a5fa; }
+    .step-body { border: 1px solid #273241; border-radius: 8px; background: #111820; padding: 13px; display: grid; gap: 7px; }
+    .state-route { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+    .state-route span { display: inline-flex; align-items: center; min-height: 26px; padding: 3px 9px; border-radius: 999px; background: #1e293b; border: 1px solid #334155; color: #dbeafe; font-size: 13px; }
+    .state-route strong { color: #93c5fd; }
+    .state-step time { color: #94a3b8; font-size: 12px; }
+    .state-step p { margin: 0; color: #cbd5e1; line-height: 1.45; }
+    .state-arrow { color: #64748b; font-size: 12px; padding-top: 2px; }
     .artifact-group { border-top: 1px solid #273241; padding-top: 14px; margin-top: 14px; }
     .artifact-group:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
     .artifact-group h3 { margin: 0 0 10px; font-size: 14px; color: #dbeafe; letter-spacing: 0; }
