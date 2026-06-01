@@ -16,10 +16,20 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 # 작업 목록을 서버 사이드 HTML로 렌더링한다.
 @router.get("", response_class=HTMLResponse)
-def dashboard_home(db: Session = Depends(get_db)) -> HTMLResponse:
-    tasks = list(db.scalars(select(Task).order_by(Task.updated_at.desc()).limit(50)))
+def dashboard_home(include_internal: bool = False, db: Session = Depends(get_db)) -> HTMLResponse:
+    query = select(Task).order_by(Task.updated_at.desc()).limit(50)
+    if not include_internal:
+        query = (
+            select(Task)
+            .where(Task.github_issue_number.is_not(None))
+            .order_by(Task.updated_at.desc())
+            .limit(50)
+        )
+    tasks = list(db.scalars(query))
     latest_runs = _latest_runs_by_task(db, [task.id for task in tasks])
     rows = "\n".join(_task_row(task, latest_runs.get(task.id)) for task in tasks)
+    toggle_href = "/dashboard" if include_internal else "/dashboard?include_internal=true"
+    toggle_label = "GitHub 이슈만 보기" if include_internal else "내부 task 포함"
     return HTMLResponse(
         _page(
             title="AI Harness Dashboard",
@@ -30,8 +40,15 @@ def dashboard_home(db: Session = Depends(get_db)) -> HTMLResponse:
                 <p class="eyebrow">Human-in-the-loop control panel</p>
                 <h1>작업 목록</h1>
               </div>
-              <a class="button secondary" href="/health">Health 확인</a>
+              <div class="button-row compact">
+                <a class="button secondary" href="{toggle_href}">{toggle_label}</a>
+                <a class="button secondary" href="/health">Health 확인</a>
+              </div>
             </section>
+            <p class="hint">
+              기본 목록은 GitHub issue number가 있는 실제 StudyHub 작업만 보여줍니다.
+              과거 테스트/수동 task는 “내부 task 포함”에서 확인할 수 있습니다.
+            </p>
             <section class="panel">
               <table>
                 <thead>
@@ -450,6 +467,8 @@ def _style() -> str:
     .button.secondary { background: #1e293b; border-color: #334155; color: #e2e8f0; }
     .button:hover { filter: brightness(1.05); text-decoration: none; }
     .button-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .button-row.compact { margin-top: 0; }
+    .hint { color: #94a3b8; margin: -6px 0 18px; font-size: 14px; }
     .command-form label { display: block; color: #cbd5e1; font-size: 13px; margin-bottom: 8px; }
     textarea { width: 100%; resize: vertical; border: 1px solid #334155; border-radius: 7px; background: #0f141b; color: #e2e8f0; padding: 10px; font: inherit; line-height: 1.5; }
     .kv { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; margin: 0; }

@@ -34,6 +34,21 @@ def _create_dashboard_task() -> Task:
         return task
 
 
+# 대시보드 테스트용 내부 task를 DB에 생성한다.
+def _create_internal_dashboard_task() -> Task:
+    create_db()
+    with SessionLocal() as db:
+        task = Task(
+            title="Implement deterministic harness",
+            body="초기 수동 task입니다.",
+            state="Done",
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        return task
+
+
 # SSR 대시보드 목록이 task 정보를 HTML로 렌더링하는지 검증한다.
 def test_dashboard_home_renders_task_list(monkeypatch):
     monkeypatch.setattr(orchestration.settings, "github_token", None)
@@ -46,6 +61,21 @@ def test_dashboard_home_renders_task_list(monkeypatch):
     assert "AI Harness Dashboard" in response.text
     assert task.title in response.text
     assert "@ai-harness develop" in response.text
+
+
+# 대시보드 기본 목록은 GitHub issue가 없는 내부 task를 숨긴다.
+def test_dashboard_home_hides_internal_tasks_by_default(monkeypatch):
+    monkeypatch.setattr(orchestration.settings, "github_token", None)
+    _create_dashboard_task()
+    internal_task = _create_internal_dashboard_task()
+
+    with TestClient(app) as client:
+        default_response = client.get("/dashboard")
+        internal_response = client.get("/dashboard?include_internal=true")
+
+    assert default_response.status_code == 200
+    assert internal_task.title not in default_response.text
+    assert internal_task.title in internal_response.text
 
 
 # SSR 대시보드 상세 화면이 명령 버튼과 실행 이력을 렌더링하는지 검증한다.
