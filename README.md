@@ -2,7 +2,7 @@
 
 AI-native software development harness for a human-controlled multi-agent development workflow.
 
-This repository is an MVP foundation, not a fully autonomous developer. It is designed as a deterministic, auditable, reproducible, human-in-the-loop orchestration system around GitHub Kanban states.
+This repository is an MVP foundation, not a fully autonomous developer. It is designed as a deterministic, auditable, reproducible, human-in-the-loop local orchestration system around Codex, GitHub Kanban records, artifacts, and a local SQLite run history.
 
 ## Principles
 
@@ -25,7 +25,8 @@ Only the orchestrator can move system-controlled states. `Done` requires explici
 ## Repository Map
 
 ```text
-orchestrator/  FastAPI app, DB models, orchestration services
+ai_harness/    CLI entrypoint used by Codex and local operators
+orchestrator/  DB models, orchestration services, legacy HTTP adapters
 agents/        Agent abstraction and Plan/Dev/QA runner implementations
 prompts/       Prompt templates and model-facing instructions
 workflows/     State machine and event workflow definitions
@@ -47,28 +48,31 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
 pytest
+```
+
+Run harness commands without starting a server:
+
+```bash
+harness sync --issue 8
+harness plan --issue 8
+harness develop --issue 8
+harness qa --issue 8
+harness status --issue 8
+```
+
+If the console script is not installed yet, use the module form:
+
+```bash
+python -m ai_harness.cli status --issue 8
+```
+
+Legacy FastAPI server mode is optional and no longer the primary input interface:
+
+```bash
 uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 3002
 ```
 
-Docker:
-
-```bash
-docker compose up --build
-```
-
-Health check:
-
-```bash
-curl http://localhost:3002/health
-```
-
-ngrok:
-
-```bash
-ngrok http --url=uproot-relax-retaliate.ngrok-free.dev --web-addr=localhost:3003 3002
-```
-
-## GitHub Issue Plan Workflow
+## CLI-first GitHub Issue Workflow
 
 Configure `.env` with:
 
@@ -84,21 +88,26 @@ GOOGLE_CHAT_WEBHOOK_URL=
 DISCORD_WEBHOOK_URL=
 ```
 
-Initial planning can be triggered manually through the harness API:
+Codex or a local operator should call the CLI:
 
 ```bash
-curl -X POST http://localhost:3002/sync/github/issues/1/plan
+harness sync --issue 1
+harness plan --issue 1
+harness replan --issue 1 --note "기존 설계에서 로그인 정책을 다시 반영한다."
+harness develop --issue 1
+harness fix-develop --issue 1
+harness refactor --issue 1 --note-file ./notes/refactor.md
+harness qa --issue 1 --note "로그인 실패 케이스와 DB 저장 상태를 함께 확인한다."
+harness re-qa --issue 1
+harness status --issue 1
 ```
 
-GitHub webhook support is now limited to issue metadata/state triggers:
+GitHub issue comments are not used as human command input anymore:
 
-- Webhook URL: `POST /webhooks/github`
-- Required event: `Issues`
-- Initial plan trigger: add the `ai-plan-ready` label to an issue
-- `Issue comments` are intentionally not required.
 - GitHub issue comments are no longer used as a command input channel.
 - `ENABLE_GITHUB_COMMENT_COMMANDS=false` keeps `issue_comment` webhook events ignored even if GitHub sends them.
 - Use Codex as the primary human input interface; use GitHub issue comments as generated progress records only.
+- GitHub webhook support is legacy/optional and should not be required for local development.
 
 External notifications are blocked by default. Set `ALLOW_EXTERNAL_NOTIFICATIONS=true` only when you intentionally want real Google Chat or Discord messages to be sent. When enabled, `GOOGLE_CHAT_WEBHOOK_URL` or `DISCORD_WEBHOOK_URL` receives a notification after System QA or re-QA passes.
 
@@ -159,35 +168,23 @@ type: bugfix
 type: hotfix
 ```
 
-The Plan Agent reads the `type:*` label from the GitHub issue payload and uses it to choose a planning profile.
-
-Example replan comment:
-
-```markdown
-@ai-harness replan
-
-- 회원가입은 별도 페이지가 아니라 모달로 만든다.
-- 전화번호 필드는 제외한다.
-```
-
-The harness records the replan request in the generated plan artifacts and writes a new reviewable GitHub issue comment.
+The Plan Agent reads the `type:*` label from the GitHub issue payload and uses it to choose a planning profile. Replan, refactor, QA, and cancel requests should be passed through CLI `--note` or `--note-file`.
 
 ## MVP Scope
 
 The current MVP provides:
 
-- FastAPI server skeleton
+- CLI-first local harness entrypoint
+- optional legacy FastAPI server skeleton
 - PostgreSQL-ready SQLAlchemy models
 - deterministic Kanban state machine
 - Plan, Dev, QA agent abstractions with safe placeholder runners
 - artifact store
 - audit log model
 - retry and timeout policy model
-- Docker compose with Postgres
+- Docker compose with Postgres for optional server deployments
 - pytest coverage for workflow rules
-- GitHub issue label trigger for Plan Agent
-- GitHub issue comment trigger for initial Plan Agent execution
-- GitHub issue comment trigger for human-requested replan
-- GitHub issue comment trigger for System QA execution
+- GitHub issue sync through the CLI
+- GitHub issue comments as generated progress records only
 
-Live OpenAI, GitHub Projects mutation, and Docker execution are intentionally abstracted behind interfaces so they can be enabled safely after local validation.
+Live OpenAI, GitHub Projects mutation, server mode, and Docker execution are intentionally abstracted behind interfaces so they can be enabled safely after local validation.

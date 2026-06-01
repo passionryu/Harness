@@ -19,6 +19,9 @@ dependencies = [
     "python-json-logger>=2.0",
 ]
 
+[project.scripts]
+harness = "ai_harness.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.2",
@@ -27,7 +30,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["orchestrator*", "agents*", "workflows*", "sandbox*", "mcp*", "memory*"]
+include = ["ai_harness*", "orchestrator*", "agents*", "workflows*", "sandbox*", "mcp*", "memory*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
