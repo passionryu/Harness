@@ -60,6 +60,8 @@ harness qa --issue 8
 harness status --issue 8
 ```
 
+Detailed CLI usage is documented in [`docs/cli-usage-guide.md`](docs/cli-usage-guide.md).
+
 If the console script is not installed yet, use the module form:
 
 ```bash
