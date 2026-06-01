@@ -2,6 +2,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+import orchestrator.api.dashboard as dashboard
 import orchestrator.services.orchestration as orchestration
 from orchestrator.db.models import Task
 from orchestrator.db.session import SessionLocal, create_db
@@ -61,6 +62,7 @@ def test_dashboard_home_renders_task_list(monkeypatch):
     assert "AI Harness Dashboard" in response.text
     assert task.title in response.text
     assert "@ai-harness develop" in response.text
+    assert "Sync All GitHub Issues" in response.text
 
 
 # 대시보드 기본 목록은 GitHub issue가 없는 내부 task를 숨긴다.
@@ -107,3 +109,50 @@ def test_dashboard_status_command_redirects_with_result(monkeypatch):
 
     assert response.status_code == 303
     assert response.headers["location"].startswith(f"/dashboard/tasks/{task.id}?message=")
+
+
+# Sync All GitHub Issues 버튼은 GitHub open issue를 하네스 task로 등록한다.
+def test_dashboard_sync_all_github_issues_imports_missing_issues(monkeypatch):
+    create_db()
+    monkeypatch.setattr(dashboard.settings, "github_token", "token")
+    monkeypatch.setattr(dashboard.settings, "github_owner", "passionryu")
+    monkeypatch.setattr(dashboard.settings, "github_repo", "studyHub")
+
+    class FakeGitHubAdapter:
+        def __init__(self, token: str):
+            self.token = token
+
+        # 테스트용 open issue 목록을 반환한다.
+        def list_issues(self, owner: str, repo: str) -> list[dict]:
+            assert owner == "passionryu"
+            assert repo == "studyHub"
+            return [
+                {
+                    "number": 8,
+                    "title": "[FS] 기능 구현 로그인 기능 구현",
+                    "body": "로그인 기능을 구현한다.",
+                    "html_url": "https://github.com/passionryu/studyHub/issues/8",
+                    "labels": [{"name": "type: fullstackFeature"}],
+                },
+                {
+                    "number": 9,
+                    "title": "[BE] DB 및 도메인 설계",
+                    "body": "DB를 설계한다.",
+                    "html_url": "https://github.com/passionryu/studyHub/issues/9",
+                    "labels": [{"name": "type: beFeature"}],
+                },
+            ]
+
+    monkeypatch.setattr(dashboard, "GitHubAdapter", FakeGitHubAdapter)
+
+    with TestClient(app) as client:
+        response = client.post("/dashboard/sync/github/issues", follow_redirects=False)
+
+    assert response.status_code == 303
+    with SessionLocal() as db:
+        issue_8 = db.query(Task).filter(Task.github_issue_number == 8).one()
+        issue_9 = db.query(Task).filter(Task.github_issue_number == 9).one()
+
+    assert issue_8.state == "Backlog"
+    assert issue_9.state == "Backlog"
+    assert "type: fullstackFeature" in issue_8.body

@@ -7,8 +7,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from orchestrator.core.settings import settings
 from orchestrator.db.models import Artifact, Run, StateTransition, Task
 from orchestrator.db.session import get_db
+from orchestrator.services.github_adapter import GitHubAdapter
 from orchestrator.services.orchestration import OrchestrationService
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -16,7 +18,12 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 # 작업 목록을 서버 사이드 HTML로 렌더링한다.
 @router.get("", response_class=HTMLResponse)
-def dashboard_home(include_internal: bool = False, db: Session = Depends(get_db)) -> HTMLResponse:
+def dashboard_home(
+    include_internal: bool = False,
+    message: str | None = None,
+    error: str | None = None,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
     query = select(Task).order_by(Task.updated_at.desc()).limit(50)
     if not include_internal:
         query = (
@@ -35,12 +42,16 @@ def dashboard_home(include_internal: bool = False, db: Session = Depends(get_db)
             title="AI Harness Dashboard",
             active="tasks",
             content=f"""
+            {_notice(message, error)}
             <section class="toolbar">
               <div>
                 <p class="eyebrow">Human-in-the-loop control panel</p>
                 <h1>작업 목록</h1>
               </div>
               <div class="button-row compact">
+                <form method="post" action="/dashboard/sync/github/issues">
+                  <button class="button" type="submit">Sync All GitHub Issues</button>
+                </form>
                 <a class="button secondary" href="{toggle_href}">{toggle_label}</a>
                 <a class="button secondary" href="/health">Health 확인</a>
               </div>
@@ -66,6 +77,16 @@ def dashboard_home(include_internal: bool = False, db: Session = Depends(get_db)
             """,
         )
     )
+
+
+# GitHub repo의 open issue를 하네스 DB에 동기화한다.
+@router.post("/sync/github/issues")
+def dashboard_sync_github_issues(db: Session = Depends(get_db)) -> RedirectResponse:
+    try:
+        synced_count = _sync_github_issues(db)
+        return _redirect_to_dashboard(message=f"GitHub issue {synced_count}개를 동기화했습니다.")
+    except Exception as exc:
+        return _redirect_to_dashboard(error=str(exc))
 
 
 # 특정 작업의 실행 이력, 산출물, 명령 패널을 렌더링한다.
@@ -144,6 +165,68 @@ def dashboard_task_detail(
             """,
         )
     )
+
+
+# GitHub issue 목록을 읽어 신규 task를 Backlog로 만들고 기존 task 정보를 갱신한다.
+def _sync_github_issues(db: Session) -> int:
+    if not settings.github_token:
+        raise ValueError("GitHub issue 동기화에는 GITHUB_TOKEN이 필요합니다.")
+
+    service = OrchestrationService(db)
+    issues = GitHubAdapter(settings.github_token).list_issues(
+        settings.github_owner,
+        settings.github_repo,
+    )
+    for issue in issues:
+        labels = [item.get("name") for item in issue.get("labels", []) if item.get("name")]
+        _upsert_synced_issue(service, issue, labels)
+    db.commit()
+    return len(issues)
+
+
+# GitHub issue 하나를 하네스 task로 동기화하되 기존 상태는 보존한다.
+def _upsert_synced_issue(
+    service: OrchestrationService,
+    issue: dict,
+    labels: list[str],
+) -> Task:
+    issue_number = int(issue["number"])
+    task = service.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+    body = service._append_issue_metadata(
+        issue.get("body") or "",
+        labels,
+        issue_number,
+    )
+    if task is None:
+        task = Task(
+            title=issue.get("title") or "",
+            body=body,
+            github_issue_url=issue.get("html_url") or "",
+            github_issue_number=issue_number,
+            state="Backlog",
+            retry_limit=settings.agent_retry_limit,
+        )
+        service.db.add(task)
+        service.db.flush()
+        service._record_transition(task.id, None, task.state, "GitHub issue synced", "system")
+        service._audit(
+            task.id,
+            None,
+            "task.synced_from_github",
+            {"issue_number": issue_number, "issue_url": task.github_issue_url},
+        )
+        return task
+
+    task.title = issue.get("title") or task.title
+    task.body = body
+    task.github_issue_url = issue.get("html_url") or task.github_issue_url
+    service._audit(
+        task.id,
+        None,
+        "task.refreshed_from_github",
+        {"issue_number": issue_number, "issue_url": task.github_issue_url},
+    )
+    return task
 
 
 # 대시보드 버튼에서 들어온 명령을 기존 OrchestrationService 명령으로 위임한다.
@@ -314,6 +397,13 @@ def _redirect_to_task(task_id: str, message: str | None = None, error: str | Non
     return RedirectResponse(f"/dashboard/tasks/{task_id}{suffix}", status_code=303)
 
 
+# 작업 목록 화면으로 flash 메시지를 포함해 리다이렉트한다.
+def _redirect_to_dashboard(message: str | None = None, error: str | None = None) -> RedirectResponse:
+    params = {key: value for key, value in {"message": message, "error": error}.items() if value}
+    suffix = f"?{urlencode(params)}" if params else ""
+    return RedirectResponse(f"/dashboard{suffix}", status_code=303)
+
+
 # 명령 실행 버튼과 메모 입력 UI를 생성한다.
 def _command_panel(task: Task) -> str:
     commands = [
@@ -468,6 +558,7 @@ def _style() -> str:
     .button:hover { filter: brightness(1.05); text-decoration: none; }
     .button-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     .button-row.compact { margin-top: 0; }
+    .button-row form { margin: 0; }
     .hint { color: #94a3b8; margin: -6px 0 18px; font-size: 14px; }
     .command-form label { display: block; color: #cbd5e1; font-size: 13px; margin-bottom: 8px; }
     textarea { width: 100%; resize: vertical; border: 1px solid #334155; border-radius: 7px; background: #0f141b; color: #e2e8f0; padding: 10px; font: inherit; line-height: 1.5; }
