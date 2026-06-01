@@ -616,7 +616,73 @@ def _agent_return_payload(
     if artifacts:
         lines.extend(["", "상세 Artifacts"])
         lines.extend(f"- {artifact.kind}: {artifact.path}" for artifact in artifacts)
+        lines.extend(["", "Artifact 주요 내용"])
+        lines.extend(_artifact_preview_sections(run, artifacts))
     return "\n".join(lines)
+
+
+# 에이전트가 GitHub 댓글에 담았던 핵심 artifact 내용을 모달에 함께 표시한다.
+def _artifact_preview_sections(run: Run, artifacts: list[Artifact]) -> list[str]:
+    selected_artifacts = _selected_artifacts_for_modal(run, artifacts)
+    if not selected_artifacts:
+        return ["- 미리볼 수 있는 artifact 파일이 없습니다."]
+
+    sections: list[str] = []
+    for artifact in selected_artifacts:
+        label, _ = _artifact_label_and_description(artifact)
+        sections.extend(
+            [
+                "",
+                f"## {label} ({artifact.kind})",
+                f"path: {artifact.path}",
+                "",
+                _read_artifact_preview(artifact),
+            ]
+        )
+    return sections
+
+
+# run 종류별로 모달에 우선 표시할 artifact를 고른다.
+def _selected_artifacts_for_modal(run: Run, artifacts: list[Artifact]) -> list[Artifact]:
+    preferred_by_agent = {
+        "plan": [
+            "architecture-doc",
+            "sequence-diagram",
+            "flow-chart",
+            "edge-case-checklist",
+        ],
+        "dev": [
+            "dev-status",
+            "commit-plan",
+            "test-report",
+            "patch",
+        ],
+        "fix_develop": [
+            "fix-develop-report",
+        ],
+        "qa": [
+            "qa-report",
+            "qa-checklist",
+        ],
+    }
+    preferred = preferred_by_agent.get(run.agent_name, [])
+    ordered: list[Artifact] = []
+    for kind in preferred:
+        ordered.extend(artifact for artifact in artifacts if artifact.kind == kind)
+    if ordered:
+        return ordered
+    return artifacts[:4]
+
+
+# artifact 파일 내용을 읽어 모달에서 안전하게 미리볼 수 있는 길이로 제한한다.
+def _read_artifact_preview(artifact: Artifact, max_chars: int = 8000) -> str:
+    path = Path(artifact.path)
+    if not path.exists():
+        return "파일을 찾을 수 없습니다. artifact 경로를 직접 확인하세요."
+    content = path.read_text(encoding="utf-8", errors="replace").strip()
+    if len(content) <= max_chars:
+        return content
+    return f"{content[:max_chars]}\n\n... 내용이 길어 일부만 표시합니다."
 
 
 # run 상태에 맞는 시각적 class를 반환한다.

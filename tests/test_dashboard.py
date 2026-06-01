@@ -81,15 +81,29 @@ def test_dashboard_home_hides_internal_tasks_by_default(monkeypatch):
 
 
 # SSR 대시보드 상세 화면이 명령 버튼과 실행 이력을 렌더링하는지 검증한다.
-def test_dashboard_task_detail_renders_command_panel(monkeypatch):
+def test_dashboard_task_detail_renders_command_panel(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestration.settings, "github_token", None)
     task = _create_dashboard_task()
+    sequence_file = tmp_path / "sequence-diagram.md"
+    sequence_file.write_text(
+        "\n".join(
+            [
+                "# Sequence",
+                "",
+                "```mermaid",
+                "sequenceDiagram",
+                "    actor User",
+                "```",
+            ]
+        ),
+        encoding="utf-8",
+    )
     with SessionLocal() as db:
         run = Run(
             task_id=task.id,
-            agent_name="dev",
+            agent_name="plan",
             status="success",
-            summary="테스트용 개발 실행 성공",
+            summary="테스트용 Plan 실행 성공",
         )
         db.add(run)
         db.flush()
@@ -101,6 +115,13 @@ def test_dashboard_task_detail_renders_command_panel(monkeypatch):
                     kind="architecture-doc",
                     path=f"artifacts/{task.id}/plans/architecture.md",
                     sha256="0" * 64,
+                ),
+                Artifact(
+                    task_id=task.id,
+                    run_id=run.id,
+                    kind="sequence-diagram",
+                    path=str(sequence_file),
+                    sha256="3" * 64,
                 ),
                 Artifact(
                     task_id=task.id,
@@ -134,8 +155,9 @@ def test_dashboard_task_detail_renders_command_panel(monkeypatch):
     assert "시스템 QA 리포트" in response.text
     assert "작업 메모" in response.text
     assert "Agent 호출 이력" in response.text
-    assert "테스트용 개발 실행 성공" in response.text
+    assert "테스트용 Plan 실행 성공" in response.text
     assert "Agent 반환 데이터" in response.text
+    assert "sequenceDiagram" in response.text
     assert task.github_issue_url in response.text
 
 
