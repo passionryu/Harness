@@ -80,6 +80,41 @@ def test_github_webhook_rejects_invalid_signature(monkeypatch):
     assert response.status_code == 401
 
 
+def test_github_issue_comment_commands_are_disabled_when_setting_is_off(monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "enable_github_comment_commands", False)
+
+    payload = {
+        "action": "created",
+        "issue": {
+            "number": 1,
+            "title": "[FE] 회원 가입 기능 구현",
+            "body": "회원가입 화면을 추가한다.",
+            "html_url": "https://github.com/passionryu/studyHub/issues/1",
+        },
+        "comment": {"body": "@ai-harness plan"},
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ignored",
+        "reason": "GitHub 댓글 명령 추적은 비활성화되어 있습니다.",
+    }
+
+
 def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
 

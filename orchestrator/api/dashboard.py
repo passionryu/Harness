@@ -162,7 +162,8 @@ def dashboard_task_detail(
               <article class="panel">
                 <h2>명령 실행</h2>
                 <p class="section-help">
-                  버튼을 누르면 GitHub 댓글 명령과 같은 하네스 작업이 실행됩니다.
+                  로컬 운영자가 직접 하네스 작업을 실행할 때만 사용하는 보조 패널입니다.
+                  기본 입력 인터페이스는 Codex 대화이며, 이 화면은 상태 확인과 긴급 조작용으로 유지합니다.
                   요청 메모는 Replan, QA, Re-QA, Refactor, Cancel에서 사람이 남긴 지시사항으로 전달됩니다.
                 </p>
                 {_command_panel(task)}

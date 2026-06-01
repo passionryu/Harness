@@ -63,6 +63,9 @@ async def github_webhook(
 
     payload = await request.json()
 
+    if x_github_event == "issue_comment" and not settings.enable_github_comment_commands:
+        return {"status": "ignored", "reason": "GitHub 댓글 명령 추적은 비활성화되어 있습니다."}
+
     if x_github_event == "issue_comment":
         return _handle_issue_comment_webhook(payload, db)
 

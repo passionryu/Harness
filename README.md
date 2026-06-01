@@ -77,77 +77,28 @@ GITHUB_OWNER=passionryu
 GITHUB_REPO=studyHub
 GITHUB_TOKEN=...
 GITHUB_WEBHOOK_SECRET=...
+ENABLE_GITHUB_COMMENT_COMMANDS=false
 PLAN_TRIGGER_LABEL=ai-plan-ready
-PLAN_COMMAND=@ai-harness plan
-REPLAN_COMMAND=@ai-harness replan
-DEVELOP_COMMAND=@ai-harness develop
-REFACTOR_COMMAND=@ai-harness refactor
-QA_COMMAND=@ai-harness qa
-REQA_COMMAND=@ai-harness re-qa
 ALLOW_EXTERNAL_NOTIFICATIONS=false
 GOOGLE_CHAT_WEBHOOK_URL=
 DISCORD_WEBHOOK_URL=
 ```
 
-Initial planning can be triggered in two ways:
+Initial planning can be triggered manually through the harness API:
 
 ```bash
 curl -X POST http://localhost:3002/sync/github/issues/1/plan
 ```
 
-Or through a GitHub webhook:
+GitHub webhook support is now limited to issue metadata/state triggers:
 
 - Webhook URL: `POST /webhooks/github`
-- Required events: `Issues`, `Issue comments`
+- Required event: `Issues`
 - Initial plan trigger: add the `ai-plan-ready` label to an issue
-- Initial plan command: add a new issue comment containing `@ai-harness plan`
-- Replan trigger: add a new issue comment containing `@ai-harness replan`
-- Develop trigger: add a new issue comment containing `@ai-harness develop`
-- Refactor trigger: add a new issue comment containing `@ai-harness refactor`
-- System QA trigger: add a new issue comment containing `@ai-harness qa`
-- System QA retry trigger: add a new issue comment containing `@ai-harness re-qa`
-
-Example initial plan comment:
-
-```markdown
-@ai-harness plan
-```
-
-If a successful plan already exists, `@ai-harness plan` is skipped. Use `@ai-harness replan` when the existing design should be revised.
-
-Use `@ai-harness develop` after the plan is reviewed and approved:
-
-```markdown
-@ai-harness develop
-```
-
-The command requires a successful Plan Agent run. It moves the task from `Todo` to `In Progress` and runs the Dev Agent.
-
-Use `@ai-harness refactor` when the implementation exists but should be revised based on human feedback:
-
-```markdown
-@ai-harness refactor
-
-- 컨트롤러는 얇게 유지한다.
-- DTO는 별도 파일로 분리한다.
-- 에러 응답과 로깅 규칙을 반영한다.
-```
-
-The command requires a successful Dev Agent run. It records the comment body as a human refactor request, reruns the Dev Agent on the existing branch, and keeps or moves the task back to `In Progress` so System QA can be run again.
-
-Use `@ai-harness qa` after development commits are ready:
-
-```markdown
-@ai-harness qa
-```
-
-The command requires the task to be in `In Progress`. It runs the QA Agent, writes `qa-report.md` and `qa-checklist.md`, then moves the task to `System QA` when checks pass.
-
-If the task is already in `System QA`, use `@ai-harness re-qa` to run QA again without moving the task back to development:
-
-```markdown
-@ai-harness re-qa
-```
+- `Issue comments` are intentionally not required.
+- GitHub issue comments are no longer used as a command input channel.
+- `ENABLE_GITHUB_COMMENT_COMMANDS=false` keeps `issue_comment` webhook events ignored even if GitHub sends them.
+- Use Codex as the primary human input interface; use GitHub issue comments as generated progress records only.
 
 External notifications are blocked by default. Set `ALLOW_EXTERNAL_NOTIFICATIONS=true` only when you intentionally want real Google Chat or Discord messages to be sent. When enabled, `GOOGLE_CHAT_WEBHOOK_URL` or `DISCORD_WEBHOOK_URL` receives a notification after System QA or re-QA passes.
 
