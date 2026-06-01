@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 import orchestrator.api.dashboard as dashboard
 import orchestrator.services.orchestration as orchestration
-from orchestrator.db.models import Task
+from orchestrator.db.models import Artifact, Task
 from orchestrator.db.session import SessionLocal, create_db
 from orchestrator.main import app
 
@@ -84,6 +84,30 @@ def test_dashboard_home_hides_internal_tasks_by_default(monkeypatch):
 def test_dashboard_task_detail_renders_command_panel(monkeypatch):
     monkeypatch.setattr(orchestration.settings, "github_token", None)
     task = _create_dashboard_task()
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                Artifact(
+                    task_id=task.id,
+                    kind="architecture-doc",
+                    path=f"artifacts/{task.id}/plans/architecture.md",
+                    sha256="0" * 64,
+                ),
+                Artifact(
+                    task_id=task.id,
+                    kind="dev-status",
+                    path=f"artifacts/{task.id}/dev/dev-status.md",
+                    sha256="1" * 64,
+                ),
+                Artifact(
+                    task_id=task.id,
+                    kind="qa-report",
+                    path=f"artifacts/{task.id}/qa/qa-report.md",
+                    sha256="2" * 64,
+                ),
+            ]
+        )
+        db.commit()
 
     with TestClient(app) as client:
         response = client.get(f"/dashboard/tasks/{task.id}")
@@ -92,6 +116,12 @@ def test_dashboard_task_detail_renders_command_panel(monkeypatch):
     assert "명령 실행" in response.text
     assert "Develop" in response.text
     assert "Refactor" in response.text
+    assert "사람이 Plan을 승인하고 개발 에이전트를 실행합니다." in response.text
+    assert "Plan 산출물" in response.text
+    assert "Dev 산출물" in response.text
+    assert "QA 산출물" in response.text
+    assert "설계 요약" in response.text
+    assert "시스템 QA 리포트" in response.text
     assert task.github_issue_url in response.text
 
 

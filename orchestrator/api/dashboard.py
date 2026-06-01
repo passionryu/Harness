@@ -145,6 +145,10 @@ def dashboard_task_detail(
               </article>
               <article class="panel">
                 <h2>명령 실행</h2>
+                <p class="section-help">
+                  버튼을 누르면 GitHub 댓글 명령과 같은 하네스 작업이 실행됩니다.
+                  요청 메모는 Replan, QA, Re-QA, Refactor, Cancel에서 사람이 남긴 지시사항으로 전달됩니다.
+                </p>
                 {_command_panel(task)}
               </article>
             </section>
@@ -155,6 +159,10 @@ def dashboard_task_detail(
               </article>
               <article class="panel">
                 <h2>Artifacts</h2>
+                <p class="section-help">
+                  에이전트가 남긴 증거 파일입니다. 설계는 구현 전 판단 자료, 개발은 커밋/패치/테스트 결과,
+                  QA는 사람이 검증할 때 참고하는 결과 보고서입니다.
+                </p>
                 {_artifact_list(artifacts)}
               </article>
               <article class="panel">
@@ -407,26 +415,36 @@ def _redirect_to_dashboard(message: str | None = None, error: str | None = None)
 # 명령 실행 버튼과 메모 입력 UI를 생성한다.
 def _command_panel(task: Task) -> str:
     commands = [
-        ("plan", "Plan"),
-        ("replan", "Replan"),
-        ("develop", "Develop"),
-        ("fix-develop", "Fix Develop"),
-        ("qa", "System QA"),
-        ("re-qa", "Re-QA"),
-        ("refactor", "Refactor"),
-        ("status", "Status Comment"),
-        ("cancel", "Cancel"),
+        ("plan", "Plan", "최초 설계를 생성합니다. 이미 성공한 Plan이 있으면 중복 실행을 막습니다."),
+        ("replan", "Replan", "기존 설계가 마음에 들지 않을 때 요청 메모를 반영해 다시 설계합니다."),
+        ("develop", "Develop", "사람이 Plan을 승인하고 개발 에이전트를 실행합니다."),
+        ("fix-develop", "Fix Develop", "최근 개발 실패 로그를 읽고 자동 복구를 시도합니다."),
+        ("qa", "System QA", "개발 결과를 시스템 검증으로 넘깁니다. In Progress 상태에서 사용합니다."),
+        ("re-qa", "Re-QA", "System QA 이후 같은 작업을 다시 검증합니다."),
+        ("refactor", "Refactor", "이미 구현된 결과를 요청 메모 기준으로 구조 개선합니다."),
+        ("status", "Status Comment", "현재 상태와 마지막 실행 결과를 GitHub 댓글로 남깁니다."),
+        ("cancel", "Cancel", "작업을 중지 상태로 바꿉니다. 요청 메모에 중지 사유를 적습니다."),
     ]
-    buttons = "\n".join(
-        f'<button class="button" type="submit" formaction="/dashboard/tasks/{_e(task.id)}/commands/{_e(command)}">{_e(label)}</button>'
-        for command, label in commands
+    command_cards = "\n".join(
+        _command_card(task, command, label, description)
+        for command, label, description in commands
     )
     return f"""
     <form method="post" class="command-form">
       <label for="note">요청 메모</label>
-      <textarea id="note" name="note" rows="5" placeholder="replan, refactor, qa 요청사항을 적습니다."></textarea>
-      <div class="button-row">{buttons}</div>
+      <textarea id="note" name="note" rows="5" placeholder="예: DDD 경계를 유지해서 controller DTO를 분리해줘. / QA에서 로그인 실패 케이스를 함께 봐줘."></textarea>
+      <div class="command-grid">{command_cards}</div>
     </form>
+    """
+
+
+# 명령 버튼 하나와 사용 설명을 함께 렌더링한다.
+def _command_card(task: Task, command: str, label: str, description: str) -> str:
+    return f"""
+    <div class="command-card">
+      <button class="button" type="submit" formaction="/dashboard/tasks/{_e(task.id)}/commands/{_e(command)}">{_e(label)}</button>
+      <p>{_e(description)}</p>
+    </div>
     """
 
 
@@ -450,24 +468,88 @@ def _run_item(service: OrchestrationService, run: Run) -> str:
     """
 
 
-# artifact 목록을 로컬 경로 중심으로 렌더링한다.
+# artifact 목록을 역할별 묶음과 설명 중심으로 렌더링한다.
 def _artifact_list(artifacts: list[Artifact]) -> str:
     if not artifacts:
         return '<p class="empty">아직 산출물이 없습니다.</p>'
-    items = []
-    for artifact in artifacts:
-        path = Path(artifact.path)
-        open_command = f'open -a "IntelliJ IDEA" {path}'
-        items.append(
+    groups = _group_artifacts(artifacts)
+    sections = []
+    for group_name, grouped_artifacts in groups.items():
+        items = "\n".join(_artifact_item(artifact) for artifact in grouped_artifacts)
+        sections.append(
             f"""
-            <li>
-              <strong>{_e(artifact.kind)}</strong>
-              <code>{_e(str(path))}</code>
-              <small>{_e(open_command)}</small>
-            </li>
+            <section class="artifact-group">
+              <h3>{_e(group_name)}</h3>
+              <ul class="artifact-list">{items}</ul>
+            </section>
             """
         )
-    return "<ul class=\"artifact-list\">" + "\n".join(items) + "</ul>"
+    return "\n".join(sections)
+
+
+# artifact 경로와 종류를 기준으로 사람이 이해할 수 있는 묶음을 만든다.
+def _group_artifacts(artifacts: list[Artifact]) -> dict[str, list[Artifact]]:
+    group_order = ["Plan 산출물", "Dev 산출물", "QA 산출물", "기타 산출물"]
+    groups: dict[str, list[Artifact]] = {name: [] for name in group_order}
+    seen: set[tuple[str, str]] = set()
+    for artifact in artifacts:
+        key = (artifact.kind, artifact.path)
+        if key in seen:
+            continue
+        seen.add(key)
+        groups[_artifact_group_name(artifact)].append(artifact)
+    return {name: items for name, items in groups.items() if items}
+
+
+# artifact가 속한 하네스 실행 단계를 판별한다.
+def _artifact_group_name(artifact: Artifact) -> str:
+    path = artifact.path
+    if "/plans/" in path or artifact.kind in {"architecture-doc", "flow", "flow-chart", "sequence-diagram", "edge-case-checklist"}:
+        return "Plan 산출물"
+    if "/qa/" in path or artifact.kind.startswith("qa-"):
+        return "QA 산출물"
+    if "/dev/" in path or artifact.kind in {"commit-plan", "dev-status", "patch", "test-report"}:
+        return "Dev 산출물"
+    return "기타 산출물"
+
+
+# artifact 하나를 목적, 경로, 여는 명령과 함께 렌더링한다.
+def _artifact_item(artifact: Artifact) -> str:
+    path = Path(artifact.path)
+    open_command = f'open -a "IntelliJ IDEA" {path}'
+    label, description = _artifact_label_and_description(artifact)
+    return f"""
+    <li>
+      <div class="artifact-heading">
+        <strong>{_e(label)}</strong>
+        <span>{_e(artifact.kind)}</span>
+      </div>
+      <p>{_e(description)}</p>
+      <code>{_e(str(path))}</code>
+      <small>IntelliJ에서 열기: <code>{_e(open_command)}</code></small>
+    </li>
+    """
+
+
+# artifact kind를 사람이 읽기 좋은 이름과 설명으로 바꾼다.
+def _artifact_label_and_description(artifact: Artifact) -> tuple[str, str]:
+    mapping = {
+        "architecture-doc": ("설계 요약", "작업 범위, 구현 방향, 미결정 사항을 보는 문서입니다."),
+        "sequence-diagram": ("시퀀스 다이어그램", "사용자와 시스템 사이의 유스케이스 흐름을 순서대로 봅니다."),
+        "flow": ("작업 흐름", "화면/API/상태가 어떤 순서로 이어지는지 텍스트로 정리한 문서입니다."),
+        "flow-chart": ("플로우 차트", "분기와 흐름을 빠르게 이해하기 위한 다이어그램 문서입니다."),
+        "edge-case-checklist": ("엣지 케이스 체크리스트", "구현 전후에 놓치기 쉬운 예외 케이스를 확인합니다."),
+        "commit-plan": ("커밋 계획", "개발 에이전트가 어떤 단위로 커밋했거나 커밋할지 확인합니다."),
+        "dev-status": ("개발 상태 보고서", "개발 runner가 어디까지 처리했고 어디서 멈췄는지 봅니다."),
+        "patch": ("구현 패치", "코드 변경 diff를 확인합니다."),
+        "test-report": ("개발 테스트 리포트", "개발 단계에서 실행한 테스트 명령과 결과를 봅니다."),
+        "fix-develop-report": ("개발 실패 수정 리포트", "fix-develop이 실패 원인을 어떻게 분석하고 고쳤는지 봅니다."),
+        "qa-report": ("시스템 QA 리포트", "자동 QA가 실제로 무엇을 검증했고 통과/실패했는지 확인합니다."),
+        "qa-checklist": ("Human QA 체크리스트", "사람이 브라우저/API/DB에서 직접 확인할 항목입니다."),
+    }
+    if artifact.kind in mapping:
+        return mapping[artifact.kind]
+    return (artifact.kind, "에이전트가 남긴 보조 산출물입니다. 상세 내용은 파일을 열어 확인합니다.")
 
 
 # state transition 목록을 렌더링한다.
@@ -560,15 +642,26 @@ def _style() -> str:
     .button-row.compact { margin-top: 0; }
     .button-row form { margin: 0; }
     .hint { color: #94a3b8; margin: -6px 0 18px; font-size: 14px; }
+    .section-help { color: #94a3b8; line-height: 1.55; margin: -6px 0 14px; font-size: 14px; }
     .command-form label { display: block; color: #cbd5e1; font-size: 13px; margin-bottom: 8px; }
     textarea { width: 100%; resize: vertical; border: 1px solid #334155; border-radius: 7px; background: #0f141b; color: #e2e8f0; padding: 10px; font: inherit; line-height: 1.5; }
+    .command-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+    .command-card { border: 1px solid #273241; background: #111820; border-radius: 8px; padding: 10px; display: grid; gap: 8px; align-content: start; }
+    .command-card .button { width: 100%; }
+    .command-card p { margin: 0; color: #aab6c5; line-height: 1.45; font-size: 12px; }
     .kv { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; margin: 0; }
     .kv dt { color: #94a3b8; }
     .kv dd { margin: 0; min-width: 0; }
     .timeline, .artifact-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 14px; }
     .timeline li span { display: block; margin: 4px 0; color: #94a3b8; font-size: 12px; }
     .timeline li p { margin: 4px 0 0; color: #cbd5e1; line-height: 1.45; }
+    .artifact-group { border-top: 1px solid #273241; padding-top: 14px; margin-top: 14px; }
+    .artifact-group:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+    .artifact-group h3 { margin: 0 0 10px; font-size: 14px; color: #dbeafe; letter-spacing: 0; }
     .artifact-list li { display: grid; gap: 7px; }
+    .artifact-list p { margin: 0; color: #cbd5e1; line-height: 1.45; font-size: 13px; }
+    .artifact-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .artifact-heading span { color: #94a3b8; font-size: 12px; }
     .artifact-list small { color: #94a3b8; word-break: break-word; }
     .empty { color: #94a3b8; }
     .notice { border-radius: 8px; padding: 12px 14px; margin-bottom: 18px; border: 1px solid; }
@@ -578,6 +671,7 @@ def _style() -> str:
     @media (max-width: 980px) {
       main { width: min(100vw - 28px, 760px); }
       .toolbar, .grid, .grid.three { grid-template-columns: 1fr; display: grid; }
+      .command-grid { grid-template-columns: 1fr; }
       table { min-width: 760px; }
       .panel { overflow-x: auto; }
     }
