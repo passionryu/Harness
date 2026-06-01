@@ -142,6 +142,22 @@ def dashboard_task_detail(
                   <dt>다음 추천</dt><dd>{_e(service._next_command_for_state(task.state))}</dd>
                   <dt>Updated</dt><dd>{_e(service._format_dt(task.updated_at))}</dd>
                 </dl>
+                <div class="task-workspace">
+                  <section class="memo-box">
+                    <div class="subhead">
+                      <h2>작업 메모</h2>
+                      <span>이 이슈를 진행하면서 남기는 개인 메모입니다.</span>
+                    </div>
+                    {_memo_panel(task)}
+                  </section>
+                  <section class="agent-board">
+                    <div class="subhead">
+                      <h2>Agent 호출 이력</h2>
+                      <span>최신 실행순입니다. 카드를 누르면 반환 내용을 확인할 수 있습니다.</span>
+                    </div>
+                    {_agent_history(service, task, runs, artifacts)}
+                  </section>
+                </div>
               </article>
               <article class="panel">
                 <h2>명령 실행</h2>
@@ -173,6 +189,23 @@ def dashboard_task_detail(
             """,
         )
     )
+
+
+# 대시보드 메모를 task body에 저장한다.
+@router.post("/tasks/{task_id}/memo")
+async def dashboard_save_memo(
+    task_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    task = db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+
+    form = _parse_urlencoded_body(await request.body())
+    task.body = _replace_dashboard_memo(task.body, form.get("memo", ""))
+    db.commit()
+    return _redirect_to_task(task.id, message="작업 메모를 저장했습니다.")
 
 
 # GitHub issue 목록을 읽어 신규 task를 Backlog로 만들고 기존 task 정보를 갱신한다.
@@ -398,6 +431,51 @@ def _parse_urlencoded_body(raw_body: bytes) -> dict[str, str]:
     return {key: values[-1] if values else "" for key, values in parsed.items()}
 
 
+# task body에서 대시보드 메모 섹션을 추출한다.
+def _dashboard_memo(body: str) -> str:
+    return "\n".join(_extract_markdown_section(body, "Dashboard Memo")).strip()
+
+
+# task body의 대시보드 메모 섹션을 새 내용으로 교체한다.
+def _replace_dashboard_memo(body: str, memo: str) -> str:
+    lines = body.rstrip().splitlines()
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if stripped == "## Dashboard Memo":
+            index += 1
+            while index < len(lines) and not lines[index].strip().startswith("## "):
+                index += 1
+            continue
+        output.append(lines[index])
+        index += 1
+
+    cleaned_memo = memo.strip()
+    if cleaned_memo:
+        if output and output[-1].strip():
+            output.append("")
+        output.extend(["## Dashboard Memo", cleaned_memo])
+    return "\n".join(output).strip() + "\n"
+
+
+# markdown body에서 특정 2단계 heading 아래의 내용을 반환한다.
+def _extract_markdown_section(body: str, heading: str) -> list[str]:
+    lines = body.splitlines()
+    collected: list[str] = []
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if in_section:
+                break
+            in_section = stripped.removeprefix("## ").strip() == heading
+            continue
+        if in_section:
+            collected.append(line)
+    return collected
+
+
 # 작업 상세 화면으로 flash 메시지를 포함해 리다이렉트한다.
 def _redirect_to_task(task_id: str, message: str | None = None, error: str | None = None) -> RedirectResponse:
     params = {key: value for key, value in {"message": message, "error": error}.items() if value}
@@ -410,6 +488,145 @@ def _redirect_to_dashboard(message: str | None = None, error: str | None = None)
     params = {key: value for key, value in {"message": message, "error": error}.items() if value}
     suffix = f"?{urlencode(params)}" if params else ""
     return RedirectResponse(f"/dashboard{suffix}", status_code=303)
+
+
+# 작업 메모 입력 패널을 렌더링한다.
+def _memo_panel(task: Task) -> str:
+    memo = _dashboard_memo(task.body)
+    return f"""
+    <form method="post" action="/dashboard/tasks/{_e(task.id)}/memo" class="memo-form">
+      <textarea name="memo" rows="8" placeholder="예: 로그인 ID 정책은 4~20자, email은 선택값. QA 때 중복 loginId와 email nullable을 꼭 확인.">{_e(memo)}</textarea>
+      <div class="memo-actions">
+        <button class="button secondary" type="submit">메모 저장</button>
+      </div>
+    </form>
+    """
+
+
+# 에이전트 실행 이력을 클릭 가능한 카드와 모달로 렌더링한다.
+def _agent_history(
+    service: OrchestrationService,
+    task: Task,
+    runs: list[Run],
+    artifacts: list[Artifact],
+) -> str:
+    if not runs:
+        return '<p class="empty">아직 호출된 에이전트가 없습니다.</p>'
+    artifact_map = _artifacts_by_run(artifacts)
+    cards = "\n".join(_agent_card(service, run) for run in runs)
+    modals = "\n".join(_agent_modal(service, task, run, artifact_map.get(run.id, [])) for run in runs)
+    return f"""
+    <div class="agent-list">{cards}</div>
+    {modals}
+    <script>
+      document.querySelectorAll('[data-modal-open]').forEach((button) => {{
+        button.addEventListener('click', () => {{
+          const dialog = document.getElementById(button.dataset.modalOpen);
+          if (dialog) dialog.showModal();
+        }});
+      }});
+      document.querySelectorAll('[data-modal-close]').forEach((button) => {{
+        button.addEventListener('click', () => button.closest('dialog')?.close());
+      }});
+    </script>
+    """
+
+
+# run id별 artifact 목록을 만든다.
+def _artifacts_by_run(artifacts: list[Artifact]) -> dict[str, list[Artifact]]:
+    grouped: dict[str, list[Artifact]] = {}
+    for artifact in artifacts:
+        if artifact.run_id:
+            grouped.setdefault(artifact.run_id, []).append(artifact)
+    return grouped
+
+
+# 에이전트 실행 카드 하나를 렌더링한다.
+def _agent_card(service: OrchestrationService, run: Run) -> str:
+    status_class = _status_class(run.status)
+    return f"""
+    <button class="agent-card" type="button" data-modal-open="run-{_e(run.id)}">
+      <span class="agent-main">
+        <strong>{_e(run.agent_name)}</strong>
+        <span class="status-dot {status_class}">{_e(run.status)}</span>
+      </span>
+      <span class="agent-time">{_e(service._format_dt(run.started_at))}</span>
+      <span class="agent-summary">{_e(run.summary or '요약 없음')}</span>
+    </button>
+    """
+
+
+# 에이전트 실행 상세 모달을 렌더링한다.
+def _agent_modal(
+    service: OrchestrationService,
+    task: Task,
+    run: Run,
+    artifacts: list[Artifact],
+) -> str:
+    payload = _agent_return_payload(service, task, run, artifacts)
+    artifact_lines = "\n".join(
+        f"<li><code>{_e(artifact.kind)}</code> {_e(artifact.path)}</li>" for artifact in artifacts
+    )
+    artifact_section = (
+        f"<ul class=\"modal-artifacts\">{artifact_lines}</ul>"
+        if artifacts
+        else '<p class="empty">이 run에 직접 연결된 artifact가 없습니다.</p>'
+    )
+    return f"""
+    <dialog id="run-{_e(run.id)}" class="run-modal">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">Agent 반환 데이터</p>
+          <h2>{_e(run.agent_name)} · {_e(run.status)}</h2>
+        </div>
+        <button class="icon-button" type="button" data-modal-close>닫기</button>
+      </div>
+      <div class="modal-body">
+        <pre>{_e(payload)}</pre>
+        <h3>연결된 산출물</h3>
+        {artifact_section}
+      </div>
+    </dialog>
+    """
+
+
+# 모달에 표시할 에이전트 반환 데이터를 GitHub 댓글과 비슷한 구조로 만든다.
+def _agent_return_payload(
+    service: OrchestrationService,
+    task: Task,
+    run: Run,
+    artifacts: list[Artifact],
+) -> str:
+    lines = [
+        f"작업: {task.title}",
+        f"Task ID: {task.id}",
+        f"GitHub Issue: #{task.github_issue_number}" if task.github_issue_number else "GitHub Issue: 없음",
+        "",
+        "Agent 실행",
+        f"- agent: {run.agent_name}",
+        f"- status: {run.status}",
+        f"- started_at: {service._format_dt(run.started_at)}",
+        f"- finished_at: {service._format_dt(run.finished_at)}",
+        "",
+        "반환 요약",
+        run.summary or "요약 없음",
+    ]
+    if run.error:
+        lines.extend(["", "실패 이유", run.error])
+    if artifacts:
+        lines.extend(["", "상세 Artifacts"])
+        lines.extend(f"- {artifact.kind}: {artifact.path}" for artifact in artifacts)
+    return "\n".join(lines)
+
+
+# run 상태에 맞는 시각적 class를 반환한다.
+def _status_class(status: str) -> str:
+    return {
+        "success": "ok",
+        "failed": "bad",
+        "needs_human": "wait",
+        "running": "run",
+    }.get(status, "idle")
 
 
 # 명령 실행 버튼과 메모 입력 UI를 생성한다.
@@ -643,6 +860,33 @@ def _style() -> str:
     .button-row form { margin: 0; }
     .hint { color: #94a3b8; margin: -6px 0 18px; font-size: 14px; }
     .section-help { color: #94a3b8; line-height: 1.55; margin: -6px 0 14px; font-size: 14px; }
+    .task-workspace { margin-top: 34px; display: grid; grid-template-columns: minmax(320px, 0.9fr) minmax(360px, 1.1fr); gap: 18px; align-items: start; }
+    .memo-box, .agent-board { border-top: 1px solid #273241; padding-top: 18px; min-width: 0; }
+    .subhead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+    .subhead h2 { margin: 0; }
+    .subhead span { color: #94a3b8; font-size: 12px; line-height: 1.4; text-align: right; }
+    .memo-form { display: grid; gap: 10px; }
+    .memo-actions { display: flex; justify-content: flex-end; }
+    .agent-list { display: grid; gap: 10px; max-height: 360px; overflow: auto; padding-right: 4px; }
+    .agent-card { width: 100%; text-align: left; display: grid; gap: 6px; border: 1px solid #273241; background: #111820; color: #e2e8f0; border-radius: 8px; padding: 11px; cursor: pointer; font: inherit; }
+    .agent-card:hover { border-color: #60a5fa; background: #142033; }
+    .agent-main { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .agent-time { color: #94a3b8; font-size: 12px; }
+    .agent-summary { color: #cbd5e1; line-height: 1.4; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .status-dot { border-radius: 999px; padding: 2px 8px; font-size: 12px; border: 1px solid #334155; color: #cbd5e1; }
+    .status-dot.ok { border-color: #15803d; color: #bbf7d0; background: #052e16; }
+    .status-dot.bad { border-color: #b91c1c; color: #fecaca; background: #450a0a; }
+    .status-dot.wait { border-color: #b45309; color: #fde68a; background: #451a03; }
+    .status-dot.run { border-color: #2563eb; color: #bfdbfe; background: #172554; }
+    .run-modal { width: min(860px, calc(100vw - 36px)); border: 1px solid #334155; border-radius: 10px; background: #151d27; color: #e8edf4; padding: 0; box-shadow: 0 24px 80px rgba(0,0,0,0.5); }
+    .run-modal::backdrop { background: rgba(2, 6, 23, 0.72); }
+    .modal-header { display: flex; justify-content: space-between; gap: 18px; align-items: center; padding: 18px 20px; border-bottom: 1px solid #273241; }
+    .modal-header h2 { margin: 0; }
+    .icon-button { border: 1px solid #334155; background: #1e293b; color: #e2e8f0; border-radius: 7px; min-height: 34px; padding: 6px 10px; cursor: pointer; }
+    .modal-body { padding: 18px 20px 20px; display: grid; gap: 16px; }
+    .modal-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; background: #0f141b; border: 1px solid #273241; border-radius: 8px; padding: 14px; color: #dbeafe; line-height: 1.55; max-height: 440px; overflow: auto; }
+    .modal-body h3 { margin: 0; font-size: 15px; }
+    .modal-artifacts { margin: 0; padding-left: 20px; display: grid; gap: 8px; color: #cbd5e1; }
     .command-form label { display: block; color: #cbd5e1; font-size: 13px; margin-bottom: 8px; }
     textarea { width: 100%; resize: vertical; border: 1px solid #334155; border-radius: 7px; background: #0f141b; color: #e2e8f0; padding: 10px; font: inherit; line-height: 1.5; }
     .command-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
@@ -671,6 +915,9 @@ def _style() -> str:
     @media (max-width: 980px) {
       main { width: min(100vw - 28px, 760px); }
       .toolbar, .grid, .grid.three { grid-template-columns: 1fr; display: grid; }
+      .task-workspace { grid-template-columns: 1fr; }
+      .subhead { display: grid; }
+      .subhead span { text-align: left; }
       .command-grid { grid-template-columns: 1fr; }
       table { min-width: 760px; }
       .panel { overflow-x: auto; }

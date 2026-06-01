@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 import orchestrator.api.dashboard as dashboard
 import orchestrator.services.orchestration as orchestration
-from orchestrator.db.models import Artifact, Task
+from orchestrator.db.models import Artifact, Run, Task
 from orchestrator.db.session import SessionLocal, create_db
 from orchestrator.main import app
 
@@ -85,16 +85,26 @@ def test_dashboard_task_detail_renders_command_panel(monkeypatch):
     monkeypatch.setattr(orchestration.settings, "github_token", None)
     task = _create_dashboard_task()
     with SessionLocal() as db:
+        run = Run(
+            task_id=task.id,
+            agent_name="dev",
+            status="success",
+            summary="테스트용 개발 실행 성공",
+        )
+        db.add(run)
+        db.flush()
         db.add_all(
             [
                 Artifact(
                     task_id=task.id,
+                    run_id=run.id,
                     kind="architecture-doc",
                     path=f"artifacts/{task.id}/plans/architecture.md",
                     sha256="0" * 64,
                 ),
                 Artifact(
                     task_id=task.id,
+                    run_id=run.id,
                     kind="dev-status",
                     path=f"artifacts/{task.id}/dev/dev-status.md",
                     sha256="1" * 64,
@@ -122,7 +132,28 @@ def test_dashboard_task_detail_renders_command_panel(monkeypatch):
     assert "QA 산출물" in response.text
     assert "설계 요약" in response.text
     assert "시스템 QA 리포트" in response.text
+    assert "작업 메모" in response.text
+    assert "Agent 호출 이력" in response.text
+    assert "테스트용 개발 실행 성공" in response.text
+    assert "Agent 반환 데이터" in response.text
     assert task.github_issue_url in response.text
+
+
+# 대시보드 작업 메모를 저장하면 상세 화면에서 다시 확인할 수 있다.
+def test_dashboard_memo_save_persists_in_task_body(monkeypatch):
+    monkeypatch.setattr(orchestration.settings, "github_token", None)
+    task = _create_dashboard_task()
+
+    with TestClient(app) as client:
+        save_response = client.post(
+            f"/dashboard/tasks/{task.id}/memo",
+            data={"memo": "loginId 정책은 QA에서 꼭 확인한다."},
+            follow_redirects=False,
+        )
+        detail_response = client.get(f"/dashboard/tasks/{task.id}")
+
+    assert save_response.status_code == 303
+    assert "loginId 정책은 QA에서 꼭 확인한다." in detail_response.text
 
 
 # 대시보드 버튼 요청이 기존 하네스 명령 실행 흐름으로 위임되는지 검증한다.
