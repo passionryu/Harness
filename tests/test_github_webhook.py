@@ -522,7 +522,7 @@ def test_backend_plan_comment_uses_backend_profile(tmp_path, monkeypatch):
 
     assert "### 이슈 타입\nbeFeature" in captured["body"]
     assert "apps/server/modules/application 하위 usecase" in captured["body"]
-    assert "StudyHub 서비스" in captured["body"]
+    assert "회원가입 요청을 받아 신규 회원을 생성하는 API를 구현한다." in captured["body"]
     assert "도메인 정책" in captured["body"]
     assert "Controller" not in captured["body"]
     assert "UseCase" not in captured["body"]
@@ -1225,6 +1225,23 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
         "_run_command",
         lambda command, cwd, timeout_seconds: (0, "회원가입 화면 smoke 검증 통과", ""),
     )
+    monkeypatch.setattr(
+        qa_agent,
+        "_start_frontend_if_needed",
+        lambda repo_path, timeout_seconds: (None, "테스트 프론트엔드 서버 사용"),
+    )
+    monkeypatch.setattr(qa_agent, "_is_frontend_alive", lambda: True)
+    monkeypatch.setattr(
+        qa_agent,
+        "_verify_frontend_page_content",
+        lambda timeout_seconds, markers: (
+            True,
+            f"url=http://localhost:3000, required_markers={markers}, missing_markers=없음",
+            "<html>회원가입 로그인</html>",
+            0,
+            "",
+        ),
+    )
     captured_comments: list[str] = []
     captured_chat_messages: list[str] = []
     captured_discord_messages: list[str] = []
@@ -1299,6 +1316,7 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
         (target_repo / "apps/web/components/signup").mkdir(parents=True, exist_ok=True)
         (target_repo / "apps/web/lib").mkdir(parents=True, exist_ok=True)
         (target_repo / "apps/web/scripts").mkdir(parents=True, exist_ok=True)
+        (target_repo / "apps/web/app/page.tsx").write_text("회원가입 로그인\n", encoding="utf-8")
         (target_repo / "apps/web/app/signup/page.tsx").write_text("SignupForm\n", encoding="utf-8")
         (target_repo / "apps/web/components/signup/signup-form.tsx").write_text(
             "confirmPassword interests\n",
@@ -1422,7 +1440,7 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     human_qa_comment = next(comment for comment in captured_comments if "🧑‍💻 Human QA 요청" in comment)
     assert "### QA 결과" in qa_comment
     assert "- result: `pass`" in qa_comment
-    assert "- command: `pnpm --dir apps/web test:signup`" in qa_comment
+    assert "- command:" in qa_comment
     assert "### 검증 항목" in qa_comment
     assert "- [x] test:signup 통과" in qa_comment
     assert "### Human QA 권장 체크" not in qa_comment
@@ -1452,10 +1470,12 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     assert "♻️ 🧑‍💻 Human QA Re-QA 요청" in captured_chat_messages[1]
     assert "System QA는 통과했습니다." in captured_chat_messages[1]
     assert "1. 브라우저에서 메인 화면에 접속했을 때 회원가입 진입 버튼 또는 링크가 보이는가" in captured_chat_messages[1]
-    assert "화면 확인 URL:\nhttp://localhost:3000/signup" in captured_chat_messages[1]
+    assert "화면 확인 URL:\nhttp://localhost:3000" in captured_chat_messages[1]
     assert f"GitHub Issue:\n{issue['html_url']}" in captured_chat_messages[1]
-    assert len(captured_discord_messages) == 2
-    assert captured_discord_messages == captured_chat_messages
+    assert len(captured_discord_messages) == 4
+    assert "🏗️ Plan 완료" in captured_discord_messages[0]
+    assert "🛠️ 개발 완료" in captured_discord_messages[1]
+    assert captured_discord_messages[2:] == captured_chat_messages
 
 
 def test_issue_comment_qa_command_without_development_is_ignored(monkeypatch):

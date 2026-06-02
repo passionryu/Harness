@@ -230,6 +230,7 @@ class OrchestrationService:
                 {"reason": "GITHUB_TOKEN이 설정되어 있지 않습니다.", "issue_number": issue_number},
             )
 
+        self._notify_after_plan(task, run_id, force=force)
         self.db.commit()
         return EventResult(
             task_id=task.id,
@@ -331,6 +332,7 @@ class OrchestrationService:
                     {"issue_number": issue_number, "error": str(exc)},
                 )
 
+        self._notify_after_dev(task, run_id)
         self.db.commit()
         return EventResult(
             task_id=task.id,
@@ -1134,7 +1136,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## 📍 AI Harness Status: {task.title}",
+                f"# 📍 AI Harness Status: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
@@ -1172,7 +1174,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## 🛑 AI Harness 작업 중지: {task.title}",
+                f"# 🛑 AI Harness 작업 중지: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
@@ -1228,7 +1230,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## ⚠️ AI Harness 명령 실패: {task.title}",
+                f"# ⚠️ AI Harness 명령 실패: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
@@ -1357,7 +1359,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## {self._plan_title(task)}",
+                f"# {self._plan_title(task)}",
                 "",
                 f"Task ID: `{task_id}`",
                 "",
@@ -1486,7 +1488,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## 🏗️ AI Plan이 이미 존재합니다: {task.title}",
+                f"# 🏗️ AI Plan이 이미 존재합니다: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
@@ -1512,7 +1514,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## 🛠️ 개발 완료: {task.title}",
+                f"# 🛠️ 개발 완료: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
@@ -1568,7 +1570,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## 🛠️ Dev 실패 수정 완료: {task.title}",
+                f"# 🛠️ Dev 실패 수정 완료: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
@@ -1607,7 +1609,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## 🛠️ 리팩터링 완료: {task.title}",
+                f"# 🛠️ 리팩터링 완료: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
@@ -1643,7 +1645,7 @@ class OrchestrationService:
         lines = [
             "<!-- ai-harness-generated -->",
             "",
-            "## 🛠️ 개발을 시작하지 못했습니다",
+            "# 🛠️ 개발을 시작하지 못했습니다",
             "",
         ]
         if task_id:
@@ -1667,7 +1669,7 @@ class OrchestrationService:
         lines = [
             "<!-- ai-harness-generated -->",
             "",
-            "## 🛠️ 리팩터링을 시작하지 못했습니다",
+            "# 🛠️ 리팩터링을 시작하지 못했습니다",
             "",
         ]
         if task_id:
@@ -1694,7 +1696,7 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"## {title}: {task.title}",
+                f"# {title}: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
@@ -1843,7 +1845,7 @@ class OrchestrationService:
     def _build_human_qa_message(self, task: Task, rerun: bool, github_comment: bool) -> str:
         title_prefix = "♻️ 🧑‍💻 Human QA Re-QA 요청" if rerun else "🧑‍💻 Human QA 요청"
         title = f"{title_prefix}: {task.title}"
-        title_line = f"## {title}" if github_comment else title
+        title_line = f"# {title}" if github_comment else title
         issue_type = self._extract_issue_type(task.body)
         branch_name = self._branch_name_for_task(task)
         human_qa_items = self._extract_human_qa_items(task.id)
@@ -1890,6 +1892,105 @@ class OrchestrationService:
 
     def _build_qa_notification_message(self, task: Task, rerun: bool) -> str:
         return self._build_human_qa_message(task, rerun, github_comment=False)
+
+    # Plan 완료 후 Discord에 전달할 짧은 사람용 메시지를 만든다.
+    def _build_plan_notification_message(self, task: Task, force: bool) -> str:
+        title = f"♻️ 🏗️ Re-Plan 완료: {task.title}" if force else f"🏗️ Plan 완료: {task.title}"
+        return "\n".join(
+            [
+                title,
+                "",
+                f"작업 타입: {self._issue_type_label(self._extract_issue_type(task.body))}",
+                f"현재 상태: {task.state}",
+                "",
+                "설계 산출물이 생성되었습니다.",
+                "내용을 검토한 뒤 충분하면 Plan 승인을 기록하세요.",
+                "",
+                "다음 명령:",
+                self._approval_command(task, "plan"),
+                "",
+                "GitHub Issue:",
+                task.github_issue_url or "",
+            ]
+        )
+
+    # Dev 완료 후 Discord에 전달할 짧은 사람용 메시지를 만든다.
+    def _build_dev_notification_message(self, task: Task) -> str:
+        latest_run = self._latest_run(task.id)
+        run_summary = latest_run.summary if latest_run and latest_run.summary else "Dev Agent 실행이 완료되었습니다."
+        return "\n".join(
+            [
+                f"🛠️ 개발 완료: {task.title}",
+                "",
+                f"작업 타입: {self._issue_type_label(self._extract_issue_type(task.body))}",
+                f"브랜치 명: {self._branch_name_for_task(task)}",
+                f"현재 상태: {task.state}",
+                "",
+                "실행 결과:",
+                run_summary,
+                "",
+                "개발 결과를 확인한 뒤 Dev 승인을 기록하세요.",
+                "",
+                "다음 명령:",
+                self._approval_command(task, "dev"),
+                "",
+                "GitHub Issue:",
+                task.github_issue_url or "",
+            ]
+        )
+
+    # Plan 완료 알림을 외부 채널로 전송한다.
+    def _notify_after_plan(self, task: Task, run_id: str | None, force: bool) -> None:
+        if not settings.allow_external_notifications:
+            self._audit(
+                task.id,
+                run_id,
+                "external_notifications.skipped",
+                {"reason": "ALLOW_EXTERNAL_NOTIFICATIONS가 false입니다.", "agent": "plan"},
+            )
+            return
+        self._notify_discord_for_stage(task, run_id, "plan", self._build_plan_notification_message(task, force))
+
+    # Dev 완료 알림을 외부 채널로 전송한다.
+    def _notify_after_dev(self, task: Task, run_id: str | None) -> None:
+        if not settings.allow_external_notifications:
+            self._audit(
+                task.id,
+                run_id,
+                "external_notifications.skipped",
+                {"reason": "ALLOW_EXTERNAL_NOTIFICATIONS가 false입니다.", "agent": "dev"},
+            )
+            return
+        self._notify_discord_for_stage(task, run_id, "dev", self._build_dev_notification_message(task))
+
+    # 특정 단계 완료 메시지를 Discord로 보내고 실패해도 workflow를 중단하지 않는다.
+    def _notify_discord_for_stage(self, task: Task, run_id: str | None, stage: str, message: str) -> None:
+        notifier = DiscordNotifier(settings.discord_webhook_url)
+        if not notifier.is_configured():
+            self._audit(
+                task.id,
+                run_id,
+                f"discord.{stage}_notification_skipped",
+                {"reason": "DISCORD_WEBHOOK_URL이 설정되어 있지 않습니다."},
+            )
+            return
+
+        try:
+            notifier.send_text(message)
+        except Exception as exc:  # noqa: BLE001 - notification failure must not fail workflow
+            logger.warning(
+                "Discord 단계 완료 알림 전송 실패",
+                extra={"task_id": task.id, "run_id": run_id, "stage": stage, "error": str(exc)},
+            )
+            self._audit(
+                task.id,
+                run_id,
+                f"discord.{stage}_notification_failed",
+                {"error": str(exc)},
+            )
+            return
+
+        self._audit(task.id, run_id, f"discord.{stage}_notified", {})
 
     def _notify_after_qa(self, task: Task, run_id: str | None, rerun: bool) -> None:
         if not settings.allow_external_notifications:
@@ -1981,7 +2082,7 @@ class OrchestrationService:
         lines = [
             "<!-- ai-harness-generated -->",
             "",
-            "## 🔎 System QA를 시작하지 못했습니다",
+            "# 🔎 System QA를 시작하지 못했습니다",
             "",
         ]
         if task_id:
