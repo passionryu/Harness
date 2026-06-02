@@ -28,7 +28,7 @@ def _create_dashboard_task() -> Task:
             ),
             github_issue_number=issue_number,
             github_issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
-            state="Todo",
+            state="Plan Review",
         )
         db.add(task)
         db.commit()
@@ -62,7 +62,7 @@ def test_dashboard_home_renders_task_list(monkeypatch):
     assert response.status_code == 200
     assert "AI Harness Dashboard" in response.text
     assert task.title in response.text
-    assert "@ai-harness develop" in response.text
+    assert "harness approve --stage plan" in response.text
     assert "Sync All GitHub Issues" in response.text
 
 

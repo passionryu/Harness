@@ -21,7 +21,7 @@ from orchestrator.services.artifacts import ArtifactStore
 from orchestrator.services.discord import DiscordNotifier
 from orchestrator.services.github_adapter import GitHubAdapter
 from orchestrator.services.google_chat import GoogleChatNotifier
-from workflows.state_machine import StateMachine, WorkflowEvent
+from workflows.state_machine import KanbanState, StateMachine, WorkflowEvent
 
 logger = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -72,12 +72,12 @@ class OrchestrationService:
                 body=body,
                 github_issue_url=issue_url,
                 github_issue_number=issue_number,
-                state="Todo",
+                state=KanbanState.BACKLOG.value,
                 retry_limit=settings.agent_retry_limit,
             )
             self.db.add(task)
             self.db.flush()
-            self._record_transition(task.id, None, task.state, "GitHub issue plan-ready", "system")
+            self._record_transition(task.id, None, task.state, "GitHub issue synced", "system")
             self._audit(
                 task.id,
                 None,
@@ -88,16 +88,8 @@ class OrchestrationService:
             task.title = title
             task.body = body
             task.github_issue_url = issue_url
-            if task.state == "Backlog":
-                previous = task.state
-                task.state = "Todo"
-                self._record_transition(
-                    task.id,
-                    previous,
-                    task.state,
-                    "GitHub issue plan-ready",
-                    "system",
-                )
+            if task.state == "Todo":
+                task.state = KanbanState.PLAN_REVIEW.value
         return task
 
     def has_successful_agent_run(self, task_id: str, agent_name: str) -> bool:
@@ -171,6 +163,15 @@ class OrchestrationService:
             )
 
         run_id = self._run_agent(task, "plan")
+        if task.state != KanbanState.PLAN_REVIEW.value:
+            task.state = KanbanState.PLAN_REVIEW.value
+            self._record_transition(
+                task.id,
+                previous,
+                task.state,
+                "plan agent completed; waiting for human plan approval",
+                "agent",
+            )
         self._audit(
             task.id,
             run_id,
@@ -209,7 +210,7 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="GitHub 이슈 트리거로 Plan을 생성했습니다.",
+            message="Plan Agent 실행이 완료되어 Plan Review에서 사람 승인을 기다립니다.",
         )
 
     def run_replan_for_github_issue(
@@ -257,34 +258,29 @@ class OrchestrationService:
                 task.id,
             )
 
-        if task.state not in {"Todo", "In Progress"}:
+        if task.state not in {KanbanState.DEV_READY.value, KanbanState.DEV_REVIEW.value}:
             return self._skip_develop_command(
                 issue_number,
-                f"현재 작업 상태는 `{task.state}`입니다. develop은 `Todo` 또는 `In Progress`에서만 실행할 수 있습니다.",
+                f"현재 작업 상태는 `{task.state}`입니다. develop은 `{KanbanState.DEV_READY.value}`에서만 실행할 수 있습니다. 먼저 plan 승인을 기록하세요.",
                 task.id,
             )
 
         previous = task.state
-        run_id: str | None = None
-        if task.state == "Todo":
-            decision = self.state_machine.decide(task.state, WorkflowEvent.START_DEV.value)
-            if decision.requires_agent:
-                run_id = self._run_agent(task, decision.requires_agent)
-            task.state = decision.to_state.value
+        run_id = self._run_agent(task, "dev")
+        if task.state != KanbanState.DEV_REVIEW.value:
+            task.state = KanbanState.DEV_REVIEW.value
             self._record_transition(
                 task.id,
                 previous,
                 task.state,
-                f"plan approved by {settings.develop_command}",
-                "human",
+                "dev agent completed; waiting for human dev approval",
+                "agent",
             )
-        else:
-            run_id = self._run_agent(task, "dev")
 
         self._audit(
             task.id,
             run_id,
-            "plan.approved_for_development" if previous == "Todo" else "dev.continued",
+            "dev.completed",
             {"issue_number": issue_number, "issue_url": issue_url},
         )
 
@@ -307,9 +303,7 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="Plan이 승인되어 Dev Agent 실행이 완료되었습니다."
-            if previous == "Todo"
-            else "Dev Agent 재실행이 완료되었습니다.",
+            message="Dev Agent 실행이 완료되어 Dev Review에서 사람 승인을 기다립니다.",
         )
 
     # 최근 실패한 Dev run을 분석해 자동 복구 가능한 개발 실패를 수정한다.
@@ -342,13 +336,13 @@ class OrchestrationService:
 
         previous = task.state
         run_id = self._run_agent(task, "fix_develop")
-        if task.state != "In Progress":
-            task.state = "In Progress"
+        if task.state != KanbanState.DEV_REVIEW.value:
+            task.state = KanbanState.DEV_REVIEW.value
             self._record_transition(
                 task.id,
                 previous,
                 task.state,
-                f"develop failure fixed by {settings.fix_develop_command}",
+                "develop failure fixed; waiting for human dev approval",
                 "agent",
             )
 
@@ -378,7 +372,7 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="최근 Dev 실패를 수정했고 QA 실행 가능한 상태로 전환했습니다.",
+            message="최근 Dev 실패를 수정했고 Dev Review에서 사람 승인을 기다립니다.",
         )
 
     def run_refactor_for_github_issue(
@@ -411,7 +405,14 @@ class OrchestrationService:
                 task.id,
             )
 
-        if task.state not in {"In Progress", "System QA", "Human QA"}:
+        if task.state not in {
+            KanbanState.DEV_REVIEW.value,
+            KanbanState.QA_READY.value,
+            KanbanState.QA_REVIEW.value,
+            "In Progress",
+            "System QA",
+            "Human QA",
+        }:
             return self._skip_refactor_command(
                 issue_number,
                 f"현재 작업 상태는 `{task.state}`입니다. refactor는 개발이 시작된 이후에만 실행할 수 있습니다.",
@@ -420,7 +421,7 @@ class OrchestrationService:
 
         previous = task.state
         run_id = self._run_agent(task, "dev")
-        task.state = "In Progress"
+        task.state = KanbanState.DEV_REVIEW.value
         self._record_transition(
             task.id,
             previous,
@@ -458,7 +459,7 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="리팩터링 요청을 반영했고 작업 상태를 In Progress로 변경했습니다.",
+            message="리팩터링 요청을 반영했고 Dev Review에서 사람 승인을 기다립니다.",
         )
 
     def run_qa_for_github_issue(
@@ -481,31 +482,27 @@ class OrchestrationService:
         )
         task.github_issue_url = issue_url
 
-        if task.state != "In Progress":
+        if task.state != KanbanState.QA_READY.value:
             next_command = (
                 settings.reqa_command
-                if task.state in {"System QA", "Human QA"}
+                if task.state in {KanbanState.QA_REVIEW.value, "System QA", "Human QA"}
                 else settings.develop_command
             )
             return self._skip_qa_command(
                 issue_number,
-                f"현재 작업 상태는 `{task.state}`입니다. QA는 `In Progress`에서만 실행할 수 있습니다.",
+                f"현재 작업 상태는 `{task.state}`입니다. QA는 `{KanbanState.QA_READY.value}`에서만 실행할 수 있습니다. 먼저 dev 승인을 기록하세요.",
                 task.id,
                 next_command,
             )
 
         previous = task.state
-        decision = self.state_machine.decide(task.state, WorkflowEvent.DEV_COMPLETE.value)
-        run_id: str | None = None
-        if decision.requires_agent:
-            run_id = self._run_agent(task, decision.requires_agent)
-
-        task.state = decision.to_state.value
+        run_id = self._run_agent(task, "qa")
+        task.state = KanbanState.QA_REVIEW.value
         self._record_transition(
             task.id,
             previous,
             task.state,
-            f"system QA requested by {settings.qa_command}",
+            "QA agent completed; waiting for human QA approval",
             "system",
         )
         self._audit(
@@ -541,7 +538,7 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="QA가 통과되어 작업 상태를 System QA로 변경했습니다.",
+            message="QA Agent 실행이 완료되어 QA Review에서 사람 승인을 기다립니다.",
         )
 
     def rerun_qa_for_github_issue(
@@ -568,11 +565,13 @@ class OrchestrationService:
         )
         task.github_issue_url = issue_url
 
-        if task.state != "System QA":
-            next_command = settings.qa_command if task.state == "In Progress" else settings.develop_command
+        if task.state != KanbanState.QA_REVIEW.value:
+            next_command = (
+                settings.qa_command if task.state == KanbanState.QA_READY.value else settings.develop_command
+            )
             return self._skip_qa_command(
                 issue_number,
-                f"현재 작업 상태는 `{task.state}`입니다. re-QA는 `System QA`에서만 실행할 수 있습니다.",
+                f"현재 작업 상태는 `{task.state}`입니다. re-QA는 `{KanbanState.QA_REVIEW.value}`에서만 실행할 수 있습니다.",
                 task.id,
                 next_command,
             )
@@ -619,7 +618,7 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="QA 재검증이 통과되었고 작업 상태는 System QA로 유지됩니다.",
+            message="QA 재검증이 통과되었고 작업 상태는 QA Review로 유지됩니다.",
         )
 
     def comment_status_for_github_issue(
@@ -784,19 +783,41 @@ class OrchestrationService:
         if task is None:
             raise ValueError("작업을 찾을 수 없습니다.")
 
+        return self.approve_task_stage(task, "deploy", payload)
+
+    # GitHub issue number를 기준으로 특정 approval gate를 승인한다.
+    def approve_stage_for_github_issue(
+        self,
+        issue_number: int,
+        stage: str,
+        payload: HumanApproval,
+    ) -> EventResult:
+        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        if task is None:
+            raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
+        return self.approve_task_stage(task, stage, payload)
+
+    # task의 현재 상태와 승인 stage가 맞는지 검증하고 다음 gate로 전환한다.
+    def approve_task_stage(self, task: Task, stage: str, payload: HumanApproval) -> EventResult:
         previous = task.state
-        decision = self.state_machine.decide(task.state, WorkflowEvent.HUMAN_APPROVE.value)
-        task.human_approved_at = now_kst()
+        event = self._approval_event_for_stage(stage)
+        decision = self.state_machine.decide(task.state, event.value)
+        if stage == "deploy":
+            task.human_approved_at = now_kst()
         task.state = decision.to_state.value
 
         self._record_transition(
-            task.id, previous, task.state, f"approved by {payload.approved_by}", "human"
+            task.id,
+            previous,
+            task.state,
+            f"{stage} approved by {payload.approved_by}",
+            "human",
         )
         self._audit(
             task.id,
             None,
-            "human.approved",
-            {"approved_by": payload.approved_by, "notes": payload.notes},
+            f"human.approved_{stage}",
+            {"approved_by": payload.approved_by, "notes": payload.notes, "stage": stage},
         )
         self.db.commit()
 
@@ -804,8 +825,21 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="Human QA 승인을 기록했습니다.",
+            message=f"{stage} 승인 기록을 남겼고 작업 상태를 {task.state}로 변경했습니다.",
         )
+
+    # approval stage 문자열을 상태 머신 이벤트로 변환한다.
+    def _approval_event_for_stage(self, stage: str) -> WorkflowEvent:
+        mapping = {
+            "plan": WorkflowEvent.APPROVE_PLAN,
+            "dev": WorkflowEvent.APPROVE_DEV,
+            "qa": WorkflowEvent.APPROVE_QA,
+            "deploy": WorkflowEvent.APPROVE_DEPLOY,
+        }
+        try:
+            return mapping[stage]
+        except KeyError as exc:
+            raise ValueError(f"지원하지 않는 승인 stage입니다: {stage}") from exc
 
     def _run_agent(self, task: Task, agent_name: str) -> str:
         agent = self.agent_registry.get(agent_name)
@@ -995,11 +1029,13 @@ class OrchestrationService:
 
     def _next_command_for_state(self, state: str) -> str:
         return {
-            "Backlog": settings.plan_command,
-            "Todo": settings.develop_command,
-            "In Progress": settings.qa_command,
-            "System QA": settings.reqa_command,
-            "Human QA": "사람이 직접 검증 후 human approval",
+            KanbanState.BACKLOG.value: settings.plan_command,
+            KanbanState.PLAN_REVIEW.value: "harness approve --stage plan",
+            KanbanState.DEV_READY.value: settings.develop_command,
+            KanbanState.DEV_REVIEW.value: "harness approve --stage dev",
+            KanbanState.QA_READY.value: settings.qa_command,
+            KanbanState.QA_REVIEW.value: "harness approve --stage qa",
+            KanbanState.READY_TO_DEPLOY.value: "harness approve --stage deploy",
             "Done": "완료됨",
             "Cancelled": "중지됨. 다시 시작하려면 replan 또는 plan부터 판단",
         }.get(state, settings.status_command)
@@ -1334,7 +1370,7 @@ class OrchestrationService:
                 f"- `artifacts/{task_id}/plans/edge-case-checklist.md`",
                 "",
                 "### 다음 추천 명령어",
-                f"- 계획이 충분하면 `{settings.develop_command}`",
+                f"- 계획이 충분하면 `{self._approval_command(task, 'plan')}`",
                 f"- 계획을 수정하고 싶으면 `{settings.replan_command}` 아래에 수정 요청을 적어 다시 논의하세요.",
             ]
         )
@@ -1388,6 +1424,12 @@ class OrchestrationService:
         }.get(issue_type, "task")
         number = issue_number if issue_number and issue_number != "unknown" else "no-issue"
         return f"{prefix}-{number}"
+
+    # task의 GitHub 이슈 번호를 포함한 승인 CLI 명령을 만든다.
+    def _approval_command(self, task: Task, stage: str) -> str:
+        issue_number = task.github_issue_number or self._extract_issue_number(task.body)
+        issue_option = f" --issue {issue_number}" if issue_number and str(issue_number) != "unknown" else ""
+        return f"harness approve{issue_option} --stage {stage} --approved-by <name>"
 
     def _build_duplicate_plan_comment(self, task: Task) -> str:
         return "\n".join(
@@ -1456,10 +1498,10 @@ class OrchestrationService:
                 "- `test-report.md`에서 자동 검증 결과를 확인한다.",
                 "",
                 "### 다음 단계",
-                "개발 결과를 System QA로 검증하세요.",
+                "개발 결과를 사람이 확인한 뒤 Dev 승인을 기록하세요.",
                 "",
                 "```markdown",
-                settings.qa_command,
+                self._approval_command(task, "dev"),
                 "```",
             ]
         )
@@ -1500,10 +1542,10 @@ class OrchestrationService:
                 f"- `artifacts/{task.id}/dev/dev-status.md`",
                 "",
                 "### 다음 단계",
-                "수정된 개발 결과를 System QA로 검증하세요.",
+                "수정된 개발 결과를 사람이 확인한 뒤 Dev 승인을 기록하세요.",
                 "",
                 "```markdown",
-                settings.qa_command,
+                self._approval_command(task, "dev"),
                 "```",
             ]
         )
@@ -1539,10 +1581,10 @@ class OrchestrationService:
                 f"- `artifacts/{task.id}/dev/test-report.md`",
                 "",
                 "### 다음 단계",
-                "리팩터링으로 코드가 변경되었으므로 System QA를 다시 실행하세요.",
+                "리팩터링 결과를 사람이 확인한 뒤 Dev 승인을 기록하세요.",
                 "",
                 "```markdown",
-                settings.qa_command,
+                self._approval_command(task, "dev"),
                 "```",
             ]
         )

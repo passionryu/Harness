@@ -33,14 +33,14 @@ def test_task_lifecycle(tmp_path, monkeypatch):
             json={"task_id": task_id, "event": "triage", "reason": "test"},
         )
         assert triage_response.status_code == 200
-        assert triage_response.json()["current_state"] == "Todo"
+        assert triage_response.json()["current_state"] == "Plan Review"
 
         dev_response = client.post(
             "/events/manual",
             json={"task_id": task_id, "event": "start_dev", "reason": "test"},
         )
         assert dev_response.status_code == 400
-        assert "Agent 실행 실패: dev" in dev_response.json()["detail"]
+        assert "invalid transition" in dev_response.json()["detail"]
 
     task_artifact_root = Path(artifact_root) / task_id
     assert task_artifact_root.exists()

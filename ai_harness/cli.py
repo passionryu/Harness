@@ -208,13 +208,18 @@ def _status(args: argparse.Namespace) -> dict[str, Any]:
         }
 
 
-# Human QA 승인 명령을 로컬 DB에 기록한다.
+# 단계별 Human Approval Gate 통과를 로컬 DB에 기록한다.
 def _approve(args: argparse.Namespace) -> EventResult:
+    payload = HumanApproval(approved_by=args.approved_by, notes=args.notes or "")
     with SessionLocal() as db:
-        return OrchestrationService(db).approve_human_qa(
-            args.task_id,
-            HumanApproval(approved_by=args.approved_by, notes=args.notes or ""),
-        )
+        service = OrchestrationService(db)
+        if args.issue is not None:
+            return service.approve_stage_for_github_issue(args.issue, args.stage, payload)
+        if args.task_id is not None:
+            if args.stage != "deploy":
+                raise ValueError("--task-id 승인은 deploy stage에서만 지원합니다. plan/dev/qa는 --issue를 사용하세요.")
+            return service.approve_human_qa(args.task_id, payload)
+    raise ValueError("--issue 또는 --task-id 중 하나가 필요합니다.")
 
 
 # 최근 run 정보를 CLI 출력용 payload로 변환한다.
@@ -301,8 +306,11 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_issue_option(status)
     status.set_defaults(handler=_status)
 
-    approve = subparsers.add_parser("approve", help="Human QA 승인을 기록")
-    approve.add_argument("--task-id", required=True, help="승인할 task id")
+    approve = subparsers.add_parser("approve", help="Plan/Dev/QA/Deploy 승인 gate를 기록")
+    approve_target = approve.add_mutually_exclusive_group(required=True)
+    approve_target.add_argument("--issue", type=int, help="승인할 GitHub issue number")
+    approve_target.add_argument("--task-id", help="승인할 task id. deploy stage 호환용")
+    approve.add_argument("--stage", required=True, choices=["plan", "dev", "qa", "deploy"], help="승인할 단계")
     approve.add_argument("--approved-by", required=True, help="승인자 이름")
     approve.add_argument("--notes", default="", help="승인 메모")
     approve.set_defaults(handler=_approve)

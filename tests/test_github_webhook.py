@@ -17,6 +17,20 @@ def _signature(secret: str, body: bytes) -> str:
     return "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
 
+# 테스트에서 사람 승인 gate를 명시적으로 통과시킨다.
+def _approve_issue_stage(issue_number: int, stage: str) -> None:
+    from orchestrator.api.schemas import HumanApproval
+    from orchestrator.db.session import SessionLocal
+    from orchestrator.services.orchestration import OrchestrationService
+
+    with SessionLocal() as db:
+        OrchestrationService(db).approve_stage_for_github_issue(
+            issue_number,
+            stage,
+            HumanApproval(approved_by="test", notes=f"{stage} 승인 테스트"),
+        )
+
+
 def test_github_plan_label_webhook_triggers_plan(tmp_path, monkeypatch):
     secret = "test-secret"
     monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
@@ -51,8 +65,8 @@ def test_github_plan_label_webhook_triggers_plan(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     result = response.json()
-    assert result["current_state"] == "Todo"
-    assert "Plan을 생성했습니다" in result["message"]
+    assert result["current_state"] == "Plan Review"
+    assert "Plan Agent 실행이 완료" in result["message"]
 
     artifact_root = Path(tmp_path / "artifacts" / result["task_id"] / "plans")
     assert (artifact_root / "architecture.md").exists()
@@ -158,7 +172,7 @@ def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
             issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
         )
 
-    assert event.message == "GitHub 이슈 트리거로 Plan을 생성했습니다."
+    assert event.message == "Plan Agent 실행이 완료되어 Plan Review에서 사람 승인을 기다립니다."
     assert "### 구현 요약" in captured["body"]
     assert "### 변경 대상" in captured["body"]
     assert "### 구현 순서" in captured["body"]
@@ -167,7 +181,7 @@ def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
     assert "### 시퀀스 다이어그램" in captured["body"]
     assert "### 플로우 차트" in captured["body"]
     assert "### 다음 추천 명령어" in captured["body"]
-    assert "`@ai-harness develop`" in captured["body"]
+    assert "`harness approve --issue" in captured["body"]
     assert "`@ai-harness replan`" in captured["body"]
 
 
@@ -224,7 +238,7 @@ def test_issue_comment_replan_command_forces_new_plan(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     result = response.json()
-    assert "Plan을 생성했습니다" in result["message"]
+    assert "Plan Agent 실행이 완료" in result["message"]
 
     architecture = (
         tmp_path / "artifacts" / result["task_id"] / "plans" / "architecture.md"
@@ -268,7 +282,7 @@ def test_issue_comment_plan_command_triggers_initial_plan(tmp_path, monkeypatch)
 
     assert response.status_code == 200
     result = response.json()
-    assert "Plan을 생성했습니다" in result["message"]
+    assert "Plan Agent 실행이 완료" in result["message"]
     architecture = tmp_path / "artifacts" / result["task_id"] / "plans" / "architecture.md"
     assert architecture.exists()
     assert "## Issue Type\nfeFeature" in architecture.read_text()
@@ -336,9 +350,9 @@ def test_issue_comment_status_command_comments_current_state(tmp_path, monkeypat
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert "📍 AI Harness Status" in captured_comments[-1]
-    assert "- state: `Todo`" in captured_comments[-1]
+    assert "- state: `Plan Review`" in captured_comments[-1]
     assert "마지막 Agent 실행" in captured_comments[-1]
-    assert "@ai-harness develop" in captured_comments[-1]
+    assert "harness approve --stage plan" in captured_comments[-1]
 
 
 def test_issue_comment_cancel_command_marks_task_cancelled(tmp_path, monkeypatch):
@@ -571,7 +585,7 @@ def test_issue_comment_plan_command_skips_duplicate_successful_plan(tmp_path, mo
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
-    assert "Plan을 생성했습니다" in first_response.json()["message"]
+    assert "Plan Agent 실행이 완료" in first_response.json()["message"]
     assert second_response.json()["message"] == "이미 Plan이 완료되어 중복 실행을 스킵했습니다."
     assert len(captured_comments) == 2
     assert "AI Plan이 이미 존재합니다" in captured_comments[-1]
@@ -620,6 +634,8 @@ def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monk
                 "Content-Type": "application/json",
             },
         )
+
+        _approve_issue_stage(issue_number, "plan")
 
         develop_payload = {
             "action": "created",
@@ -751,7 +767,7 @@ def test_fix_develop_command_uses_latest_failed_dev_run(tmp_path, monkeypatch):
             ),
             github_issue_number=issue_number,
             github_issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
-            state="Todo",
+            state="Dev Review",
         )
         db.add(task)
         db.flush()
@@ -774,9 +790,10 @@ def test_fix_develop_command_uses_latest_failed_dev_run(tmp_path, monkeypatch):
             issue_labels=["type: fullstackFeature"],
         )
 
-    assert event.current_state == "In Progress"
+    assert event.current_state == "Dev Review"
     assert "Dev 실패 수정 완료" in captured["body"]
-    assert "@ai-harness qa" in captured["body"]
+    assert "harness approve --issue" in captured["body"]
+    assert "--stage dev" in captured["body"]
 
 
 def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
@@ -839,6 +856,8 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
                 "Content-Type": "application/json",
             },
         )
+
+        _approve_issue_stage(issue_number, "plan")
 
         develop_payload = {
             "action": "created",
@@ -937,7 +956,34 @@ def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monk
     }
 
     with TestClient(app) as client:
-        for command in ["@ai-harness plan", "@ai-harness develop"]:
+        plan_payload = {"action": "created", "issue": issue, "comment": {"body": "@ai-harness plan"}}
+        plan_body = json.dumps(plan_payload).encode("utf-8")
+        plan_response = client.post(
+            "/webhooks/github",
+            content=plan_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, plan_body),
+                "Content-Type": "application/json",
+            },
+        )
+        assert plan_response.status_code == 200
+        _approve_issue_stage(issue_number, "plan")
+
+        develop_payload = {"action": "created", "issue": issue, "comment": {"body": "@ai-harness develop"}}
+        develop_body = json.dumps(develop_payload).encode("utf-8")
+        develop_response = client.post(
+            "/webhooks/github",
+            content=develop_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, develop_body),
+                "Content-Type": "application/json",
+            },
+        )
+        assert develop_response.status_code == 200
+
+        for command in ["@ai-harness develop"]:
             payload = {"action": "created", "issue": issue, "comment": {"body": command}}
             body = json.dumps(payload).encode("utf-8")
             response = client.post(
@@ -969,9 +1015,9 @@ def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monk
 
     assert continue_response.status_code == 200
     result = continue_response.json()
-    assert result["previous_state"] == "In Progress"
-    assert result["current_state"] == "In Progress"
-    assert result["message"] == "Dev Agent 재실행이 완료되었습니다."
+    assert result["previous_state"] == "Dev Review"
+    assert result["current_state"] == "Dev Review"
+    assert result["message"] == "Dev Agent 실행이 완료되어 Dev Review에서 사람 승인을 기다립니다."
 
 
 def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypatch):
@@ -1029,19 +1075,32 @@ def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypa
     }
 
     with TestClient(app) as client:
-        for command in ["@ai-harness plan", "@ai-harness develop"]:
-            payload = {"action": "created", "issue": issue, "comment": {"body": command}}
-            body = json.dumps(payload).encode("utf-8")
-            response = client.post(
-                "/webhooks/github",
-                content=body,
-                headers={
-                    "X-GitHub-Event": "issue_comment",
-                    "X-Hub-Signature-256": _signature(secret, body),
-                    "Content-Type": "application/json",
-                },
-            )
-            assert response.status_code == 200
+        plan_payload = {"action": "created", "issue": issue, "comment": {"body": "@ai-harness plan"}}
+        plan_body = json.dumps(plan_payload).encode("utf-8")
+        plan_response = client.post(
+            "/webhooks/github",
+            content=plan_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, plan_body),
+                "Content-Type": "application/json",
+            },
+        )
+        assert plan_response.status_code == 200
+        _approve_issue_stage(issue_number, "plan")
+
+        develop_payload = {"action": "created", "issue": issue, "comment": {"body": "@ai-harness develop"}}
+        develop_body = json.dumps(develop_payload).encode("utf-8")
+        develop_response = client.post(
+            "/webhooks/github",
+            content=develop_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, develop_body),
+                "Content-Type": "application/json",
+            },
+        )
+        assert develop_response.status_code == 200
 
         refactor_payload = {
             "action": "created",
@@ -1110,7 +1169,7 @@ def test_refactor_command_allows_successful_fix_develop_run(tmp_path, monkeypatc
             body="로그인 아이디 기반 회원가입/로그인 구조를 추가한다.",
             github_issue_number=issue_number,
             github_issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
-            state="System QA",
+            state="QA Review",
         )
         db.add(task)
         db.flush()
@@ -1142,8 +1201,8 @@ def test_refactor_command_allows_successful_fix_develop_run(tmp_path, monkeypatc
             issue_labels=["type: fullstackFeature"],
         )
 
-    assert event.current_state == "In Progress"
-    assert event.message == "리팩터링 요청을 반영했고 작업 상태를 In Progress로 변경했습니다."
+    assert event.current_state == "Dev Review"
+    assert event.message == "리팩터링 요청을 반영했고 Dev Review에서 사람 승인을 기다립니다."
 
 
 def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
@@ -1283,19 +1342,33 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     }
 
     with TestClient(app) as client:
-        for command in ["@ai-harness plan", "@ai-harness develop"]:
-            payload = {"action": "created", "issue": issue, "comment": {"body": command}}
-            body = json.dumps(payload).encode("utf-8")
-            response = client.post(
-                "/webhooks/github",
-                content=body,
-                headers={
-                    "X-GitHub-Event": "issue_comment",
-                    "X-Hub-Signature-256": _signature(secret, body),
-                    "Content-Type": "application/json",
-                },
-            )
-            assert response.status_code == 200
+        plan_payload = {"action": "created", "issue": issue, "comment": {"body": "@ai-harness plan"}}
+        plan_body = json.dumps(plan_payload).encode("utf-8")
+        plan_response = client.post(
+            "/webhooks/github",
+            content=plan_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, plan_body),
+                "Content-Type": "application/json",
+            },
+        )
+        assert plan_response.status_code == 200
+        _approve_issue_stage(issue_number, "plan")
+
+        develop_payload = {"action": "created", "issue": issue, "comment": {"body": "@ai-harness develop"}}
+        develop_body = json.dumps(develop_payload).encode("utf-8")
+        develop_response = client.post(
+            "/webhooks/github",
+            content=develop_body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, develop_body),
+                "Content-Type": "application/json",
+            },
+        )
+        assert develop_response.status_code == 200
+        _approve_issue_stage(issue_number, "dev")
 
         qa_payload = {"action": "created", "issue": issue, "comment": {"body": "@ai-harness qa"}}
         qa_body = json.dumps(qa_payload).encode("utf-8")
@@ -1337,9 +1410,9 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
 
     assert qa_response.status_code == 200
     result = qa_response.json()
-    assert result["previous_state"] == "In Progress"
-    assert result["current_state"] == "System QA"
-    assert result["message"] == "QA가 통과되어 작업 상태를 System QA로 변경했습니다."
+    assert result["previous_state"] == "QA Ready"
+    assert result["current_state"] == "QA Review"
+    assert result["message"] == "QA Agent 실행이 완료되어 QA Review에서 사람 승인을 기다립니다."
     qa_dir = tmp_path / "artifacts" / result["task_id"] / "qa"
     assert (qa_dir / "qa-report.md").exists()
     assert (qa_dir / "qa-checklist.md").exists()
@@ -1361,7 +1434,7 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     assert duplicate_qa_response.status_code == 200
     assert duplicate_qa_response.json() == {
         "status": "ignored",
-        "reason": "현재 작업 상태는 `System QA`입니다. QA는 `In Progress`에서만 실행할 수 있습니다.",
+        "reason": "현재 작업 상태는 `QA Review`입니다. QA는 `QA Ready`에서만 실행할 수 있습니다. 먼저 dev 승인을 기록하세요.",
     }
     duplicate_qa_comment = next(
         comment for comment in captured_comments if "🔎 System QA를 시작하지 못했습니다" in comment
@@ -1369,9 +1442,9 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     assert "@ai-harness re-qa" in duplicate_qa_comment
     assert reqa_response.status_code == 200
     reqa_result = reqa_response.json()
-    assert reqa_result["previous_state"] == "System QA"
-    assert reqa_result["current_state"] == "System QA"
-    assert reqa_result["message"] == "QA 재검증이 통과되었고 작업 상태는 System QA로 유지됩니다."
+    assert reqa_result["previous_state"] == "QA Review"
+    assert reqa_result["current_state"] == "QA Review"
+    assert reqa_result["message"] == "QA 재검증이 통과되었고 작업 상태는 QA Review로 유지됩니다."
     assert any("♻️ 🔎 System QA 재검증 통과" in comment for comment in captured_comments)
     assert any("♻️ 🧑‍💻 Human QA Re-QA 요청" in comment for comment in captured_comments)
     assert len(captured_chat_messages) == 2

@@ -53,33 +53,36 @@ States:
 | State | Meaning | Owner |
 |---|---|---|
 | `Backlog` | Idea or rough requirement | Human |
-| `Todo` | Plan Agent can analyze | Human / Orchestrator |
-| `In Progress` | Dev Agent implementation | Orchestrator |
-| `System QA` | QA Agent verification | Orchestrator |
-| `Human QA` | Human acceptance check | Human |
+| `Plan Review` | Plan Agent finished; human reviews the plan | Human |
+| `Dev Ready` | Plan approved; Dev Agent can run | Human / Codex |
+| `Dev Review` | Dev Agent finished; human reviews implementation | Human |
+| `QA Ready` | Dev approved; QA Agent can run | Human / Codex |
+| `QA Review` | QA Agent finished; human reviews QA result | Human |
+| `Ready To Deploy` | QA approved; deploy can be approved | Human |
 | `Done` | Completed and approved | Human |
 
 Allowed transitions:
 
 ```text
-Backlog -> Todo
-Todo -> In Progress
-In Progress -> System QA
-System QA -> In Progress
-System QA -> Human QA
-Human QA -> In Progress
-Human QA -> Done
+Backlog -> Plan Review
+Plan Review -> Dev Ready
+Dev Ready -> Dev Review
+Dev Review -> QA Ready
+QA Ready -> QA Review
+QA Review -> Ready To Deploy
+Ready To Deploy -> Done
 ```
 
 Rules:
 
-- `Todo -> In Progress` requires a Plan Agent artifact.
-- `In Progress -> System QA` requires Dev Agent implementation report and test report.
-- `System QA -> In Progress` is allowed only while retry limit remains.
-- `System QA -> Human QA` requires QA Agent pass result.
-- `Human QA -> Done` requires explicit human approval.
-- Direct `System QA -> Done` is forbidden.
-- Direct `Todo -> Done` is forbidden.
+- `Backlog -> Plan Review` is produced by Plan Agent.
+- `Plan Review -> Dev Ready` requires human plan approval.
+- `Dev Ready -> Dev Review` is produced by Dev Agent.
+- `Dev Review -> QA Ready` requires human dev approval.
+- `QA Ready -> QA Review` is produced by QA Agent.
+- `QA Review -> Ready To Deploy` requires human QA approval.
+- `Ready To Deploy -> Done` requires explicit deploy approval.
+- Direct agent-to-agent progression without a human approval gate is forbidden.
 
 ## 4. Agent Abstraction Design
 
@@ -254,7 +257,7 @@ Retry is per task and per state:
 
 - Plan Agent failure: stop and request human clarification
 - Dev Agent failure: retry while below limit, otherwise stop
-- QA Agent failure: transition back to `In Progress` while below limit
+- QA Agent failure: transition back to `Dev Ready` while below limit
 - Crash recovery: resume from persisted task state and last completed run
 
 Agent output must be idempotent. Re-running an agent should create a new run and artifact version, not overwrite prior evidence.
@@ -272,4 +275,3 @@ Observability surfaces:
 - final human approval record
 
 The system should make it possible to answer: who or what moved the task, why, based on which artifact, and with what validation result.
-

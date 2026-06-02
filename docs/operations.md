@@ -11,7 +11,7 @@
 
 - Every retry creates a new run.
 - Old artifacts are never overwritten.
-- QA failure loops back to `In Progress` only while retry limit remains.
+- QA failure loops back to `Dev Ready` only while retry limit remains.
 - Exceeding retry limit stops the workflow and requires human intervention.
 
 ## Crash Recovery
@@ -44,4 +44,3 @@ Each run should emit:
 - failure reason if present
 
 The final answer to a user should cite the task id, current state, latest artifacts, and verification result.
-

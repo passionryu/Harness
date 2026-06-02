@@ -17,10 +17,17 @@ This repository is an MVP foundation, not a fully autonomous developer. It is de
 ## Kanban Flow
 
 ```text
-Backlog -> Todo -> In Progress -> System QA -> Human QA -> Done
+Backlog
+-> Plan Review
+-> Dev Ready
+-> Dev Review
+-> QA Ready
+-> QA Review
+-> Ready To Deploy
+-> Done
 ```
 
-Only the orchestrator can move system-controlled states. `Done` requires explicit human approval.
+Each agent run stops at a review gate. A human must approve Plan, Dev, QA, and Deploy before the next stage can proceed.
 
 ## Repository Map
 
@@ -55,8 +62,12 @@ Run harness commands without starting a server:
 ```bash
 harness sync --issue 8
 harness plan --issue 8
+harness approve --issue 8 --stage plan --approved-by rsy
 harness develop --issue 8
+harness approve --issue 8 --stage dev --approved-by rsy
 harness qa --issue 8
+harness approve --issue 8 --stage qa --approved-by rsy
+harness approve --issue 8 --stage deploy --approved-by rsy
 harness status --issue 8
 ```
 
@@ -96,11 +107,15 @@ Codex or a local operator should call the CLI:
 harness sync --issue 1
 harness plan --issue 1
 harness replan --issue 1 --note "기존 설계에서 로그인 정책을 다시 반영한다."
+harness approve --issue 1 --stage plan --approved-by rsy --notes "설계를 확인했다."
 harness develop --issue 1
 harness fix-develop --issue 1
 harness refactor --issue 1 --note-file ./notes/refactor.md
+harness approve --issue 1 --stage dev --approved-by rsy --notes "구현 결과를 확인했다."
 harness qa --issue 1 --note "로그인 실패 케이스와 DB 저장 상태를 함께 확인한다."
 harness re-qa --issue 1
+harness approve --issue 1 --stage qa --approved-by rsy --notes "QA 결과를 확인했다."
+harness approve --issue 1 --stage deploy --approved-by rsy --notes "배포 가능 상태로 승인한다."
 harness status --issue 1
 ```
 

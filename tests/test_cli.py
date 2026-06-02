@@ -94,7 +94,48 @@ def test_cli_plan_runs_plan_agent_from_github_issue(tmp_path, monkeypatch, capsy
     captured = capsys.readouterr()
     assert exit_code == 0
     payload = json.loads(captured.out)
-    assert payload["current_state"] == "Todo"
-    assert "Plan을 생성했습니다" in payload["message"]
+    assert payload["current_state"] == "Plan Review"
+    assert "Plan Agent 실행이 완료" in payload["message"]
     assert "AI Plan" in captured_comments[-1]
     assert (tmp_path / "artifacts" / payload["task_id"] / "plans" / "architecture.md").exists()
+
+
+# CLI approve 명령이 Plan 승인 gate를 통과시켜 Dev Ready로 전환하는지 검증한다.
+def test_cli_approve_plan_moves_task_to_dev_ready(tmp_path, monkeypatch, capsys):
+    issue_number = uuid4().int % 1_000_000_000
+
+    with SessionLocal() as db:
+        task = Task(
+            title="[BE] 승인 테스트",
+            body="승인 gate 테스트입니다.",
+            github_issue_number=issue_number,
+            github_issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            state="Plan Review",
+        )
+        db.add(task)
+        db.commit()
+
+    exit_code = cli.main(
+        [
+            "--json",
+            "approve",
+            "--issue",
+            str(issue_number),
+            "--stage",
+            "plan",
+            "--approved-by",
+            "rsy",
+            "--notes",
+            "설계를 확인했다.",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    payload = json.loads(captured.out)
+    assert payload["previous_state"] == "Plan Review"
+    assert payload["current_state"] == "Dev Ready"
+
+    with SessionLocal() as db:
+        task = db.query(Task).filter(Task.github_issue_number == issue_number).one()
+        assert task.state == "Dev Ready"
