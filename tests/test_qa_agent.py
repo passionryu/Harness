@@ -5,6 +5,85 @@ import orchestrator.services.orchestration as orchestration
 from agents.base import AgentInput, AgentStatus
 
 
+def test_fe_qa_agent_requires_frontend_runtime_before_human_qa(tmp_path, monkeypatch):
+    target_repo = tmp_path / "myMentalCare"
+    target_repo.mkdir()
+    repo = Repo.init(target_repo)
+    (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
+    (target_repo / "apps/web/app").mkdir(parents=True)
+    (target_repo / "apps/web/app/page.tsx").write_text("export default function Page() { return null }\n", encoding="utf-8")
+    (target_repo / "apps/web/package.json").write_text(
+        '{"scripts":{"test:main-auth":"node scripts/verify-main-auth-screen.mjs","build":"next build"}}\n',
+        encoding="utf-8",
+    )
+    repo.index.add(["README.md", "apps/web/app/page.tsx", "apps/web/package.json"])
+    repo.index.commit("Initial commit")
+    repo.git.checkout("-b", "feature(FE)-1")
+
+    artifact_root = tmp_path / "artifacts"
+    task_id = "task-fe"
+    for path in [
+        artifact_root / task_id / "plans" / "architecture.md",
+        artifact_root / task_id / "plans" / "edge-case-checklist.md",
+        artifact_root / task_id / "dev" / "commit-plan.md",
+        artifact_root / task_id / "dev" / "dev-status.md",
+        artifact_root / task_id / "dev" / "implementation.patch",
+        artifact_root / task_id / "dev" / "test-report.md",
+    ]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("ok\n", encoding="utf-8")
+
+    monkeypatch.setattr(qa_agent.settings, "target_repo_path", target_repo)
+    monkeypatch.setattr(qa_agent.settings, "frontend_base_url", "http://localhost:3000")
+    monkeypatch.setattr(
+        qa_agent,
+        "_start_frontend_if_needed",
+        lambda repo_path, timeout_seconds: (None, "테스트 프론트엔드 서버 사용"),
+    )
+    monkeypatch.setattr(qa_agent, "_is_frontend_alive", lambda: True)
+    monkeypatch.setattr(
+        qa_agent,
+        "_verify_frontend_page_content",
+        lambda timeout_seconds, markers: (
+            True,
+            f"url=http://localhost:3000, required_markers={markers}, missing_markers=없음",
+            "<html>myMentalCare 회원가입 로그인 AI</html>",
+            0,
+            "",
+        ),
+    )
+    monkeypatch.setattr(qa_agent, "_run_command", lambda command, cwd, timeout_seconds: (0, "ok", ""))
+
+    result = qa_agent.QAAgent().run(
+        AgentInput(
+            task_id=task_id,
+            title="[FE] 메인 페이지와 회원가입/로그인 모달 구현",
+            body="\n".join(
+                [
+                    "따뜻한 정신 건강 서비스 메인 화면과 AI 채팅 진입점을 구현한다.",
+                    "",
+                    "## Harness Metadata",
+                    "- issue_number: 1",
+                    "- labels: type: feFeature",
+                ]
+            ),
+            state="In Progress",
+            artifacts_root=artifact_root,
+            timeout_seconds=30,
+            retry_count=0,
+            retry_limit=2,
+        )
+    )
+
+    assert result.status == AgentStatus.SUCCESS
+    report = artifact_root / task_id / "qa" / "qa-report.md"
+    content = report.read_text(encoding="utf-8")
+    assert "프론트엔드 dev 서버 응답" in content
+    assert "프론트엔드 화면 주요 문구 확인" in content
+    assert "GET http://localhost:3000" in content
+    assert "확인 URL: `http://localhost:3000`" in content
+
+
 def test_be_qa_agent_reports_curl_smoke_details_and_human_checklist(tmp_path, monkeypatch):
     target_repo = tmp_path / "studyHub"
     target_repo.mkdir()

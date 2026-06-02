@@ -48,6 +48,8 @@ CHECK_NAME_KO = {
     "frontend smoke script exists": "프론트엔드 smoke 테스트 스크립트 존재",
     "frontend smoke test passes": "프론트엔드 smoke 테스트 통과",
     "frontend build passes": "프론트엔드 빌드 통과",
+    "frontend dev server is reachable": "프론트엔드 dev 서버 응답",
+    "frontend page content is visible": "프론트엔드 화면 주요 문구 확인",
     "test:signup script exists": "test:signup 스크립트 존재",
     "test:signup passes": "test:signup 통과",
     "StudyHub API server is reachable": "StudyHub API 서버 응답",
@@ -192,6 +194,70 @@ def _frontend_smoke_script(package_json: Path) -> str:
         if script_name in scripts:
             return script_name
     return ""
+
+
+# 프론트엔드 Human QA에서 열어야 하는 화면 URL을 반환한다.
+def _frontend_url() -> str:
+    return settings.frontend_base_url.rstrip("/")
+
+
+# 이슈 내용에서 프론트엔드 화면 확인에 필요한 핵심 문구를 추출한다.
+def _frontend_required_markers(title: str, body: str) -> list[str]:
+    haystack = f"{title}\n{body}"
+    markers = ["회원가입", "로그인"]
+    if "myMentalCare" in haystack or "멘탈" in haystack or "마음" in haystack:
+        markers.append("myMentalCare")
+    if "채팅" in haystack or "AI" in haystack:
+        markers.append("AI")
+    if "알람" in haystack or "알림" in haystack:
+        markers.append("알림")
+    return sorted(set(markers))
+
+
+# 프론트엔드 화면 HTML과 HTTP 상태를 조회한다.
+def _fetch_frontend_page(timeout_seconds: int) -> tuple[int, str, str, int | None]:
+    return _curl_json("GET", _frontend_url(), None, min(timeout_seconds, 10))
+
+
+# 프론트엔드 dev 서버가 Human QA 전에 접근 가능한지 확인한다.
+def _is_frontend_alive() -> bool:
+    exit_code, _, _, status_code = _fetch_frontend_page(5)
+    return exit_code == 0 and status_code is not None and 200 <= status_code < 400
+
+
+# 프론트엔드 dev 서버가 꺼져 있으면 QA가 직접 실행하고 응답을 기다린다.
+def _start_frontend_if_needed(repo_path: Path, timeout_seconds: int) -> tuple[subprocess.Popen[str] | None, str]:
+    if _is_frontend_alive():
+        return None, f"이미 실행 중인 프론트엔드 서버를 사용했습니다. url={_frontend_url()}"
+
+    web_root = repo_path / "apps/web"
+    if not web_root.exists():
+        return None, "프론트엔드 디렉토리를 찾지 못했습니다. expected=apps/web"
+
+    process = _run_background_command(["pnpm", "--dir", "apps/web", "dev"], repo_path)
+    deadline = time.time() + min(timeout_seconds, 90)
+    while time.time() < deadline:
+        if process.poll() is not None:
+            stdout, stderr = process.communicate(timeout=5)
+            return None, f"프론트엔드 서버 시작 실패. stdout={stdout[-1000:]}, stderr={stderr[-1000:]}"
+        if _is_frontend_alive():
+            return process, f"프론트엔드 서버를 {_frontend_url()} 에서 시작했습니다."
+        time.sleep(2)
+
+    process.terminate()
+    return None, f"제한 시간 안에 프론트엔드 서버가 응답하지 않았습니다. url={_frontend_url()}"
+
+
+# 프론트엔드 화면에 QA에 필요한 주요 문구가 실제로 렌더링되는지 확인한다.
+def _verify_frontend_page_content(timeout_seconds: int, markers: list[str]) -> tuple[bool, str, str, int, str]:
+    exit_code, response_body, stderr, status_code = _fetch_frontend_page(timeout_seconds)
+    missing = [marker for marker in markers if marker not in response_body]
+    passed = exit_code == 0 and status_code is not None and 200 <= status_code < 400 and not missing
+    detail = (
+        f"url={_frontend_url()}, http_status={status_code}, "
+        f"required_markers={markers}, missing_markers={missing or '없음'}"
+    )
+    return passed, detail, response_body, exit_code, stderr
 
 
 # QA report에 명령 실행 결과 섹션을 추가하기 위한 Markdown 줄을 만든다.
@@ -598,6 +664,33 @@ class QAAgent:
             checks.append((f"artifact exists: {artifact.name}", artifact.exists(), str(artifact)))
 
         if issue_type == "feFeature":
+            _frontend_process, frontend_status = _start_frontend_if_needed(
+                repo_path,
+                input_data.timeout_seconds,
+            )
+            checks.append(("frontend dev server is reachable", _is_frontend_alive(), frontend_status))
+
+            required_markers = _frontend_required_markers(input_data.title, input_data.body)
+            page_ok, page_detail, page_body, page_exit_code, page_stderr = _verify_frontend_page_content(
+                input_data.timeout_seconds,
+                required_markers,
+            )
+            checks.append(("frontend page content is visible", page_ok, page_detail))
+            command_sections.extend(
+                _format_qa_command_section(
+                    f"GET {_frontend_url()}",
+                    page_exit_code,
+                    "\n".join(
+                        [
+                            page_detail,
+                            "",
+                            page_body[:1500],
+                        ]
+                    ),
+                    page_stderr,
+                )
+            )
+
             main_page = repo_path / "apps/web/app/page.tsx"
             checks.append(("main page exists", main_page.exists(), str(main_page)))
             package_json = repo_path / "apps/web/package.json"
