@@ -332,7 +332,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     for command, help_text in [
         ("develop", "Plan 승인 후 Dev Agent 실행"),
-        ("fix-develop", "최근 Dev 실패를 자동 복구"),
+        ("fix-develop", "Deprecated: Dev Agent 내부 복구 또는 Codex 대화형 수정 흐름을 사용"),
     ]:
         command_parser = subparsers.add_parser(command, help=help_text)
         _add_issue_option(command_parser)

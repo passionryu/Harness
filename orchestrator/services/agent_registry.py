@@ -1,6 +1,5 @@
 from agents.base import AgentRunner
 from agents.dev_agent import DevAgent
-from agents.fix_develop_agent import FixDevelopAgent
 from agents.plan_agent import PlanAgent
 from agents.qa_agent import QAAgent
 
@@ -10,7 +9,6 @@ class AgentRegistry:
         self._agents: dict[str, AgentRunner] = {
             "plan": PlanAgent(),
             "dev": DevAgent(),
-            "fix_develop": FixDevelopAgent(),
             "qa": QAAgent(),
         }
 

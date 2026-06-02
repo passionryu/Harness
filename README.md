@@ -109,7 +109,6 @@ harness plan --issue 1
 harness replan --issue 1 --note "기존 설계에서 로그인 정책을 다시 반영한다."
 harness approve --issue 1 --stage plan --approved-by rsy --notes "설계를 확인했다."
 harness develop --issue 1
-harness fix-develop --issue 1
 harness refactor --issue 1 --note-file ./notes/refactor.md
 harness approve --issue 1 --stage dev --approved-by rsy --notes "구현 결과를 확인했다."
 harness qa --issue 1 --note "로그인 실패 케이스와 DB 저장 상태를 함께 확인한다."
@@ -118,6 +117,8 @@ harness approve --issue 1 --stage qa --approved-by rsy --notes "QA 결과를 확
 harness approve --issue 1 --stage deploy --approved-by rsy --notes "배포 가능 상태로 승인한다."
 harness status --issue 1
 ```
+
+`harness fix-develop`은 deprecated된 호환 명령입니다. 개발 실패 복구는 Codex 대화형 수정 또는 Dev Agent 내부 runner 확장으로 처리합니다.
 
 GitHub issue comments are not used as human command input anymore:
 

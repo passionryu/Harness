@@ -694,7 +694,7 @@ def _command_panel(task: Task) -> str:
         ("plan", "Plan", "최초 설계를 생성합니다. 이미 성공한 Plan이 있으면 중복 실행을 막습니다."),
         ("replan", "Replan", "기존 설계가 마음에 들지 않을 때 요청 메모를 반영해 다시 설계합니다."),
         ("develop", "Develop", "사람이 Plan을 승인하고 개발 에이전트를 실행합니다."),
-        ("fix-develop", "Fix Develop", "최근 개발 실패 로그를 읽고 자동 복구를 시도합니다."),
+        ("fix-develop", "Fix Develop", "Deprecated: Dev Agent 내부 복구 또는 Codex 대화형 수정 흐름을 사용합니다."),
         ("qa", "System QA", "개발 결과를 시스템 검증으로 넘깁니다. In Progress 상태에서 사용합니다."),
         ("re-qa", "Re-QA", "System QA 이후 같은 작업을 다시 검증합니다."),
         ("refactor", "Refactor", "이미 구현된 결과를 요청 메모 기준으로 구조 개선합니다."),

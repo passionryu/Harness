@@ -341,7 +341,7 @@ class OrchestrationService:
             message="Dev Agent 실행이 완료되어 Dev Review에서 사람 승인을 기다립니다.",
         )
 
-    # 최근 실패한 Dev run을 분석해 자동 복구 가능한 개발 실패를 수정한다.
+    # Deprecated된 fix-develop 명령을 실행하지 않고 새 Dev 중심 복구 흐름으로 안내한다.
     def run_fix_develop_for_github_issue(
         self,
         issue_number: int,
@@ -361,54 +361,26 @@ class OrchestrationService:
         task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
         task.github_issue_url = issue_url
 
-        failed_dev_run = self._latest_failed_dev_run(task.id)
-        if failed_dev_run is None:
-            return self._skip_develop_command(
-                issue_number,
-                "수리할 실패한 Dev 실행 기록이 없습니다.",
-                task.id,
-            )
-
-        previous = task.state
-        run_id = self._run_agent(task, "fix_develop")
-        if task.state != KanbanState.DEV_REVIEW.value:
-            task.state = KanbanState.DEV_REVIEW.value
-            self._record_transition(
-                task.id,
-                previous,
-                task.state,
-                "develop failure fixed; waiting for human dev approval",
-                "agent",
-            )
-
+        reason = (
+            "fix-develop Agent는 deprecated되었습니다. "
+            "이제 개발 실패 복구는 Dev Agent 내부 runner 또는 Codex 대화형 수정 흐름에서 처리합니다. "
+            "최근 실패 로그를 기준으로 Codex에게 수정을 요청하거나, 수정 후 다시 develop/qa를 진행하세요."
+        )
         self._audit(
             task.id,
-            run_id,
-            "dev.failure_fixed",
-            {"issue_number": issue_number, "failed_run_id": failed_dev_run.id},
+            None,
+            "fix_develop.deprecated",
+            {"issue_number": issue_number, "issue_url": issue_url},
         )
-
         if settings.github_token:
             GitHubAdapter(settings.github_token).create_issue_comment(
                 settings.github_owner,
                 settings.github_repo,
                 issue_number,
-                self._build_fix_develop_comment(task, previous, failed_dev_run.id),
+                self._build_fix_develop_deprecated_comment(task, reason),
             )
-            self._audit(
-                task.id,
-                run_id,
-                "github.fix_develop_commented",
-                {"issue_number": issue_number},
-            )
-
         self.db.commit()
-        return EventResult(
-            task_id=task.id,
-            previous_state=previous,
-            current_state=task.state,
-            message="최근 Dev 실패를 수정했고 Dev Review에서 사람 승인을 기다립니다.",
-        )
+        return {"status": "deprecated", "reason": reason, "task_id": task.id}
 
     def run_refactor_for_github_issue(
         self,
@@ -1598,6 +1570,35 @@ class OrchestrationService:
                 "",
                 "```markdown",
                 self._approval_command(task, "dev"),
+                "```",
+            ]
+        )
+
+    # Deprecated된 fix-develop 명령 대신 사용할 복구 흐름을 GitHub 댓글로 안내한다.
+    def _build_fix_develop_deprecated_comment(self, task: Task, reason: str) -> str:
+        return "\n".join(
+            [
+                "<!-- ai-harness-generated -->",
+                "",
+                f"# 🛠️ fix-develop은 deprecated되었습니다: {task.title}",
+                "",
+                f"Task ID: `{task.id}`",
+                "",
+                "### 안내",
+                f"- {reason}",
+                "",
+                "### 권장 흐름",
+                "- Codex에게 최근 실패 로그와 산출물을 기준으로 수정 요청을 합니다.",
+                "- 수정이 끝나면 필요한 검증을 다시 실행합니다.",
+                "- 하네스에는 Dev/QA 결과를 다시 기록합니다.",
+                "",
+                "### 참고 산출물",
+                f"- `artifacts/{task.id}/dev/dev-status.md`",
+                f"- `artifacts/{task.id}/dev/test-report.md`",
+                "",
+                "### 다음 명령",
+                "```markdown",
+                settings.status_command,
                 "```",
             ]
         )

@@ -255,11 +255,11 @@ artifacts/{task_id}/dev/test-report.md
 
 - 현재 Dev Agent는 모든 기능을 완전 자동 구현하지 않는다.
 - runner capability가 부족하면 `needs_human`으로 멈춘다.
-- 실패하면 `fix-develop` 또는 Codex 수동 수정으로 이어간다.
+- 실패하면 Codex 대화형 수정 또는 Dev Agent 내부 runner 확장으로 이어간다.
 
-### `harness fix-develop`
+### `harness fix-develop` Deprecated
 
-최근 실패한 Dev run을 읽고 자동 복구를 시도한다.
+Deprecated된 호환 명령이다. 더 이상 독립 Agent를 실행하지 않는다.
 
 ```bash
 harness fix-develop --issue 8
@@ -267,22 +267,14 @@ harness fix-develop --issue 8
 
 동작:
 
-- 해당 issue의 최근 실패한 Dev run을 찾는다.
-- `dev-status.md`, `test-report.md`, 로그를 기준으로 실패 원인을 분류한다.
-- 자동 수리 가능한 패턴이면 수정한다.
-- 테스트를 다시 실행한다.
-- 성공하면 task를 `Dev Review` 상태로 유지한다.
-- 실패하거나 매칭되지 않으면 사람에게 넘긴다.
+- GitHub/CLI에는 deprecated 안내를 남긴다.
+- 실제 복구는 Codex 대화형 수정 또는 Dev Agent 내부 runner에서 처리한다.
+- 기존 DB의 `fix_develop` 성공 이력은 과거 호환을 위해 개발 성공 이력으로 인정한다.
 
 언제 쓰는가:
 
-- `develop`이 실패했을 때
-- Gradle, Node, CORS, 설정 누락 같은 자동 복구 후보가 있을 때
-
-주의:
-
-- 모든 실패를 자동으로 고치지는 않는다.
-- 원인 분류가 불명확하면 `needs_human`으로 멈추는 것이 정상이다.
+- 새 workflow에서는 사용하지 않는다.
+- 과거 자동화나 오래된 문서와의 호환을 위해 명령만 남겨둔다.
 
 ### `harness refactor`
 
@@ -636,11 +628,13 @@ harness replan --issue 8 --note "loginId는 필수, email은 선택값으로 한
 harness develop --issue 8
 ```
 
-### 개발 실패 복구
+### 개발 실패 복구 Deprecated
 
 ```bash
 harness fix-develop --issue 8
 ```
+
+이 명령은 새 복구를 수행하지 않는다. 최근 실패 내용을 Codex에게 전달해 수정하고, 필요한 경우 `harness develop` 또는 `harness qa`를 다시 실행한다.
 
 ### 사람 요청 기반 리팩터링
 
