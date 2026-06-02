@@ -277,6 +277,9 @@ class FrontendImplementationRunner(ResponsibilityCapabilityRunner):
     # route가 명확한 프론트엔드 작업은 안전한 page scaffold까지 생성한다.
     def run(self, context: DevRunnerContext) -> DevRunnerResult:
         route = extract_frontend_route(f"{context.title}\n{context.body}")
+        existing_changes = _frontend_changed_paths(context)
+        if existing_changes:
+            return self._return_existing_frontend_changes(context, existing_changes)
         if route is None:
             return super().run(context)
 
@@ -338,6 +341,51 @@ class FrontendImplementationRunner(ResponsibilityCapabilityRunner):
             ],
             artifacts=[ArtifactSpec(self.name, report)],
             error=f"{self.name}: scaffold 이후 상세 구현 capability가 부족합니다. {report.name}을 확인하세요.",
+        )
+
+    # 이미 존재하는 프론트엔드 변경을 책임 범위의 구현 결과로 기록한다.
+    def _return_existing_frontend_changes(
+        self,
+        context: DevRunnerContext,
+        changed_paths: list[str],
+    ) -> DevRunnerResult:
+        report = context.task_dir / f"{self.name}.md"
+        snapshot = inspect_codebase(context)
+        report.write_text(
+            "\n".join(
+                [
+                    f"# {self.name}",
+                    "",
+                    f"- branch: `{context.branch_name}`",
+                    f"- issue_type: `{context.issue_type}`",
+                    f"- responsibility: {self.responsibility}",
+                    "- status: success",
+                    f"- changed_paths: `{', '.join(changed_paths)}`",
+                    "",
+                    *render_codebase_snapshot(snapshot),
+                    "## Capability",
+                    "",
+                    "- 현재 브랜치에 이미 존재하는 프론트엔드 변경을 구현 결과로 확인했습니다.",
+                    "- 실제 품질 판정은 Test Implementation Runner의 빌드와 smoke test 결과로 이어서 검증합니다.",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return DevRunnerResult(
+            status=AgentStatus.SUCCESS,
+            summary=f"{self.name}가 기존 프론트엔드 변경 {len(changed_paths)}개를 확인했습니다.",
+            commits=["- 기존 커밋의 프론트엔드 변경을 확인했습니다."],
+            progress=[
+                "- [x] 현재 브랜치 프론트엔드 변경 확인",
+                "- [x] 테스트 러너로 검증 위임",
+            ],
+            verification=[
+                f"## {self.name}",
+                "",
+                "- status: success",
+                f"- changed_paths: `{', '.join(changed_paths)}`",
+            ],
+            artifacts=[ArtifactSpec(self.name, report)],
         )
 
 
@@ -593,6 +641,29 @@ def _stage_and_commit(context: DevRunnerContext, paths: list[str], message: str)
         return "스킵: 스테이징된 변경사항 없음"
     commit = context.repo.index.commit(message)
     return commit.hexsha[:12]
+
+
+# 현재 브랜치에서 기준 브랜치 대비 프론트엔드 변경 파일을 찾는다.
+def _frontend_changed_paths(context: DevRunnerContext) -> list[str]:
+    candidates = ["main", "origin/main", "stage", "origin/stage"]
+    for base in candidates:
+        exit_code, stdout = _git_name_only(context, base)
+        if exit_code == 0:
+            return sorted(path for path in stdout.splitlines() if path.startswith("apps/web/"))
+    return []
+
+
+# 기준 브랜치 대비 변경 파일 목록을 git으로 조회한다.
+def _git_name_only(context: DevRunnerContext, base: str) -> tuple[int, str]:
+    completed = subprocess.run(
+        ["git", "diff", "--name-only", f"{base}...HEAD"],
+        cwd=context.repo_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    return completed.returncode, completed.stdout
 
 
 # route 기반 Next.js page scaffold 내용을 만든다.

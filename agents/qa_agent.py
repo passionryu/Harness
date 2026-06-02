@@ -14,13 +14,12 @@ from orchestrator.core.settings import settings
 
 FE_HUMAN_QA_CHECKLIST = [
     "브라우저에서 메인 화면에 접속했을 때 회원가입 진입 버튼 또는 링크가 보이는가",
-    "회원가입 진입 버튼을 클릭하면 `/signup` 화면으로 정상 이동하는가",
-    "이름, 이메일, 비밀번호, 전화번호, 관심 영역 입력 필드가 의도한 순서와 형태로 보이는가",
+    "회원가입 버튼을 클릭하면 페이지 이동 없이 회원가입 모달이 열리는가",
+    "로그인 버튼을 클릭하면 페이지 이동 없이 로그인 모달이 열리는가",
+    "회원가입/로그인 입력 필드가 의도한 순서와 형태로 보이는가",
     "모바일/데스크톱 화면에서 폼 레이아웃이 깨지거나 텍스트가 겹치지 않는가",
-    "필수 입력값을 비웠을 때 사용자가 이해할 수 있는 검증 메시지가 보이는가",
-    "잘못된 이메일 또는 너무 짧은 비밀번호 입력 시 제출이 막히는가",
-    "정상 입력 후 제출했을 때 현재 단계에 맞는 안내 또는 mock-safe 동작이 보이는가",
-    "로그인/메인 화면으로 돌아가는 흐름이 어색하지 않은가",
+    "API 연동 전 제출 시 현재 단계에 맞는 mock-safe 안내가 보이는가",
+    "정신 건강 서비스에 맞는 따뜻하고 안정적인 디자인 톤이 유지되는가",
 ]
 
 BE_HUMAN_QA_CHECKLIST = [
@@ -45,6 +44,10 @@ CONFIG_HUMAN_QA_CHECKLIST = [
 CHECK_NAME_KO = {
     "target repository exists": "대상 저장소 존재",
     "expected branch is checked out": "예상 브랜치 체크아웃 상태",
+    "main page exists": "메인 페이지 파일 존재",
+    "frontend smoke script exists": "프론트엔드 smoke 테스트 스크립트 존재",
+    "frontend smoke test passes": "프론트엔드 smoke 테스트 통과",
+    "frontend build passes": "프론트엔드 빌드 통과",
     "test:signup script exists": "test:signup 스크립트 존재",
     "test:signup passes": "test:signup 통과",
     "StudyHub API server is reachable": "StudyHub API 서버 응답",
@@ -177,6 +180,37 @@ def _package_has_script(package_json: Path, script_name: str) -> bool:
         return False
     data = json.loads(package_json.read_text(encoding="utf-8"))
     return script_name in data.get("scripts", {})
+
+
+# package.json에서 프론트엔드 smoke 테스트 스크립트를 찾는다.
+def _frontend_smoke_script(package_json: Path) -> str:
+    if not package_json.exists():
+        return ""
+    scripts = json.loads(package_json.read_text(encoding="utf-8")).get("scripts", {})
+    preferred = ["test:main-auth", "test:smoke", "test:ui", "test:signup"]
+    for script_name in preferred:
+        if script_name in scripts:
+            return script_name
+    return ""
+
+
+# QA report에 명령 실행 결과 섹션을 추가하기 위한 Markdown 줄을 만든다.
+def _format_qa_command_section(command: str, exit_code: int, stdout: str, stderr: str) -> list[str]:
+    return [
+        f"## Command: {command}",
+        "",
+        f"- exit_code: {exit_code}",
+        "",
+        "### stdout",
+        "```text",
+        stdout.strip() or "(비어 있음)",
+        "```",
+        "",
+        "### stderr",
+        "```text",
+        stderr.strip() or "(비어 있음)",
+        "```",
+    ]
 
 
 def _curl_json(
@@ -564,18 +598,49 @@ class QAAgent:
             checks.append((f"artifact exists: {artifact.name}", artifact.exists(), str(artifact)))
 
         if issue_type == "feFeature":
-            signup_files = [
-                repo_path / "apps/web/app/signup/page.tsx",
-                repo_path / "apps/web/components/signup/signup-form.tsx",
-                repo_path / "apps/web/lib/signup-validation.ts",
-                repo_path / "apps/web/scripts/verify-signup-page.mjs",
-            ]
-            for path in signup_files:
-                checks.append((f"signup file exists: {path.name}", path.exists(), str(path)))
-
+            main_page = repo_path / "apps/web/app/page.tsx"
+            checks.append(("main page exists", main_page.exists(), str(main_page)))
             package_json = repo_path / "apps/web/package.json"
+            smoke_script = _frontend_smoke_script(package_json)
+            checks.append(
+                (
+                    "frontend smoke script exists",
+                    bool(smoke_script),
+                    smoke_script or str(package_json),
+                )
+            )
+            if smoke_script:
+                exit_code, stdout, stderr = _run_command(
+                    ["pnpm", "--dir", "apps/web", smoke_script],
+                    repo_path,
+                    input_data.timeout_seconds,
+                )
+                checks.append(("frontend smoke test passes", exit_code == 0, f"exit_code={exit_code}"))
+                command_sections.extend(
+                    _format_qa_command_section(
+                        f"pnpm --dir apps/web {smoke_script}",
+                        exit_code,
+                        stdout,
+                        stderr,
+                    )
+                )
+
+            build_exit_code, build_stdout, build_stderr = _run_command(
+                ["pnpm", "--dir", "apps/web", "build"],
+                repo_path,
+                input_data.timeout_seconds,
+            )
+            checks.append(("frontend build passes", build_exit_code == 0, f"exit_code={build_exit_code}"))
+            command_sections.extend(
+                _format_qa_command_section(
+                    "pnpm --dir apps/web build",
+                    build_exit_code,
+                    build_stdout,
+                    build_stderr,
+                )
+            )
+
             has_signup_test = _package_has_script(package_json, "test:signup")
-            checks.append(("test:signup script exists", has_signup_test, str(package_json)))
             if has_signup_test:
                 exit_code, stdout, stderr = _run_command(
                     ["pnpm", "--dir", "apps/web", "test:signup"],
@@ -584,21 +649,12 @@ class QAAgent:
                 )
                 checks.append(("test:signup passes", exit_code == 0, f"exit_code={exit_code}"))
                 command_sections.extend(
-                    [
-                        "## Command: pnpm --dir apps/web test:signup",
-                        "",
-                        f"- exit_code: {exit_code}",
-                        "",
-                        "### stdout",
-                        "```text",
-                        stdout.strip() or "(비어 있음)",
-                        "```",
-                        "",
-                        "### stderr",
-                        "```text",
-                        stderr.strip() or "(비어 있음)",
-                        "```",
-                    ]
+                    _format_qa_command_section(
+                        "pnpm --dir apps/web test:signup",
+                        exit_code,
+                        stdout,
+                        stderr,
+                    )
                 )
 
         if issue_type in {"beFeature", "apiConnect", "fullstackFeature"}:
@@ -714,6 +770,8 @@ class QAAgent:
             checklist_source = FE_HUMAN_QA_CHECKLIST
         human_qa_lines = [f"- [ ] {item}" for item in checklist_source]
         qa_request = _extract_section(input_data.body, "Human QA Request")
+        swagger_url = settings.studyhub_swagger_url if issue_type in {"beFeature", "apiConnect", "fullstackFeature", "config"} else "N/A"
+        check_url = settings.frontend_base_url if issue_type == "feFeature" else settings.studyhub_api_base_url
 
         report = task_dir / "qa-report.md"
         report.write_text(
@@ -726,8 +784,8 @@ class QAAgent:
                     f"- branch: `{branch_name}`",
                     f"- current_branch: `{current_branch}`",
                     f"- result: {'pass' if passed else 'fail'}",
-                    f"- swagger_url: `{settings.studyhub_swagger_url}`",
-                    f"- 확인 URL: `{settings.studyhub_api_base_url}`",
+                    f"- swagger_url: `{swagger_url}`",
+                    f"- 확인 URL: `{check_url}`",
                     "",
                     "## QA 요청사항",
                     *(qa_request or ["추가 QA 요청사항이 없습니다."]),

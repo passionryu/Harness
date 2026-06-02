@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     allow_external_notifications: bool = False
     google_chat_webhook_url: str | None = None
     discord_webhook_url: str | None = None
+    frontend_base_url: str = "http://localhost:3000"
     studyhub_api_base_url: str = "http://localhost:3001"
     studyhub_swagger_url: str = "http://localhost:3001/swagger-ui/index.html"
 

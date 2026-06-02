@@ -68,11 +68,12 @@ class OrchestrationService:
             )
             if task is not None:
                 return task
-        return self.db.scalar(
-            select(Task)
-            .where(Task.github_issue_number == issue_number)
-            .where(Task.github_issue_url.is_(None))
-        )
+            return self.db.scalar(
+                select(Task)
+                .where(Task.github_issue_number == issue_number)
+                .where(Task.github_issue_url.is_(None))
+            )
+        return self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
 
     def upsert_github_issue_task(
         self,
@@ -309,18 +310,26 @@ class OrchestrationService:
         )
 
         if settings.github_token:
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_develop_comment(task, previous),
-            )
-            self._audit(
-                task.id,
-                run_id,
-                "github.develop_commented",
-                {"issue_number": issue_number},
-            )
+            try:
+                GitHubAdapter(settings.github_token).create_issue_comment(
+                    settings.github_owner,
+                    settings.github_repo,
+                    issue_number,
+                    self._build_develop_comment(task, previous),
+                )
+                self._audit(
+                    task.id,
+                    run_id,
+                    "github.develop_commented",
+                    {"issue_number": issue_number},
+                )
+            except Exception as exc:
+                self._audit(
+                    task.id,
+                    run_id,
+                    "github.develop_comment_failed",
+                    {"issue_number": issue_number, "error": str(exc)},
+                )
 
         self.db.commit()
         return EventResult(
@@ -537,24 +546,32 @@ class OrchestrationService:
         )
 
         if settings.github_token:
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_qa_comment(task, previous),
-            )
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_human_qa_comment(task, rerun=False),
-            )
-            self._audit(
-                task.id,
-                run_id,
-                "github.qa_commented",
-                {"issue_number": issue_number},
-            )
+            try:
+                GitHubAdapter(settings.github_token).create_issue_comment(
+                    settings.github_owner,
+                    settings.github_repo,
+                    issue_number,
+                    self._build_qa_comment(task, previous),
+                )
+                GitHubAdapter(settings.github_token).create_issue_comment(
+                    settings.github_owner,
+                    settings.github_repo,
+                    issue_number,
+                    self._build_human_qa_comment(task, rerun=False),
+                )
+                self._audit(
+                    task.id,
+                    run_id,
+                    "github.qa_commented",
+                    {"issue_number": issue_number},
+                )
+            except Exception as exc:
+                self._audit(
+                    task.id,
+                    run_id,
+                    "github.qa_comment_failed",
+                    {"issue_number": issue_number, "error": str(exc)},
+                )
 
         self._notify_after_qa(task, run_id, rerun=False)
         self.db.commit()
@@ -617,24 +634,32 @@ class OrchestrationService:
         )
 
         if settings.github_token:
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_qa_comment(task, previous, rerun=True),
-            )
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_human_qa_comment(task, rerun=True),
-            )
-            self._audit(
-                task.id,
-                run_id,
-                "github.qa_rerun_commented",
-                {"issue_number": issue_number},
-            )
+            try:
+                GitHubAdapter(settings.github_token).create_issue_comment(
+                    settings.github_owner,
+                    settings.github_repo,
+                    issue_number,
+                    self._build_qa_comment(task, previous, rerun=True),
+                )
+                GitHubAdapter(settings.github_token).create_issue_comment(
+                    settings.github_owner,
+                    settings.github_repo,
+                    issue_number,
+                    self._build_human_qa_comment(task, rerun=True),
+                )
+                self._audit(
+                    task.id,
+                    run_id,
+                    "github.qa_rerun_commented",
+                    {"issue_number": issue_number},
+                )
+            except Exception as exc:
+                self._audit(
+                    task.id,
+                    run_id,
+                    "github.qa_rerun_comment_failed",
+                    {"issue_number": issue_number, "error": str(exc)},
+                )
 
         self._notify_after_qa(task, run_id, rerun=True)
         self.db.commit()
@@ -815,8 +840,9 @@ class OrchestrationService:
         issue_number: int,
         stage: str,
         payload: HumanApproval,
+        issue_url: str = "",
     ) -> EventResult:
-        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        task = self._find_github_issue_task(issue_number, issue_url)
         if task is None:
             raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
         return self.approve_task_stage(task, stage, payload)
@@ -1838,7 +1864,7 @@ class OrchestrationService:
             if issue_type in {"beFeature", "apiConnect", "fullstackFeature"}
             else [
                 "화면 확인 URL:",
-                "http://localhost:3000/signup",
+                settings.frontend_base_url,
             ]
         )
         return "\n".join(

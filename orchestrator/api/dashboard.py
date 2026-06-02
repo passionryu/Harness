@@ -224,7 +224,8 @@ def _upsert_synced_issue(
     labels: list[str],
 ) -> Task:
     issue_number = int(issue["number"])
-    task = service.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+    issue_url = issue.get("html_url") or ""
+    task = service._find_github_issue_task(issue_number, issue_url)
     body = service._append_issue_metadata(
         issue.get("body") or "",
         labels,
@@ -234,7 +235,7 @@ def _upsert_synced_issue(
         task = Task(
             title=issue.get("title") or "",
             body=body,
-            github_issue_url=issue.get("html_url") or "",
+            github_issue_url=issue_url,
             github_issue_number=issue_number,
             state="Backlog",
             retry_limit=settings.agent_retry_limit,
@@ -252,7 +253,7 @@ def _upsert_synced_issue(
 
     task.title = issue.get("title") or task.title
     task.body = body
-    task.github_issue_url = issue.get("html_url") or task.github_issue_url
+    task.github_issue_url = issue_url or task.github_issue_url
     service._audit(
         task.id,
         None,

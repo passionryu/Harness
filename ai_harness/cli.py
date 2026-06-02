@@ -173,17 +173,18 @@ def _sync_issues(args: argparse.Namespace) -> dict[str, Any]:
 # GitHub 이슈 하나를 상태 전이 없이 로컬 task로 동기화한다.
 def _sync_issue_task(service: OrchestrationService, issue: dict[str, Any]) -> Task:
     issue_number = int(issue["number"])
-    task = service.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+    issue_url = issue.get("html_url") or ""
+    task = service._find_github_issue_task(issue_number, issue_url)
     body = service._append_issue_metadata(
         issue.get("body") or "",
-        _labels_from_issue(issue),
+        _labels_from_issue_or_title(issue),
         issue_number,
     )
     if task is None:
         task = Task(
             title=issue.get("title") or "",
             body=body,
-            github_issue_url=issue.get("html_url") or "",
+            github_issue_url=issue_url,
             github_issue_number=issue_number,
             state="Backlog",
             retry_limit=settings.agent_retry_limit,
@@ -201,7 +202,7 @@ def _sync_issue_task(service: OrchestrationService, issue: dict[str, Any]) -> Ta
 
     task.title = issue.get("title") or task.title
     task.body = body
-    task.github_issue_url = issue.get("html_url") or task.github_issue_url
+    task.github_issue_url = issue_url or task.github_issue_url
     service._audit(
         task.id,
         None,
@@ -213,8 +214,10 @@ def _sync_issue_task(service: OrchestrationService, issue: dict[str, Any]) -> Ta
 
 # 로컬 DB에 저장된 task와 최근 실행 상태를 조회한다.
 def _status(args: argparse.Namespace) -> dict[str, Any]:
+    context = _optional_issue_context(args.issue)
     with SessionLocal() as db:
-        task = db.scalar(select(Task).where(Task.github_issue_number == args.issue))
+        service = OrchestrationService(db)
+        task = service._find_github_issue_task(args.issue, context["issue_url"])
         if task is None:
             return {"status": "not_found", "reason": f"GitHub issue #{args.issue} task가 없습니다."}
 
@@ -227,7 +230,6 @@ def _status(args: argparse.Namespace) -> dict[str, Any]:
             .order_by(StateTransition.created_at.desc())
             .limit(1)
         )
-        service = OrchestrationService(db)
         return {
             "status": "ok",
             "task_id": task.id,
@@ -246,12 +248,32 @@ def _approve(args: argparse.Namespace) -> EventResult:
     with SessionLocal() as db:
         service = OrchestrationService(db)
         if args.issue is not None:
-            return service.approve_stage_for_github_issue(args.issue, args.stage, payload)
+            context = _optional_issue_context(args.issue)
+            return service.approve_stage_for_github_issue(
+                args.issue,
+                args.stage,
+                payload,
+                issue_url=context["issue_url"],
+            )
         if args.task_id is not None:
             if args.stage != "deploy":
                 raise ValueError("--task-id 승인은 deploy stage에서만 지원합니다. plan/dev/qa는 --issue를 사용하세요.")
             return service.approve_human_qa(args.task_id, payload)
     raise ValueError("--issue 또는 --task-id 중 하나가 필요합니다.")
+
+
+# GitHub 조회가 불가능한 환경에서는 로컬 DB 조회용 빈 issue_url을 반환한다.
+def _optional_issue_context(issue_number: int) -> dict[str, Any]:
+    try:
+        return _fetch_issue_context(issue_number)
+    except Exception:
+        return {
+            "issue_number": issue_number,
+            "title": "",
+            "body": "",
+            "issue_url": "",
+            "issue_labels": [],
+        }
 
 
 # 최근 run 정보를 CLI 출력용 payload로 변환한다.
