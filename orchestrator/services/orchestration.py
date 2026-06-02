@@ -58,6 +58,22 @@ class OrchestrationService:
     def get_task(self, task_id: str) -> Task | None:
         return self.db.scalar(select(Task).where(Task.id == task_id))
 
+    # GitHub 이슈 task를 repo URL까지 포함해 찾는다.
+    def _find_github_issue_task(self, issue_number: int, issue_url: str) -> Task | None:
+        if issue_url:
+            task = self.db.scalar(
+                select(Task)
+                .where(Task.github_issue_number == issue_number)
+                .where(Task.github_issue_url == issue_url)
+            )
+            if task is not None:
+                return task
+        return self.db.scalar(
+            select(Task)
+            .where(Task.github_issue_number == issue_number)
+            .where(Task.github_issue_url.is_(None))
+        )
+
     def upsert_github_issue_task(
         self,
         issue_number: int,
@@ -65,7 +81,7 @@ class OrchestrationService:
         body: str,
         issue_url: str,
     ) -> Task:
-        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        task = self._find_github_issue_task(issue_number, issue_url)
         if task is None:
             task = Task(
                 title=title,
@@ -185,18 +201,26 @@ class OrchestrationService:
         )
 
         if settings.github_token:
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_plan_comment(task),
-            )
-            self._audit(
-                task.id,
-                run_id,
-                "github.issue_commented",
-                {"issue_number": issue_number},
-            )
+            try:
+                GitHubAdapter(settings.github_token).create_issue_comment(
+                    settings.github_owner,
+                    settings.github_repo,
+                    issue_number,
+                    self._build_plan_comment(task),
+                )
+                self._audit(
+                    task.id,
+                    run_id,
+                    "github.issue_commented",
+                    {"issue_number": issue_number},
+                )
+            except Exception as exc:
+                self._audit(
+                    task.id,
+                    run_id,
+                    "github.issue_comment_failed",
+                    {"issue_number": issue_number, "error": str(exc)},
+                )
         else:
             self._audit(
                 task.id,
@@ -240,7 +264,7 @@ class OrchestrationService:
         issue_url: str,
         issue_labels: list[str] | None = None,
     ) -> EventResult | dict[str, str]:
-        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        task = self._find_github_issue_task(issue_number, issue_url)
         if task is None:
             return self._skip_develop_command(
                 issue_number,
@@ -315,7 +339,7 @@ class OrchestrationService:
         issue_url: str,
         issue_labels: list[str] | None = None,
     ) -> EventResult | dict[str, str]:
-        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        task = self._find_github_issue_task(issue_number, issue_url)
         if task is None:
             return self._skip_develop_command(
                 issue_number,
@@ -384,7 +408,7 @@ class OrchestrationService:
         refactor_request: str,
         issue_labels: list[str] | None = None,
     ) -> EventResult | dict[str, str]:
-        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        task = self._find_github_issue_task(issue_number, issue_url)
         if task is None:
             return self._skip_refactor_command(
                 issue_number,
@@ -471,7 +495,7 @@ class OrchestrationService:
         issue_labels: list[str] | None = None,
         qa_request: str | None = None,
     ) -> EventResult | dict[str, str]:
-        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        task = self._find_github_issue_task(issue_number, issue_url)
         if task is None:
             return self._skip_qa_command(issue_number, "작업을 찾을 수 없습니다. 먼저 plan과 develop을 실행하세요.")
 
@@ -550,7 +574,7 @@ class OrchestrationService:
         issue_labels: list[str] | None = None,
         qa_request: str | None = None,
     ) -> EventResult | dict[str, str]:
-        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        task = self._find_github_issue_task(issue_number, issue_url)
         if task is None:
             return self._skip_qa_command(
                 issue_number,
@@ -629,7 +653,7 @@ class OrchestrationService:
         issue_url: str,
         issue_labels: list[str] | None = None,
     ) -> dict[str, str]:
-        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        task = self._find_github_issue_task(issue_number, issue_url)
         if task is None:
             task = self.upsert_github_issue_task(
                 issue_number=issue_number,
@@ -662,7 +686,7 @@ class OrchestrationService:
         issue_labels: list[str] | None = None,
         reason: str = "cancel requested",
     ) -> dict[str, str]:
-        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        task = self._find_github_issue_task(issue_number, issue_url)
         if task is None:
             task = self.upsert_github_issue_task(
                 issue_number=issue_number,
@@ -709,7 +733,7 @@ class OrchestrationService:
         command: str | None,
         error: str,
     ) -> dict[str, str]:
-        task = self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+        task = self._find_github_issue_task(issue_number, issue_url)
         if task is None:
             task = self.upsert_github_issue_task(
                 issue_number=issue_number,

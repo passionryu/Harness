@@ -473,7 +473,7 @@ def test_plan_agent_uses_backend_feature_profile(tmp_path, monkeypatch):
     assert "## Issue Type\nbeFeature" in architecture
     assert "apps/server/modules/application 하위 usecase" in architecture
     assert "트랜잭션 경계와 repository port를 확정한다." in architecture
-    assert "StudyHub 서비스" in sequence
+    assert "participant Service as 서비스" in sequence
     assert "도메인 정책" in sequence
     assert "Controller" not in sequence
     assert "UseCase" not in sequence

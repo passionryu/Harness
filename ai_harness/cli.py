@@ -55,8 +55,40 @@ def _fetch_issue_context(issue_number: int) -> dict[str, Any]:
         "title": issue.get("title") or "",
         "body": issue.get("body") or "",
         "issue_url": issue.get("html_url") or "",
-        "issue_labels": _labels_from_issue(issue),
+        "issue_labels": _labels_from_issue_or_title(issue),
     }
+
+
+# GitHub 라벨이 없을 때 이슈 제목 prefix로 하네스 타입 라벨을 보강한다.
+def _labels_from_issue_or_title(issue: dict[str, Any]) -> list[str]:
+    labels = _labels_from_issue(issue)
+    if any(label.startswith("type: ") for label in labels):
+        return labels
+
+    inferred_label = _infer_type_label_from_title(issue.get("title") or "")
+    if inferred_label:
+        return sorted([*labels, inferred_label])
+    return labels
+
+
+# 이슈 제목의 작업 타입 prefix를 하네스 내부 type 라벨로 변환한다.
+def _infer_type_label_from_title(title: str) -> str:
+    normalized = title.strip().lower()
+    prefix_map = {
+        "[fe]": "type: feFeature",
+        "[be]": "type: beFeature",
+        "[fs]": "type: fullstackFeature",
+        "[api]": "type: apiConnect",
+        "[config]": "type: config",
+        "[infra]": "type: infra",
+        "[docs]": "type: docs",
+        "[bugfix]": "type: bugfix",
+        "[hotfix]": "type: hotfix",
+    }
+    for prefix, label in prefix_map.items():
+        if normalized.startswith(prefix):
+            return label
+    return ""
 
 
 # GitHub 이슈 payload에서 label 이름만 추출한다.

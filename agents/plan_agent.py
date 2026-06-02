@@ -40,6 +40,15 @@ def _format_bullets(items: list[str], fallback: list[str]) -> list[str]:
     return [f"- {item}" for item in source]
 
 
+# 여러 이슈 템플릿 heading 중 먼저 발견되는 bullet 목록을 가져온다.
+def _extract_first_bullets(markdown: str, headings: list[str]) -> list[str]:
+    for heading in headings:
+        bullets = _extract_bullets(markdown, heading)
+        if bullets:
+            return bullets
+    return []
+
+
 def _extract_issue_type(markdown: str) -> str:
     metadata = _extract_section(markdown, "Harness Metadata")
     for line in metadata:
@@ -226,37 +235,37 @@ def _sequence_diagram_for_issue_type(issue_type: str) -> list[str]:
         "feFeature": [
             "sequenceDiagram",
             "    actor User as 사용자",
-            "    participant StudyHub as StudyHub 화면",
+            "    participant Screen as 서비스 화면",
             "    participant Policy as 입력 조건",
-            "    User->>StudyHub: 원하는 기능 화면에 진입한다",
-            "    StudyHub-->>User: 필요한 정보와 선택지를 안내한다",
-            "    User->>StudyHub: 정보를 입력하고 진행한다",
-            "    StudyHub->>Policy: 입력 조건을 확인한다",
-            "    Policy-->>StudyHub: 진행 가능 여부를 알려준다",
-            "    StudyHub-->>User: 성공 결과 또는 수정이 필요한 항목을 보여준다",
+            "    User->>Screen: 원하는 기능 화면에 진입한다",
+            "    Screen-->>User: 필요한 정보와 선택지를 안내한다",
+            "    User->>Screen: 정보를 입력하고 진행한다",
+            "    Screen->>Policy: 입력 조건을 확인한다",
+            "    Policy-->>Screen: 진행 가능 여부를 알려준다",
+            "    Screen-->>User: 성공 결과 또는 수정이 필요한 항목을 보여준다",
         ],
         "beFeature": [
             "sequenceDiagram",
             "    actor Requester as 요청자",
-            "    participant StudyHub as StudyHub 서비스",
+            "    participant Service as 서비스",
             "    participant Policy as 도메인 정책",
             "    participant Record as 데이터 기록",
-            "    Requester->>StudyHub: 기능 수행을 요청한다",
-            "    StudyHub->>Policy: 요청이 도메인 규칙에 맞는지 확인한다",
-            "    Policy-->>StudyHub: 허용 또는 거절 사유를 반환한다",
+            "    Requester->>Service: 기능 수행을 요청한다",
+            "    Service->>Policy: 요청이 도메인 규칙에 맞는지 확인한다",
+            "    Policy-->>Service: 허용 또는 거절 사유를 반환한다",
             "    alt 정책상 허용됨",
-            "        StudyHub->>Record: 필요한 정보를 기록하거나 갱신한다",
-            "        Record-->>StudyHub: 처리 결과를 반환한다",
-            "        StudyHub-->>Requester: 성공 결과를 안내한다",
+            "        Service->>Record: 필요한 정보를 기록하거나 갱신한다",
+            "        Record-->>Service: 처리 결과를 반환한다",
+            "        Service-->>Requester: 성공 결과를 안내한다",
             "    else 정책상 거절됨",
-            "        StudyHub-->>Requester: 사용자가 이해할 수 있는 거절 사유를 안내한다",
+            "        Service-->>Requester: 사용자가 이해할 수 있는 거절 사유를 안내한다",
             "    end",
         ],
         "apiConnect": [
             "sequenceDiagram",
             "    actor User as 사용자",
-            "    participant Screen as StudyHub 화면",
-            "    participant Service as StudyHub 서비스",
+            "    participant Screen as 서비스 화면",
+            "    participant Service as 서비스",
             "    participant Policy as 도메인 정책",
             "    User->>Screen: 화면에서 기능을 요청한다",
             "    Screen->>Service: 사용자의 요청 내용을 전달한다",
@@ -268,8 +277,8 @@ def _sequence_diagram_for_issue_type(issue_type: str) -> list[str]:
         "fullstackFeature": [
             "sequenceDiagram",
             "    actor User as 사용자",
-            "    participant Screen as StudyHub 화면",
-            "    participant Service as StudyHub 서비스",
+            "    participant Screen as 서비스 화면",
+            "    participant Service as 서비스",
             "    participant Policy as 도메인 정책",
             "    participant Record as 데이터 기록",
             "    User->>Screen: 기능 화면에 진입한다",
@@ -304,12 +313,12 @@ def _sequence_diagram_for_issue_type(issue_type: str) -> list[str]:
         [
             "sequenceDiagram",
             "    actor User as 사용자",
-            "    participant StudyHub as StudyHub",
+            "    participant Service as 서비스",
             "    participant Policy as 업무 규칙",
-            "    User->>StudyHub: 필요한 작업을 요청한다",
-            "    StudyHub->>Policy: 진행 가능 여부를 확인한다",
-            "    Policy-->>StudyHub: 처리 결과를 반환한다",
-            "    StudyHub-->>User: 결과와 다음 행동을 안내한다",
+            "    User->>Service: 필요한 작업을 요청한다",
+            "    Service->>Policy: 진행 가능 여부를 확인한다",
+            "    Policy-->>Service: 처리 결과를 반환한다",
+            "    Service-->>User: 결과와 다음 행동을 안내한다",
         ],
     )
 
@@ -328,7 +337,7 @@ def _flow_chart_for_issue_type(issue_type: str) -> list[str]:
         ],
         "beFeature": [
             "flowchart TD",
-            "    A[요청자가 기능 수행을 요청한다] --> B[StudyHub가 요청 내용을 확인한다]",
+            "    A[요청자가 기능 수행을 요청한다] --> B[서비스가 요청 내용을 확인한다]",
             "    B --> C{필수 조건과 형식이 맞는가?}",
             "    C -- 아니오 --> D[수정 가능한 사유를 안내한다]",
             "    C -- 예 --> E[도메인 정책을 확인한다]",
@@ -340,7 +349,7 @@ def _flow_chart_for_issue_type(issue_type: str) -> list[str]:
         "apiConnect": [
             "flowchart TD",
             "    A[사용자가 화면에서 기능을 요청한다] --> B[화면이 요청 내용을 정리한다]",
-            "    B --> C[StudyHub 서비스가 요청을 처리한다]",
+            "    B --> C[서비스가 요청을 처리한다]",
             "    C --> D{서비스가 요청을 완료했는가?}",
             "    D -- 완료 --> E[화면에 성공 상태를 보여준다]",
             "    D -- 사용자가 수정 가능 --> F[수정할 항목과 이유를 보여준다]",
@@ -387,7 +396,9 @@ class PlanAgent:
         task_dir.mkdir(parents=True, exist_ok=True)
 
         goal = _extract_section(input_data.body, "목표")
-        scope = _extract_bullets(input_data.body, "작업 범위")
+        scope = _extract_first_bullets(input_data.body, ["작업 범위", "화면 구현", "백엔드 구현", "프론트엔드 구현"])
+        components = _extract_bullets(input_data.body, "컴포넌트")
+        design_direction = _extract_section(input_data.body, "디자인 방향")
         acceptance = _extract_bullets(input_data.body, "완료 기준")
         replan_request = _extract_section(input_data.body, "Human Replan Request")
         issue_type = _extract_issue_type(input_data.body)
@@ -429,6 +440,24 @@ class PlanAgent:
                     "## Change Scope",
                     *_format_bullets(scope, scope_fallback),
                     "",
+                    *(
+                        [
+                            "## Components",
+                            *_format_bullets(components, []),
+                            "",
+                        ]
+                        if components
+                        else []
+                    ),
+                    *(
+                        [
+                            "## Design Direction",
+                            *design_direction,
+                            "",
+                        ]
+                        if design_direction
+                        else []
+                    ),
                     f"## Proposed {flow_title}",
                     "```mermaid",
                     *flow_chart,
