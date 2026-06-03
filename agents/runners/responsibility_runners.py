@@ -113,7 +113,7 @@ class DDDModelingRunner(ResponsibilityCapabilityRunner):
                         f"- issue_type: `{context.issue_type}`",
                         "- status: success",
                         "- domain: `member/auth`",
-                        "- usecase: `LoginUseCase`",
+                        "- service: `AuthenticationService`",
                         f"- commit: `{commit_hash}`",
                         f"- changed_paths: `{', '.join(changed_paths)}`",
                         "",
@@ -135,7 +135,7 @@ class DDDModelingRunner(ResponsibilityCapabilityRunner):
                 progress=[
                     "- [x] 로그인 API 요구사항 분석",
                     "- [x] Member 도메인 모델 구현",
-                    "- [x] LoginUseCase orchestration 구현",
+                    "- [x] AuthenticationInputPort와 AuthenticationService 구현",
                     "- [x] Repository/JWT/RefreshToken port 정의",
                     "- [x] 로그인 실패 예외 정의",
                 ],
@@ -143,7 +143,7 @@ class DDDModelingRunner(ResponsibilityCapabilityRunner):
                     f"## {self.name}",
                     "",
                     "- status: success",
-                    "- usecase: `LoginUseCase`",
+                    "- service: `AuthenticationService`",
                     "- port: `MemberRepository`, `JwtTokenIssuer`, `RefreshTokenStore`",
                 ],
                 artifacts=[ArtifactSpec(self.name, report)],
@@ -157,7 +157,7 @@ class DDDModelingRunner(ResponsibilityCapabilityRunner):
         commit_hash = _stage_and_commit(
             context,
             changed_paths,
-            f"[{context.feature_name}] : DDD usecase scaffold 추가",
+            f"[{context.feature_name}] : DDD service scaffold 추가",
         )
         report = context.task_dir / f"{self.name}.md"
         snapshot = inspect_codebase(context)
@@ -194,8 +194,8 @@ class DDDModelingRunner(ResponsibilityCapabilityRunner):
         )
         return DevRunnerResult(
             status=AgentStatus.NEEDS_HUMAN,
-            summary=f"{self.name}가 {spec.usecase_name} 유스케이스 scaffold를 생성했습니다.",
-            commits=[f"1. {commit_hash} [{context.feature_name}] : DDD usecase scaffold 추가"],
+            summary=f"{self.name}가 {spec.usecase_name} service scaffold를 생성했습니다.",
+            commits=[f"1. {commit_hash} [{context.feature_name}] : DDD service scaffold 추가"],
             progress=[
                 "- [x] API 요구사항에서 도메인과 유스케이스 이름 추출",
                 "- [x] Command/Result/Service/PolicyChecker scaffold 생성",
@@ -370,7 +370,7 @@ class APIImplementationRunner(ResponsibilityCapabilityRunner):
                     "",
                     "- status: partial",
                     "- 명시된 endpoint를 기준으로 API contract 초안을 생성합니다.",
-                    "- Controller, DTO, UseCase, Repository 구현은 아직 사람이 검토해야 합니다.",
+                    "- Controller, DTO, InputPort, Service, Repository 구현은 아직 사람이 검토해야 합니다.",
                 ]
             ),
             encoding="utf-8",
@@ -382,7 +382,7 @@ class APIImplementationRunner(ResponsibilityCapabilityRunner):
             progress=[
                 "- [x] API endpoint 추출",
                 "- [x] API contract 초안 생성",
-                "- [ ] Controller/DTO/UseCase 구현",
+                "- [ ] Controller/DTO/InputPort/Service 구현",
             ],
             verification=[
                 f"## {self.name}",
@@ -989,7 +989,7 @@ def _project_base_package(context: DevRunnerContext) -> str:
     return f"com.{project_name}.server"
 
 
-# 로그인 도메인과 application usecase/port Kotlin 파일을 생성한다.
+# 로그인 도메인과 application service/input port Kotlin 파일을 생성한다.
 def _write_login_domain_application(context: DevRunnerContext, spec: LoginImplementationSpec) -> list[str]:
     source_root = context.repo_path / "apps/server/modules"
     domain_dir = source_root / "domain/src/main/kotlin" / Path(*spec.domain_package.split("."))
@@ -998,9 +998,10 @@ def _write_login_domain_application(context: DevRunnerContext, spec: LoginImplem
     common_dir = source_root / "application/src/main/kotlin" / Path(*f"{spec.base_package}.application.common.extension".split("."))
     files = {
         domain_dir / "Member.kt": _login_member_domain_content(spec),
-        app_dir / "LoginCommand.kt": _login_command_content(spec),
-        app_dir / "LoginResult.kt": _login_result_content(spec),
-        app_dir / "LoginUseCase.kt": _login_usecase_content(spec),
+        app_dir / "AuthenticationInputPort.kt": _authentication_input_port_content(spec),
+        app_dir / "AuthenticationService.kt": _authentication_service_content(spec),
+        app_dir / "SignInRequest.kt": _sign_in_request_content(spec),
+        app_dir / "SignInResponse.kt": _sign_in_response_content(spec),
         app_dir / "LoginMemberReader.kt": _login_member_reader_content(spec),
         app_dir / "PasswordVerifier.kt": _password_verifier_content(spec),
         app_dir / "LoginFailedException.kt": _login_failed_exception_content(spec),
@@ -1111,22 +1112,32 @@ data class Member(
 """
 
 
-# 로그인 command Kotlin 소스를 만든다.
-def _login_command_content(spec: LoginImplementationSpec) -> str:
+# AuthenticationInputPort Kotlin 소스를 만든다.
+def _authentication_input_port_content(spec: LoginImplementationSpec) -> str:
     return f"""package {spec.application_package}
 
-data class LoginCommand(
+interface AuthenticationInputPort {{
+    fun signIn(request: SignInRequest): SignInResponse
+}}
+"""
+
+
+# 로그인 request Kotlin 소스를 만든다.
+def _sign_in_request_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.application_package}
+
+data class SignInRequest(
     val identifier: String,
     val password: String,
 )
 """
 
 
-# 로그인 result Kotlin 소스를 만든다.
-def _login_result_content(spec: LoginImplementationSpec) -> str:
+# 로그인 response Kotlin 소스를 만든다.
+def _sign_in_response_content(spec: LoginImplementationSpec) -> str:
     return f"""package {spec.application_package}
 
-data class LoginResult(
+data class SignInResponse(
     val accessToken: String,
     val refreshToken: String,
     val tokenType: String = "Bearer",
@@ -1145,8 +1156,8 @@ class LoginFailedException(
 """
 
 
-# LoginUseCase Kotlin 소스를 만든다.
-def _login_usecase_content(spec: LoginImplementationSpec) -> str:
+# AuthenticationService Kotlin 소스를 만든다.
+def _authentication_service_content(spec: LoginImplementationSpec) -> str:
     return f"""package {spec.application_package}
 
 import {spec.base_package}.application.port.JwtTokenIssuer
@@ -1154,23 +1165,23 @@ import {spec.base_package}.application.port.RefreshTokenStore
 import org.springframework.stereotype.Service
 
 @Service
-class LoginUseCase(
+internal class AuthenticationService(
     private val loginMemberReader: LoginMemberReader,
     private val passwordVerifier: PasswordVerifier,
     private val jwtTokenIssuer: JwtTokenIssuer,
     private val refreshTokenStore: RefreshTokenStore,
-) {{
-    fun loginMember(command: LoginCommand): LoginResult {{
-        val member = loginMemberReader.readMemberByLoginIdentifier(command.identifier)
+) : AuthenticationInputPort {{
+    override fun signIn(request: SignInRequest): SignInResponse {{
+        val member = loginMemberReader.readMemberByLoginIdentifier(request.identifier)
 
-        passwordVerifier.verifyPasswordMatches(command.password, member.password)
+        passwordVerifier.verifyPasswordMatches(request.password, member.password)
 
         val accessToken = jwtTokenIssuer.issueAccessToken(member.id)
         val refreshToken = jwtTokenIssuer.issueRefreshToken(member.id)
 
         refreshTokenStore.storeRefreshToken(member.id, refreshToken)
 
-        return LoginResult(
+        return SignInResponse(
             accessToken = accessToken,
             refreshToken = refreshToken,
         )
@@ -1308,8 +1319,8 @@ inline fun <T : Any> T.logError(throwable: Throwable, closure: () -> String) {{
 def _auth_controller_content(spec: LoginImplementationSpec) -> str:
     return f"""package {spec.bootstrap_package}
 
-import {spec.application_package}.LoginCommand
-import {spec.application_package}.LoginUseCase
+import {spec.application_package}.AuthenticationInputPort
+import {spec.application_package}.SignInRequest
 import io.swagger.v3.oas.annotations.Operation
 import jakarta.validation.Valid
 import org.springframework.http.ResponseEntity
@@ -1321,7 +1332,7 @@ import org.springframework.web.bind.annotation.RestController
 @RestController
 @RequestMapping("/api/auth")
 class AuthController(
-    private val loginUseCase: LoginUseCase,
+    private val authenticationInputPort: AuthenticationInputPort,
 ) {{
     @Operation(
         summary = "로그인",
@@ -1331,8 +1342,8 @@ class AuthController(
     fun login(
         @Valid @RequestBody request: LoginRequest,
     ): ResponseEntity<LoginResponse> {{
-        val result = loginUseCase.loginMember(
-            LoginCommand(
+        val response = authenticationInputPort.signIn(
+            SignInRequest(
                 identifier = request.identifier,
                 password = request.password,
             )
@@ -1340,10 +1351,10 @@ class AuthController(
 
         return ResponseEntity.ok(
             LoginResponse(
-                accessToken = result.accessToken,
-                refreshToken = result.refreshToken,
-                tokenType = result.tokenType,
-                expiresInSeconds = result.expiresInSeconds,
+                accessToken = response.accessToken,
+                refreshToken = response.refreshToken,
+                tokenType = response.tokenType,
+                expiresInSeconds = response.expiresInSeconds,
             )
         )
     }}
@@ -1370,8 +1381,6 @@ data class LoginRequest(
 # LoginResponse Kotlin 소스를 만든다.
 def _login_response_content(spec: LoginImplementationSpec) -> str:
     return f"""package {spec.bootstrap_package}
-
-import {spec.application_package}.LoginResult
 
 data class LoginResponse(
     val accessToken: String,
@@ -1715,7 +1724,7 @@ def _api_contract_content(context: DevRunnerContext, method: str, path: str) -> 
             "",
             "- Controller는 얇게 유지한다.",
             "- Request/Response DTO는 Controller 파일에서 분리한다.",
-            "- UseCase 흐름은 application service에서 읽히도록 유지한다.",
+            "- 유스케이스 흐름은 application service에서 읽히도록 유지한다.",
             "- 실제 구현 전 이 contract를 사람 또는 Plan Agent가 보강해야 한다.",
         ]
     )
