@@ -152,6 +152,10 @@ class DBMigrationRunner(ResponsibilityCapabilityRunner):
     responsibility = "DB schema, nullable, unique, index, migration 구현"
     supported_issue_types = {"beFeature", "fullstackFeature", "config", "infra"}
 
+    # 명시된 DDL이 있을 때만 DB migration 책임을 수행한다.
+    def can_handle(self, context: DevRunnerContext) -> bool:
+        return context.issue_type in self.supported_issue_types and _extract_sql_ddl(context) is not None
+
     # 이슈 본문이나 Plan 산출물에 명시된 SQL DDL을 Flyway migration으로 생성한다.
     def run(self, context: DevRunnerContext) -> DevRunnerResult:
         ddl = _extract_sql_ddl(context)

@@ -967,18 +967,15 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
     result = develop_response.json()
     assert result["status"] == "failed"
     assert "ddd_modeling_runner" in result["reason"]
-    assert "db_migration_runner" in result["reason"]
     assert "api_implementation_runner" in result["reason"]
     assert "test_implementation_runner" in result["reason"]
 
     task_id = plan_response.json()["task_id"]
     dev_dir = tmp_path / "artifacts" / task_id / "dev"
     assert (
-        "selected_runner: `ddd_modeling_runner, db_migration_runner, "
-        "api_implementation_runner, test_implementation_runner`"
+        "selected_runner: `ddd_modeling_runner, api_implementation_runner, test_implementation_runner`"
     ) in (dev_dir / "commit-plan.md").read_text()
     assert (dev_dir / "ddd_modeling_runner.md").exists()
-    assert (dev_dir / "db_migration_runner.md").exists()
     assert (dev_dir / "api_implementation_runner.md").exists()
     assert (dev_dir / "test_implementation_runner.md").exists()
     assert "자동 구현은 아직 수행하지 않습니다" in (
