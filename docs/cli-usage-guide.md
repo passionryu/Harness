@@ -88,6 +88,7 @@ ALLOW_EXTERNAL_NOTIFICATIONS=false
 일반적인 기능 개발 흐름은 다음 순서로 진행한다.
 
 ```bash
+harness create-issue --type config --title "[인증 기반 설정] Spring Security + JWT + Redis 인증 기반 설정" --body-file ./notes/config-issue.md
 harness sync --issue 8
 harness plan --issue 8
 harness develop --issue 8
@@ -95,13 +96,16 @@ harness qa --issue 8
 harness status --issue 8
 ```
 
+이슈를 이미 GitHub에서 만들었다면 `create-issue`는 생략하고 `sync`부터 시작한다.
+
 설계를 다시 하고 싶으면:
 
 ```bash
 harness replan --issue 8 --note "loginId 정책을 추가하고 email은 선택값으로 바꿔라."
 ```
 
-개발 실패를 자동 복구하고 싶으면:
+개발 실패를 복구하고 싶으면 Codex 대화형 수정 또는 Dev Agent 내부 runner 확장을 사용한다.
+아래 명령은 deprecated된 호환 명령이며 새 복구를 수행하지 않는다.
 
 ```bash
 harness fix-develop --issue 8

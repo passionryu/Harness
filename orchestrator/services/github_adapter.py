@@ -8,6 +8,30 @@ class GitHubAdapter:
     def is_configured(self) -> bool:
         return bool(self.token)
 
+    def create_issue(
+        self,
+        owner: str,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> dict:
+        if not self.token:
+            raise ValueError("GitHub token이 설정되어 있지 않습니다.")
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/issues"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        payload: dict[str, object] = {"title": title, "body": body}
+        if labels:
+            payload["labels"] = labels
+        response = httpx.post(url, headers=headers, json=payload, timeout=20)
+        response.raise_for_status()
+        return response.json()
+
     def create_issue_comment(
         self,
         owner: str,

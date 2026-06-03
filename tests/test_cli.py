@@ -55,6 +55,76 @@ def test_cli_sync_issue_imports_github_issue(monkeypatch, capsys):
         assert "type: fullstackFeature" in task.body
 
 
+# CLI create-issue 명령이 GitHub issue 생성, DB 동기화, Discord 알림을 수행하는지 검증한다.
+def test_cli_create_issue_syncs_task_and_notifies_discord(tmp_path, monkeypatch, capsys):
+    issue_number = uuid4().int % 1_000_000_000
+    body_file = tmp_path / "issue.md"
+    body_file.write_text("## 목표\n\n인증 기반 설정을 추가한다.\n", encoding="utf-8")
+    captured_messages: list[str] = []
+
+    class FakeGitHubAdapter:
+        def __init__(self, token: str):
+            self.token = token
+
+        def create_issue(self, owner: str, repo: str, title: str, body: str, labels: list[str] | None = None) -> dict:
+            return {
+                "number": issue_number,
+                "title": title,
+                "body": body,
+                "html_url": f"https://github.com/passionryu/myMentalCare/issues/{issue_number}",
+                "labels": [],
+            }
+
+    class FakeDiscordNotifier:
+        def __init__(self, webhook_url: str | None):
+            self.webhook_url = webhook_url
+
+        def is_configured(self) -> bool:
+            return bool(self.webhook_url)
+
+        def send_text(self, text: str) -> None:
+            captured_messages.append(text)
+
+    monkeypatch.setattr(cli.settings, "github_token", "token")
+    monkeypatch.setattr(cli.settings, "github_owner", "passionryu")
+    monkeypatch.setattr(cli.settings, "github_repo", "myMentalCare")
+    monkeypatch.setattr(cli.settings, "allow_external_notifications", True)
+    monkeypatch.setattr(cli.settings, "discord_webhook_url", "https://discord.example/webhook")
+    monkeypatch.setattr(cli, "GitHubAdapter", FakeGitHubAdapter)
+    monkeypatch.setattr(cli, "DiscordNotifier", FakeDiscordNotifier)
+
+    exit_code = cli.main(
+        [
+            "--json",
+            "create-issue",
+            "--type",
+            "config",
+            "--title",
+            "[인증 기반 설정] Spring Security + JWT + Redis 인증 기반 설정",
+            "--body-file",
+            str(body_file),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    payload = json.loads(captured.out)
+    assert payload["status"] == "created"
+    assert payload["issue_number"] == issue_number
+    assert payload["title"].startswith("[Config]")
+    assert payload["notification"] == "sent"
+    assert payload["next"] == f"harness plan --issue {issue_number}"
+    assert captured_messages
+    assert "이슈 생성 완료" in captured_messages[0]
+    assert f"harness plan --issue {issue_number}" in captured_messages[0]
+
+    with SessionLocal() as db:
+        task = db.query(Task).filter(Task.github_issue_number == issue_number).one()
+        assert task.title.startswith("[Config]")
+        assert task.state == "Backlog"
+        assert "type: config" in task.body
+
+
 # CLI plan 명령이 FastAPI 없이 Plan Agent를 실행하는지 검증한다.
 def test_cli_plan_runs_plan_agent_from_github_issue(tmp_path, monkeypatch, capsys):
     issue_number = uuid4().int % 1_000_000_000

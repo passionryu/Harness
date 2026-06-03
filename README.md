@@ -104,6 +104,7 @@ DISCORD_WEBHOOK_URL=
 Codex or a local operator should call the CLI:
 
 ```bash
+harness create-issue --type config --title "[인증 기반 설정] Spring Security + JWT + Redis 인증 기반 설정" --body-file ./notes/config-issue.md
 harness sync --issue 1
 harness plan --issue 1
 harness replan --issue 1 --note "기존 설계에서 로그인 정책을 다시 반영한다."

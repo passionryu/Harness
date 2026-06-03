@@ -12,6 +12,7 @@ from orchestrator.core.logging import configure_logging
 from orchestrator.core.settings import settings
 from orchestrator.db.models import Run, StateTransition, Task
 from orchestrator.db.session import SessionLocal, create_db
+from orchestrator.services.discord import DiscordNotifier
 from orchestrator.services.github_adapter import GitHubAdapter
 from orchestrator.services.orchestration import OrchestrationService
 
@@ -91,6 +92,29 @@ def _infer_type_label_from_title(title: str) -> str:
     return ""
 
 
+# 하네스 내부 구현 타입을 GitHub 이슈 제목 prefix로 변환한다.
+def _title_prefix_for_type(issue_type: str) -> str:
+    return {
+        "feFeature": "[FE]",
+        "beFeature": "[BE]",
+        "fullstackFeature": "[FS]",
+        "apiConnect": "[API]",
+        "config": "[Config]",
+        "infra": "[Infra]",
+        "docs": "[Docs]",
+        "bugfix": "[Bugfix]",
+        "hotfix": "[Hotfix]",
+    }.get(issue_type, "")
+
+
+# 제목에 구현 타입 prefix가 없으면 지정한 타입 prefix를 붙인다.
+def _normalize_issue_title(title: str, issue_type: str) -> str:
+    prefix = _title_prefix_for_type(issue_type)
+    if not prefix:
+        return title
+    return title if title.strip().lower().startswith(prefix.lower()) else f"{prefix} {title}"
+
+
 # GitHub 이슈 payload에서 label 이름만 추출한다.
 def _labels_from_issue(issue: dict[str, Any]) -> list[str]:
     return sorted(
@@ -147,6 +171,61 @@ def _run_issue_command(args: argparse.Namespace) -> EventResult | dict[str, Any]
                 **context,
             )
     raise ValueError(f"지원하지 않는 CLI 명령입니다: {args.command}")
+
+
+# GitHub 이슈를 생성하고 하네스 DB에 동기화한 뒤 Discord 알림을 보낸다.
+def _create_issue(args: argparse.Namespace) -> dict[str, Any]:
+    if not settings.github_token:
+        raise ValueError("GitHub 이슈 생성에는 GITHUB_TOKEN이 필요합니다.")
+    body = Path(args.body_file).expanduser().read_text(encoding="utf-8")
+    title = _normalize_issue_title(args.title, args.type)
+    issue = GitHubAdapter(settings.github_token).create_issue(
+        settings.github_owner,
+        settings.github_repo,
+        title,
+        body,
+    )
+    with SessionLocal() as db:
+        service = OrchestrationService(db)
+        task = _sync_issue_task(service, issue)
+        task_id = task.id
+        db.commit()
+
+    notification = _notify_issue_created(issue, task_id)
+    return {
+        "status": "created",
+        "issue_number": int(issue["number"]),
+        "title": issue.get("title") or title,
+        "url": issue.get("html_url") or "",
+        "task_id": task_id,
+        "notification": notification,
+        "next": f"harness plan --issue {int(issue['number'])}",
+    }
+
+
+# 이슈 생성 완료 사실을 Discord에 알린다.
+def _notify_issue_created(issue: dict[str, Any], task_id: str) -> str:
+    if not settings.allow_external_notifications:
+        return "skipped: ALLOW_EXTERNAL_NOTIFICATIONS=false"
+    notifier = DiscordNotifier(settings.discord_webhook_url)
+    if not notifier.is_configured():
+        return "skipped: DISCORD_WEBHOOK_URL is not configured"
+    issue_number = int(issue["number"])
+    issue_url = issue.get("html_url") or ""
+    message = "\n".join(
+        [
+            f"[{settings.github_repo} 이슈 생성 완료]",
+            "",
+            f"작업: {issue.get('title') or ''}",
+            f"GitHub Issue: {issue_url}",
+            f"Task ID: {task_id}",
+            "",
+            "다음 단계:",
+            f"harness plan --issue {issue_number}",
+        ]
+    )
+    notifier.send_text(message)
+    return "sent"
 
 
 # GitHub 이슈를 하네스 DB task로 동기화한다.
@@ -329,6 +408,28 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_issue_option(plan)
     plan.add_argument("--force", action="store_true", help="성공한 plan이 있어도 다시 실행")
     plan.set_defaults(handler=_run_issue_command)
+
+    create_issue = subparsers.add_parser("create-issue", help="GitHub issue 생성 후 하네스 DB 동기화와 Discord 알림 전송")
+    create_issue.add_argument("--title", required=True, help="생성할 GitHub issue 제목")
+    create_issue.add_argument("--body-file", required=True, help="생성할 GitHub issue 본문 Markdown 파일")
+    create_issue.add_argument(
+        "--type",
+        default="",
+        choices=[
+            "",
+            "feFeature",
+            "beFeature",
+            "fullstackFeature",
+            "apiConnect",
+            "config",
+            "infra",
+            "docs",
+            "bugfix",
+            "hotfix",
+        ],
+        help="제목 prefix 보강에 사용할 구현 타입",
+    )
+    create_issue.set_defaults(handler=_create_issue)
 
     for command, help_text in [
         ("develop", "Plan 승인 후 Dev Agent 실행"),
