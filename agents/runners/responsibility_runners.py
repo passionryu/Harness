@@ -40,6 +40,18 @@ class DDDScaffoldSpec:
         self.policy_method_name = policy_method_name
 
 
+class LoginImplementationSpec:
+    # 로그인 API 구현에 필요한 경로, package, endpoint 정보를 보관한다.
+    def __init__(self, method: str, path: str, base_package: str) -> None:
+        self.method = method
+        self.path = path
+        self.base_package = base_package
+        self.domain_package = f"{base_package}.domain.member"
+        self.application_package = f"{base_package}.application.auth"
+        self.persistence_package = f"{base_package}.infrastructure.persistence.member"
+        self.bootstrap_package = f"{base_package}.bootstrap.auth"
+
+
 class ResponsibilityCapabilityRunner:
     name = "responsibility_capability_runner"
     responsibility = "정의되지 않은 책임"
@@ -82,6 +94,61 @@ class DDDModelingRunner(ResponsibilityCapabilityRunner):
 
     # 명시된 API 요구사항을 기준으로 DDD application 유스케이스 scaffold를 생성한다.
     def run(self, context: DevRunnerContext) -> DevRunnerResult:
+        login_spec = _login_spec_from_context(context)
+        if login_spec is not None:
+            changed_paths = _write_login_domain_application(context, login_spec)
+            commit_hash = _stage_and_commit(
+                context,
+                changed_paths,
+                f"[{context.feature_name}] : 로그인 도메인과 유스케이스 구현",
+            )
+            report = context.task_dir / f"{self.name}.md"
+            snapshot = inspect_codebase(context)
+            report.write_text(
+                "\n".join(
+                    [
+                        f"# {self.name}",
+                        "",
+                        f"- branch: `{context.branch_name}`",
+                        f"- issue_type: `{context.issue_type}`",
+                        "- status: success",
+                        "- domain: `member/auth`",
+                        "- usecase: `LoginUseCase`",
+                        f"- commit: `{commit_hash}`",
+                        f"- changed_paths: `{', '.join(changed_paths)}`",
+                        "",
+                        *render_codebase_snapshot(snapshot),
+                        "## Applied Rules",
+                        "",
+                        "- Bix-biscuit modules/domain, application, port 구조를 기준으로 생성했습니다.",
+                        "- `{code,message}` 에러 응답을 전제로 application exception을 분리했습니다.",
+                        "- Refresh Token 저장은 `RefreshTokenStore` port로 추상화했습니다.",
+                        "- 책임 객체 public method에는 한국어 한 줄 주석을 작성했습니다.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            return DevRunnerResult(
+                status=AgentStatus.SUCCESS,
+                summary="로그인 도메인, application usecase, port를 Bix 스타일로 구현했습니다.",
+                commits=[f"1. {commit_hash} [{context.feature_name}] : 로그인 도메인과 유스케이스 구현"],
+                progress=[
+                    "- [x] 로그인 API 요구사항 분석",
+                    "- [x] Member 도메인 모델 구현",
+                    "- [x] LoginUseCase orchestration 구현",
+                    "- [x] Repository/JWT/RefreshToken port 정의",
+                    "- [x] 로그인 실패 예외 정의",
+                ],
+                verification=[
+                    f"## {self.name}",
+                    "",
+                    "- status: success",
+                    "- usecase: `LoginUseCase`",
+                    "- port: `MemberRepository`, `JwtTokenIssuer`, `RefreshTokenStore`",
+                ],
+                artifacts=[ArtifactSpec(self.name, report)],
+            )
+
         spec = _ddd_model_from_context(context)
         if spec is None:
             return super().run(context)
@@ -220,6 +287,62 @@ class APIImplementationRunner(ResponsibilityCapabilityRunner):
             return super().run(context)
 
         method, path = endpoint
+        login_spec = _login_spec_from_context(context)
+        if login_spec is not None:
+            contract_path = _api_contract_path(context, method, path)
+            changed_paths = [_relative(context, contract_path)] if contract_path.exists() else []
+            changed_paths.extend(_write_login_api_infrastructure(context, login_spec))
+            commit_hash = _stage_and_commit(
+                context,
+                changed_paths,
+                f"[{context.feature_name}] : 로그인 API와 persistence adapter 구현",
+            )
+            report = context.task_dir / f"{self.name}.md"
+            snapshot = inspect_codebase(context)
+            report.write_text(
+                "\n".join(
+                    [
+                        f"# {self.name}",
+                        "",
+                        f"- branch: `{context.branch_name}`",
+                        f"- issue_type: `{context.issue_type}`",
+                        "- status: success",
+                        f"- endpoint: `{method} {path}`",
+                        f"- commit: `{commit_hash}`",
+                        f"- changed_paths: `{', '.join(changed_paths)}`",
+                        "",
+                        *render_codebase_snapshot(snapshot),
+                        "## Applied Rules",
+                        "",
+                        "- Controller는 얇게 유지하고 request/response DTO를 별도 파일로 분리했습니다.",
+                        "- JPA 구현은 `JpaMemberRepository` + `MemberPersistenceAdapter` 패턴을 사용했습니다.",
+                        "- Redis 구현은 `RefreshTokenStore` port와 `RedisRefreshTokenAdapter`로 연결했습니다.",
+                        "- 사용자 오류 응답은 `{code,message}` 한국어 포맷으로 반환합니다.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            return DevRunnerResult(
+                status=AgentStatus.SUCCESS,
+                summary=f"{method} {path} API와 persistence/Redis adapter를 구현했습니다.",
+                commits=[f"1. {commit_hash} [{context.feature_name}] : 로그인 API와 persistence adapter 구현"],
+                progress=[
+                    "- [x] LoginRequest/LoginResponse DTO 구현",
+                    "- [x] AuthController 구현",
+                    "- [x] ApiErrorResponse와 GlobalExceptionHandler 구현",
+                    "- [x] Member JPA Entity/Repository/Adapter 구현",
+                    "- [x] JwtTokenIssuer/RefreshTokenStore adapter 구현",
+                ],
+                verification=[
+                    f"## {self.name}",
+                    "",
+                    "- status: success",
+                    f"- endpoint: `{method} {path}`",
+                    "- error_response: `{code,message}`",
+                ],
+                artifacts=[ArtifactSpec(self.name, report)],
+            )
+
         contract_path = _api_contract_path(context, method, path)
         _write_text(contract_path, _api_contract_content(context, method, path))
         relative = _relative(context, contract_path)
@@ -839,6 +962,614 @@ def _write_ddd_scaffold(context: DevRunnerContext, spec: DDDScaffoldSpec) -> lis
         _write_text(path, content)
         changed_paths.append(_relative(context, path))
     return changed_paths
+
+
+# 로그인 API 구현 대상인지 판단하고 프로젝트 기본 package를 추론한다.
+def _login_spec_from_context(context: DevRunnerContext) -> LoginImplementationSpec | None:
+    endpoint = extract_api_endpoint(f"{context.title}\n{context.body}")
+    if endpoint is None:
+        return None
+    method, path = endpoint
+    haystack = f"{context.title}\n{context.body}".lower()
+    if method.upper() != "POST" or path != "/api/auth/login":
+        return None
+    if "로그인" not in haystack and "login" not in haystack:
+        return None
+    return LoginImplementationSpec(method=method, path=path, base_package=_project_base_package(context))
+
+
+# bootstrap package에서 프로젝트 공통 base package를 추론한다.
+def _project_base_package(context: DevRunnerContext) -> str:
+    bootstrap_package = _first_package_under(_bootstrap_module_root(context) / "src/main/kotlin")
+    if bootstrap_package and ".bootstrap" in bootstrap_package:
+        return bootstrap_package.split(".bootstrap", 1)[0]
+    if bootstrap_package:
+        return bootstrap_package.rsplit(".", 1)[0]
+    project_name = re.sub(r"[^0-9a-zA-Z]+", "", context.repo_path.name).lower() or "app"
+    return f"com.{project_name}.server"
+
+
+# 로그인 도메인과 application usecase/port Kotlin 파일을 생성한다.
+def _write_login_domain_application(context: DevRunnerContext, spec: LoginImplementationSpec) -> list[str]:
+    source_root = context.repo_path / "apps/server/modules"
+    domain_dir = source_root / "domain/src/main/kotlin" / Path(*spec.domain_package.split("."))
+    app_dir = source_root / "application/src/main/kotlin" / Path(*spec.application_package.split("."))
+    port_dir = source_root / "application/src/main/kotlin" / Path(*f"{spec.base_package}.application.port".split("."))
+    common_dir = source_root / "application/src/main/kotlin" / Path(*f"{spec.base_package}.application.common.extension".split("."))
+    files = {
+        domain_dir / "Member.kt": _login_member_domain_content(spec),
+        app_dir / "LoginCommand.kt": _login_command_content(spec),
+        app_dir / "LoginResult.kt": _login_result_content(spec),
+        app_dir / "LoginUseCase.kt": _login_usecase_content(spec),
+        app_dir / "LoginMemberReader.kt": _login_member_reader_content(spec),
+        app_dir / "PasswordVerifier.kt": _password_verifier_content(spec),
+        app_dir / "LoginFailedException.kt": _login_failed_exception_content(spec),
+        port_dir / "MemberRepository.kt": _member_repository_port_content(spec),
+        port_dir / "JwtTokenIssuer.kt": _jwt_token_issuer_port_content(spec),
+        port_dir / "RefreshTokenStore.kt": _refresh_token_store_port_content(spec),
+        common_dir / "LoggerExtension.kt": _logger_extension_content(spec),
+    }
+    changed_paths = _write_files_if_needed(context, files)
+    changed_paths.extend(
+        _ensure_gradle_dependency(
+            context,
+            context.repo_path / "apps/server/modules/application/build.gradle.kts",
+            'implementation("org.springframework.security:spring-security-crypto")',
+        )
+    )
+    return changed_paths
+
+
+# 로그인 API bootstrap, JPA, Redis, JWT adapter Kotlin 파일을 생성한다.
+def _write_login_api_infrastructure(context: DevRunnerContext, spec: LoginImplementationSpec) -> list[str]:
+    source_root = context.repo_path / "apps/server/modules"
+    bootstrap_dir = source_root / "bootstrap/mymentalcare/src/main/kotlin" / Path(*spec.bootstrap_package.split("."))
+    persistence_dir = source_root / "infrastructure/persistence/src/main/kotlin" / Path(*spec.persistence_package.split("."))
+    auth_adapter_dir = source_root / "bootstrap/mymentalcare/src/main/kotlin" / Path(*f"{spec.base_package}.bootstrap.auth.adapter".split("."))
+    files = {
+        bootstrap_dir / "AuthController.kt": _auth_controller_content(spec),
+        bootstrap_dir / "LoginRequest.kt": _login_request_content(spec),
+        bootstrap_dir / "LoginResponse.kt": _login_response_content(spec),
+        bootstrap_dir / "ApiErrorResponse.kt": _api_error_response_content(spec),
+        bootstrap_dir / "AuthExceptionHandler.kt": _auth_exception_handler_content(spec),
+        persistence_dir / "MemberEntity.kt": _member_entity_content(spec),
+        persistence_dir / "JpaMemberRepository.kt": _jpa_member_repository_content(spec),
+        persistence_dir / "MemberPersistenceAdapter.kt": _member_persistence_adapter_content(spec),
+        auth_adapter_dir / "JwtTokenAdapter.kt": _jwt_token_adapter_content(spec),
+        auth_adapter_dir / "RedisRefreshTokenAdapter.kt": _redis_refresh_token_adapter_content(spec),
+    }
+    changed_paths = _write_files_if_needed(context, files)
+    changed_paths.extend(_ensure_password_encoder_bean(context))
+    return changed_paths
+
+
+# 존재하지 않는 파일만 작성하고 상대 경로 목록을 반환한다.
+def _write_files_if_needed(context: DevRunnerContext, files: dict[Path, str]) -> list[str]:
+    changed_paths: list[str] = []
+    for path, content in files.items():
+        if path.exists():
+            continue
+        _write_text(path, content)
+        changed_paths.append(_relative(context, path))
+    return changed_paths
+
+
+# Gradle dependency가 없으면 dependencies block에 추가한다.
+def _ensure_gradle_dependency(context: DevRunnerContext, build_file: Path, dependency_line: str) -> list[str]:
+    if not build_file.exists():
+        return []
+    text = build_file.read_text(encoding="utf-8")
+    if dependency_line in text:
+        return []
+    updated = text.replace("dependencies {\n", f"dependencies {{\n    {dependency_line}\n", 1)
+    build_file.write_text(updated, encoding="utf-8")
+    return [_relative(context, build_file)]
+
+
+# SecurityConfiguration에 BCrypt PasswordEncoder bean을 보장한다.
+def _ensure_password_encoder_bean(context: DevRunnerContext) -> list[str]:
+    config_path = (
+        _bootstrap_module_root(context)
+        / "src/main/kotlin"
+        / Path(*f"{_project_base_package(context)}.bootstrap.config.SecurityConfiguration".split("."))
+    ).with_suffix(".kt")
+    if not config_path.exists():
+        return []
+    text = config_path.read_text(encoding="utf-8")
+    if "PasswordEncoder" in text and "BCryptPasswordEncoder" in text:
+        return []
+    updated = text
+    updated = updated.replace(
+        "import org.springframework.security.web.SecurityFilterChain\n",
+        "import org.springframework.security.web.SecurityFilterChain\n"
+        "import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder\n"
+        "import org.springframework.security.crypto.password.PasswordEncoder\n",
+    )
+    updated = updated.replace(
+        "class SecurityConfiguration {\n",
+        "class SecurityConfiguration {\n"
+        "    @Bean\n"
+        "    fun passwordEncoder(): PasswordEncoder = BCryptPasswordEncoder()\n\n",
+        1,
+    )
+    config_path.write_text(updated, encoding="utf-8")
+    return [_relative(context, config_path)]
+
+
+# Member 도메인 모델 Kotlin 소스를 만든다.
+def _login_member_domain_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.domain_package}
+
+data class Member(
+    val id: Long,
+    val loginId: String,
+    val email: String?,
+    val password: String,
+    val name: String,
+    val phone: String?,
+)
+"""
+
+
+# 로그인 command Kotlin 소스를 만든다.
+def _login_command_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.application_package}
+
+data class LoginCommand(
+    val identifier: String,
+    val password: String,
+)
+"""
+
+
+# 로그인 result Kotlin 소스를 만든다.
+def _login_result_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.application_package}
+
+data class LoginResult(
+    val accessToken: String,
+    val refreshToken: String,
+    val tokenType: String = "Bearer",
+    val expiresInSeconds: Long = 3600,
+)
+"""
+
+
+# 로그인 실패 exception Kotlin 소스를 만든다.
+def _login_failed_exception_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.application_package}
+
+class LoginFailedException(
+    message: String = "로그인 정보를 다시 확인해주세요.",
+) : RuntimeException(message)
+"""
+
+
+# LoginUseCase Kotlin 소스를 만든다.
+def _login_usecase_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.application_package}
+
+import {spec.base_package}.application.port.JwtTokenIssuer
+import {spec.base_package}.application.port.RefreshTokenStore
+import org.springframework.stereotype.Service
+
+@Service
+class LoginUseCase(
+    private val loginMemberReader: LoginMemberReader,
+    private val passwordVerifier: PasswordVerifier,
+    private val jwtTokenIssuer: JwtTokenIssuer,
+    private val refreshTokenStore: RefreshTokenStore,
+) {{
+    fun loginMember(command: LoginCommand): LoginResult {{
+        val member = loginMemberReader.readMemberByLoginIdentifier(command.identifier)
+
+        passwordVerifier.verifyPasswordMatches(command.password, member.password)
+
+        val accessToken = jwtTokenIssuer.issueAccessToken(member.id)
+        val refreshToken = jwtTokenIssuer.issueRefreshToken(member.id)
+
+        refreshTokenStore.storeRefreshToken(member.id, refreshToken)
+
+        return LoginResult(
+            accessToken = accessToken,
+            refreshToken = refreshToken,
+        )
+    }}
+}}
+"""
+
+
+# LoginMemberReader Kotlin 소스를 만든다.
+def _login_member_reader_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.application_package}
+
+import {spec.base_package}.application.common.extension.logWarn
+import {spec.base_package}.application.port.MemberRepository
+import {spec.domain_package}.Member
+import org.springframework.stereotype.Component
+
+@Component
+class LoginMemberReader(
+    private val memberRepository: MemberRepository,
+) {{
+    // 로그인 ID 또는 이메일 후보로 회원을 조회하고 없으면 안전한 실패 메시지로 차단한다.
+    fun readMemberByLoginIdentifier(identifier: String): Member {{
+        return memberRepository.findByLoginIdOrEmail(identifier)
+            ?: run {{
+                logWarn {{
+                    "[로그인] 로그인 대상 회원 조회 실패. " +
+                        "who=anonymous, " +
+                        "what=POST /api/auth/login, " +
+                        "requestData=identifier:$identifier, " +
+                        "reason=member_not_found"
+                }}
+                throw LoginFailedException()
+            }}
+    }}
+}}
+"""
+
+
+# PasswordVerifier Kotlin 소스를 만든다.
+def _password_verifier_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.application_package}
+
+import {spec.base_package}.application.common.extension.logWarn
+import org.springframework.security.crypto.password.PasswordEncoder
+import org.springframework.stereotype.Component
+
+@Component
+class PasswordVerifier(
+    private val passwordEncoder: PasswordEncoder,
+) {{
+    // 입력 비밀번호가 저장된 해시와 일치하지 않으면 로그인 실패로 처리한다.
+    fun verifyPasswordMatches(rawPassword: String, encodedPassword: String) {{
+        if (passwordEncoder.matches(rawPassword, encodedPassword)) {{
+            return
+        }}
+
+        logWarn {{
+            "[로그인] 비밀번호 검증 실패. " +
+                "who=anonymous, " +
+                "what=POST /api/auth/login, " +
+                "requestData=password:masked, " +
+                "reason=password_mismatch"
+        }}
+        throw LoginFailedException()
+    }}
+}}
+"""
+
+
+# MemberRepository port Kotlin 소스를 만든다.
+def _member_repository_port_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.base_package}.application.port
+
+import {spec.domain_package}.Member
+
+interface MemberRepository {{
+    fun findByLoginIdOrEmail(identifier: String): Member?
+}}
+"""
+
+
+# JwtTokenIssuer port Kotlin 소스를 만든다.
+def _jwt_token_issuer_port_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.base_package}.application.port
+
+interface JwtTokenIssuer {{
+    fun issueAccessToken(memberId: Long): String
+
+    fun issueRefreshToken(memberId: Long): String
+}}
+"""
+
+
+# RefreshTokenStore port Kotlin 소스를 만든다.
+def _refresh_token_store_port_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.base_package}.application.port
+
+interface RefreshTokenStore {{
+    fun storeRefreshToken(memberId: Long, refreshToken: String)
+}}
+"""
+
+
+# Bix 스타일 LoggerExtension Kotlin 소스를 만든다.
+def _logger_extension_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.base_package}.application.common.extension
+
+import org.slf4j.LoggerFactory
+
+fun <T : Any> T.logWarn(message: String) {{
+    LoggerFactory.getLogger(this::class.java).warn(message)
+}}
+
+inline fun <T : Any> T.logWarn(closure: () -> String) {{
+    logWarn(closure())
+}}
+
+fun <T : Any> T.logError(message: String, throwable: Throwable? = null) {{
+    val logger = LoggerFactory.getLogger(this::class.java)
+    if (throwable == null) {{
+        logger.error(message)
+    }} else {{
+        logger.error(message, throwable)
+    }}
+}}
+
+inline fun <T : Any> T.logError(throwable: Throwable, closure: () -> String) {{
+    logError(closure(), throwable)
+}}
+"""
+
+
+# AuthController Kotlin 소스를 만든다.
+def _auth_controller_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.bootstrap_package}
+
+import {spec.application_package}.LoginCommand
+import {spec.application_package}.LoginUseCase
+import io.swagger.v3.oas.annotations.Operation
+import jakarta.validation.Valid
+import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RestController
+
+@RestController
+@RequestMapping("/api/auth")
+class AuthController(
+    private val loginUseCase: LoginUseCase,
+) {{
+    @Operation(
+        summary = "로그인",
+        description = "로그인 ID 또는 이메일과 비밀번호로 로그인하고 access token과 refresh token을 발급합니다.",
+    )
+    @PostMapping("/login")
+    fun login(
+        @Valid @RequestBody request: LoginRequest,
+    ): ResponseEntity<LoginResponse> {{
+        val result = loginUseCase.loginMember(
+            LoginCommand(
+                identifier = request.identifier,
+                password = request.password,
+            )
+        )
+
+        return ResponseEntity.ok(
+            LoginResponse(
+                accessToken = result.accessToken,
+                refreshToken = result.refreshToken,
+                tokenType = result.tokenType,
+                expiresInSeconds = result.expiresInSeconds,
+            )
+        )
+    }}
+}}
+"""
+
+
+# LoginRequest Kotlin 소스를 만든다.
+def _login_request_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.bootstrap_package}
+
+import jakarta.validation.constraints.NotBlank
+
+data class LoginRequest(
+    @field:NotBlank(message = "로그인 ID 또는 이메일을 입력해주세요.")
+    val identifier: String,
+
+    @field:NotBlank(message = "비밀번호를 입력해주세요.")
+    val password: String,
+)
+"""
+
+
+# LoginResponse Kotlin 소스를 만든다.
+def _login_response_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.bootstrap_package}
+
+import {spec.application_package}.LoginResult
+
+data class LoginResponse(
+    val accessToken: String,
+    val refreshToken: String,
+    val tokenType: String,
+    val expiresInSeconds: Long,
+)
+"""
+
+
+# ApiErrorResponse Kotlin 소스를 만든다.
+def _api_error_response_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.bootstrap_package}
+
+data class ApiErrorResponse(
+    val code: String,
+    val message: String,
+)
+"""
+
+
+# AuthExceptionHandler Kotlin 소스를 만든다.
+def _auth_exception_handler_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.bootstrap_package}
+
+import {spec.application_package}.LoginFailedException
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.MethodArgumentNotValidException
+import org.springframework.web.bind.annotation.ExceptionHandler
+import org.springframework.web.bind.annotation.RestControllerAdvice
+
+@RestControllerAdvice
+class AuthExceptionHandler {{
+    @ExceptionHandler(LoginFailedException::class)
+    fun handleLoginFailed(exception: LoginFailedException): ResponseEntity<ApiErrorResponse> {{
+        return ResponseEntity
+            .status(HttpStatus.UNAUTHORIZED)
+            .body(ApiErrorResponse(code = "AUTH_LOGIN_FAILED", message = exception.message ?: "로그인 정보를 다시 확인해주세요."))
+    }}
+
+    @ExceptionHandler(MethodArgumentNotValidException::class)
+    fun handleInvalidRequest(exception: MethodArgumentNotValidException): ResponseEntity<ApiErrorResponse> {{
+        return ResponseEntity
+            .badRequest()
+            .body(ApiErrorResponse(code = "AUTH_INVALID_REQUEST", message = "입력한 로그인 정보를 다시 확인해주세요."))
+    }}
+}}
+"""
+
+
+# MemberEntity Kotlin 소스를 만든다.
+def _member_entity_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.persistence_package}
+
+import {spec.domain_package}.Member
+import jakarta.persistence.Column
+import jakarta.persistence.Entity
+import jakarta.persistence.GeneratedValue
+import jakarta.persistence.GenerationType
+import jakarta.persistence.Id
+import jakarta.persistence.Table
+
+@Entity
+@Table(name = "members")
+class MemberEntity(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @Column(name = "login_id", nullable = false, unique = true)
+    val loginId: String,
+
+    @Column(name = "email", nullable = true, unique = true)
+    val email: String?,
+
+    @Column(name = "password", nullable = false)
+    val password: String,
+
+    @Column(name = "name", nullable = false)
+    val name: String,
+
+    @Column(name = "phone", nullable = true)
+    val phone: String?,
+) {{
+    fun toDomain(): Member {{
+        return Member(
+            id = id,
+            loginId = loginId,
+            email = email,
+            password = password,
+            name = name,
+            phone = phone,
+        )
+    }}
+}}
+"""
+
+
+# JpaMemberRepository Kotlin 소스를 만든다.
+def _jpa_member_repository_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.persistence_package}
+
+import org.springframework.data.jpa.repository.JpaRepository
+
+interface JpaMemberRepository : JpaRepository<MemberEntity, Long> {{
+    fun findByLoginId(identifier: String): MemberEntity?
+
+    fun findByEmail(identifier: String): MemberEntity?
+}}
+"""
+
+
+# MemberPersistenceAdapter Kotlin 소스를 만든다.
+def _member_persistence_adapter_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.persistence_package}
+
+import {spec.base_package}.application.port.MemberRepository
+import {spec.domain_package}.Member
+import org.springframework.stereotype.Repository
+
+@Repository
+class MemberPersistenceAdapter(
+    private val jpaMemberRepository: JpaMemberRepository,
+) : MemberRepository {{
+    override fun findByLoginIdOrEmail(identifier: String): Member? {{
+        return jpaMemberRepository.findByLoginId(identifier)?.toDomain()
+            ?: jpaMemberRepository.findByEmail(identifier)?.toDomain()
+    }}
+}}
+"""
+
+
+# JwtTokenAdapter Kotlin 소스를 만든다.
+def _jwt_token_adapter_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.base_package}.bootstrap.auth.adapter
+
+import {spec.base_package}.application.port.JwtTokenIssuer
+import {spec.base_package}.bootstrap.config.JwtProperties
+import io.jsonwebtoken.Jwts
+import io.jsonwebtoken.SignatureAlgorithm
+import io.jsonwebtoken.security.Keys
+import org.springframework.stereotype.Component
+import java.nio.charset.StandardCharsets
+import java.time.Instant
+import java.util.Date
+
+@Component
+class JwtTokenAdapter(
+    private val jwtProperties: JwtProperties,
+) : JwtTokenIssuer {{
+    override fun issueAccessToken(memberId: Long): String {{
+        return issueToken(memberId, jwtProperties.accessTokenExpiration.seconds)
+    }}
+
+    override fun issueRefreshToken(memberId: Long): String {{
+        return issueToken(memberId, jwtProperties.refreshTokenExpiration.seconds)
+    }}
+
+    private fun issueToken(memberId: Long, expirationSeconds: Long): String {{
+        val now = Instant.now()
+        val key = Keys.hmacShaKeyFor(jwtProperties.secret.toByteArray(StandardCharsets.UTF_8))
+
+        return Jwts.builder()
+            .setSubject(memberId.toString())
+            .setIssuedAt(Date.from(now))
+            .setExpiration(Date.from(now.plusSeconds(expirationSeconds)))
+            .signWith(key, SignatureAlgorithm.HS256)
+            .compact()
+    }}
+}}
+"""
+
+
+# RedisRefreshTokenAdapter Kotlin 소스를 만든다.
+def _redis_refresh_token_adapter_content(spec: LoginImplementationSpec) -> str:
+    return f"""package {spec.base_package}.bootstrap.auth.adapter
+
+import {spec.base_package}.application.port.RefreshTokenStore
+import {spec.base_package}.bootstrap.config.JwtProperties
+import org.springframework.data.redis.core.StringRedisTemplate
+import org.springframework.stereotype.Component
+import java.time.Duration
+
+@Component
+class RedisRefreshTokenAdapter(
+    private val redisTemplate: StringRedisTemplate,
+    private val jwtProperties: JwtProperties,
+) : RefreshTokenStore {{
+    override fun storeRefreshToken(memberId: Long, refreshToken: String) {{
+        redisTemplate.opsForValue().set(
+            "auth:refresh-token:$memberId",
+            refreshToken,
+            jwtProperties.refreshTokenExpiration,
+        )
+    }}
+}}
+"""
 
 
 # DDD Command data class의 Kotlin 소스 내용을 생성한다.
