@@ -175,11 +175,43 @@ def test_config_qa_agent_runs_security_runtime_checks(tmp_path, monkeypatch):
     repo = Repo.init(target_repo)
     (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
     (target_repo / "apps/server").mkdir(parents=True)
+    controller = (
+        target_repo
+        / "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/presentation/TestController.kt"
+    )
+    controller.parent.mkdir(parents=True, exist_ok=True)
+    controller.write_text(
+        "\n".join(
+            [
+                "package com.studyhub.server.bootstrap.presentation",
+                "",
+                "import org.springframework.web.bind.annotation.GetMapping",
+                "import org.springframework.web.bind.annotation.PostMapping",
+                "import org.springframework.web.bind.annotation.RestController",
+                "",
+                "@RestController",
+                "class TestController {",
+                "    @PostMapping(\"/api/members/signup\")",
+                "    fun signup() {}",
+                "",
+                "    @GetMapping(\"/api/protected-resource\")",
+                "    fun protectedResource() {}",
+                "}",
+            ]
+        ),
+        encoding="utf-8",
+    )
     (target_repo / "apps/server/docker-compose.infra.local.yml").write_text(
         "services:\n  redis:\n    image: redis:7-alpine\n",
         encoding="utf-8",
     )
-    repo.index.add(["README.md", "apps/server/docker-compose.infra.local.yml"])
+    repo.index.add(
+        [
+            "README.md",
+            "apps/server/docker-compose.infra.local.yml",
+            "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/presentation/TestController.kt",
+        ]
+    )
     repo.index.commit("Initial commit")
     repo.git.checkout("-b", "config-5")
 

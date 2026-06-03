@@ -314,6 +314,30 @@ def _api_url(path: str) -> str:
     return urljoin(settings.studyhub_api_base_url.rstrip("/") + "/", path.lstrip("/"))
 
 
+# settings.gradle.kts에서 bootstrap 모듈명을 찾아 현재 프로젝트의 실행 모듈을 결정한다.
+def _bootstrap_module_name(repo_path: Path) -> str:
+    settings_file = repo_path / "apps/server/settings.gradle.kts"
+    if not settings_file.exists():
+        return "studyhub"
+
+    text = settings_file.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        stripped = line.strip().strip(",").strip('"')
+        if stripped.startswith(":modules:bootstrap:"):
+            return stripped.removeprefix(":modules:bootstrap:")
+    return "studyhub"
+
+
+# Gradle에서 사용할 bootstrap project path를 반환한다.
+def _bootstrap_gradle_path(repo_path: Path) -> str:
+    return f":modules:bootstrap:{_bootstrap_module_name(repo_path)}"
+
+
+# 현재 대상 프로젝트 이름을 사용자에게 보일 이름으로 반환한다.
+def _target_project_label(repo_path: Path) -> str:
+    return repo_path.name or "대상 프로젝트"
+
+
 def _health_url() -> str:
     return _api_url("/actuator/health")
 
@@ -329,17 +353,18 @@ def _is_api_alive() -> bool:
 
 def _start_studyhub_api_if_needed(repo_path: Path, timeout_seconds: int) -> tuple[subprocess.Popen[str] | None, str]:
     if _is_api_alive():
-        return None, "이미 실행 중인 StudyHub API 서버를 사용했습니다."
+        return None, f"이미 실행 중인 {_target_project_label(repo_path)} API 서버를 사용했습니다."
 
     server_root = repo_path / "apps/server"
     if not server_root.exists():
-        return None, "StudyHub 서버 디렉토리를 찾지 못했습니다."
+        return None, f"{_target_project_label(repo_path)} 서버 디렉토리를 찾지 못했습니다."
 
     port = settings.studyhub_api_base_url.rsplit(":", 1)[-1].split("/", 1)[0]
+    gradle_module = _bootstrap_gradle_path(repo_path)
     process = _run_background_command(
         [
             "./gradlew",
-            ":modules:bootstrap:studyhub:bootRun",
+            f"{gradle_module}:bootRun",
             f"--args=--server.port={port}",
         ],
         server_root,
@@ -348,13 +373,13 @@ def _start_studyhub_api_if_needed(repo_path: Path, timeout_seconds: int) -> tupl
     while time.time() < deadline:
         if process.poll() is not None:
             stdout, stderr = process.communicate(timeout=5)
-            return None, f"StudyHub API 서버 시작 실패. stdout={stdout[-1000:]}, stderr={stderr[-1000:]}"
+            return None, f"{_target_project_label(repo_path)} API 서버 시작 실패. stdout={stdout[-1000:]}, stderr={stderr[-1000:]}"
         if _is_api_alive():
-            return process, f"StudyHub API 서버를 {settings.studyhub_api_base_url} 에서 시작했습니다."
+            return process, f"{_target_project_label(repo_path)} API 서버를 {settings.studyhub_api_base_url} 에서 시작했습니다."
         time.sleep(2)
 
     process.terminate()
-    return None, "제한 시간 안에 StudyHub API 서버가 health 응답을 반환하지 않았습니다."
+    return None, f"제한 시간 안에 {_target_project_label(repo_path)} API 서버가 health 응답을 반환하지 않았습니다."
 
 
 def _stop_process(process: subprocess.Popen[str] | None) -> None:
@@ -472,9 +497,25 @@ def _is_security_jwt_redis_config(title: str, body: str) -> bool:
     return has_security and has_token and has_redis
 
 
+# 대상 저장소에 실제 endpoint 구현이 있는지 확인한다.
+def _repo_has_endpoint_mapping(repo_path: Path, path: str) -> bool:
+    source_root = repo_path / "apps/server/modules/bootstrap"
+    if not source_root.exists():
+        return False
+    quoted_path = f'"{path}"'
+    for source_file in source_root.rglob("*.kt"):
+        if source_file.name.endswith("Test.kt"):
+            continue
+        text = source_file.read_text(encoding="utf-8")
+        if quoted_path in text and ("@PostMapping" in text or "@GetMapping" in text or "@RequestMapping" in text):
+            return True
+    return False
+
+
 def _run_config_security_test(repo_path: Path, timeout_seconds: int) -> tuple[ConfigQaCheckResult, list[str]]:
     server_root = repo_path / "apps/server"
-    command = ["./gradlew", ":modules:bootstrap:studyhub:test", "--tests", "*SecurityConfigurationTest"]
+    gradle_module = _bootstrap_gradle_path(repo_path)
+    command = ["./gradlew", f"{gradle_module}:test", "--tests", "*SecurityConfigurationTest"]
     if not server_root.exists():
         result = ConfigQaCheckResult(
             name="Security 설정 테스트",
@@ -495,7 +536,7 @@ def _run_config_security_test(repo_path: Path, timeout_seconds: int) -> tuple[Co
         detail=(stdout[-1500:] or stderr[-1500:]).strip(),
     )
     command_section = [
-        "## Command: ./gradlew :modules:bootstrap:studyhub:test --tests '*SecurityConfigurationTest'",
+        f"## Command: ./gradlew {gradle_module}:test --tests '*SecurityConfigurationTest'",
         "",
         f"- exit_code: {exit_code}",
         "",
@@ -562,6 +603,16 @@ def _verify_config_protected_api(timeout_seconds: int) -> ConfigQaCheckResult:
         expected="http_status=401",
         actual=f"http_status={status_code}, response={response_body or stderr or '(응답 없음)'}",
     )
+
+
+# 실제 구현된 API가 있을 때만 config runtime endpoint 검증을 실행한다.
+def _runtime_endpoint_checks(repo_path: Path, timeout_seconds: int) -> list[ConfigQaCheckResult]:
+    results: list[ConfigQaCheckResult] = []
+    if _repo_has_endpoint_mapping(repo_path, "/api/members/signup"):
+        results.append(_verify_config_signup_endpoint(timeout_seconds))
+    if _repo_has_endpoint_mapping(repo_path, "/api/protected-resource"):
+        results.append(_verify_config_protected_api(timeout_seconds))
+    return results
 
 
 def _verify_config_redis_container(repo_path: Path, timeout_seconds: int) -> ConfigQaCheckResult:
@@ -809,8 +860,7 @@ class QAAgent:
                             [
                                 _verify_config_backend_health(input_data.timeout_seconds),
                                 _verify_config_swagger(input_data.timeout_seconds),
-                                _verify_config_signup_endpoint(input_data.timeout_seconds),
-                                _verify_config_protected_api(input_data.timeout_seconds),
+                                *_runtime_endpoint_checks(repo_path, input_data.timeout_seconds),
                                 _verify_config_redis_container(repo_path, input_data.timeout_seconds),
                             ]
                         )
