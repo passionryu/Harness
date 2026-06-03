@@ -186,6 +186,64 @@ def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
     assert "`@ai-harness replan`" in captured["body"]
 
 
+def test_config_plan_omits_usecase_diagrams(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+
+    captured: dict[str, str] = {}
+
+    class FakeGitHubAdapter:
+        def __init__(self, token: str):
+            self.token = token
+
+        def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> None:
+            captured["body"] = body
+
+    monkeypatch.setattr(orchestration.settings, "github_token", "token")
+    monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "myMentalCare")
+    monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
+
+    from orchestrator.db.session import SessionLocal, create_db
+    from orchestrator.services.orchestration import OrchestrationService
+
+    issue_number = uuid4().int % 1_000_000_000
+    create_db()
+    with SessionLocal() as db:
+        service = OrchestrationService(db)
+        event = service.run_plan_for_github_issue(
+            issue_number=issue_number,
+            title="[Config] Spring Security + JWT + Redis 인증 기반 설정",
+            body="\n".join(
+                [
+                    "## 목표",
+                    "Spring Security, JWT, Redis 기반 인증 설정을 추가한다.",
+                    "",
+                    "## 완료 기준",
+                    "- 백엔드가 정상 기동한다.",
+                    "- 인증 설정 테스트가 통과한다.",
+                ]
+            ),
+            issue_url=f"https://github.com/passionryu/myMentalCare/issues/{issue_number}",
+            issue_labels=["type: config"],
+        )
+
+    plan_dir = tmp_path / "artifacts" / event.task_id / "plans"
+    architecture = (plan_dir / "architecture.md").read_text()
+
+    assert (plan_dir / "architecture.md").exists()
+    assert (plan_dir / "work-units.md").exists()
+    assert (plan_dir / "edge-case-checklist.md").exists()
+    assert not (plan_dir / "sequence-diagram.md").exists()
+    assert not (plan_dir / "flow.md").exists()
+    assert not (plan_dir / "flow-chart.md").exists()
+    assert "## Proposed" not in architecture
+    assert "### 시퀀스 다이어그램" not in captured["body"]
+    assert "### 플로우 차트" not in captured["body"]
+    assert "sequence-diagram.md" not in captured["body"]
+    assert "flow-chart.md" not in captured["body"]
+    assert "환경변수 또는 secret 관리 위치" in captured["body"]
+
+
 def test_github_comment_falls_back_to_gh_cli_when_api_forbidden(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
     captured: dict[str, str] = {}

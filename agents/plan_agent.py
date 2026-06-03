@@ -211,6 +211,74 @@ def _profile_for_issue_type(issue_type: str) -> dict[str, list[str] | str]:
             "open_questions": ["재현 가능한 입력값", "영향받는 사용자/환경", "릴리즈 우선순위"],
             "edge_cases": ["부분 재현", "환경별 차이", "기존 데이터와의 호환성", "회귀 가능성"],
         },
+        "config": {
+            "flow_title": "Configuration Change Plan",
+            "summary_fallback": "서비스 실행과 보안 정책에 필요한 설정, 의존성, 환경값을 안전하게 변경한다.",
+            "scope_fallback": ["설정 파일, 의존성, 환경변수, 보안 정책, 로컬 실행 조건을 추가하거나 수정한다."],
+            "acceptance_fallback": ["설정 변경 후 애플리케이션이 정상 기동한다.", "관련 설정 테스트와 smoke 검증이 통과한다."],
+            "expected_files": [
+                "apps/server 하위 Gradle 의존성 파일",
+                "apps/server 하위 application.yml 또는 profile 설정",
+                "apps/server/modules/bootstrap 하위 configuration/test 파일",
+                "docker-compose 또는 로컬 인프라 설정 파일",
+            ],
+            "steps": [
+                "변경할 설정 목적과 런타임 영향을 확인한다.",
+                "필요한 의존성, 환경변수, profile 값을 정리한다.",
+                "보안/인증/인가 경계와 예외 허용 경로를 명확히 한다.",
+                "로컬 실행과 테스트에서 필요한 인프라 조건을 고정한다.",
+                "기동, health, 관련 smoke test, rollback 기준을 검증한다.",
+            ],
+            "open_questions": [
+                "환경변수 또는 secret 관리 위치",
+                "로컬/dev/prod profile 차이",
+                "인증 예외가 필요한 public endpoint",
+                "롤백 시 되돌려야 할 설정 파일",
+            ],
+            "edge_cases": [
+                "환경변수 누락",
+                "profile별 설정 불일치",
+                "보호되어야 할 API가 public으로 열림",
+                "public API가 인증에 막힘",
+                "로컬 인프라 컨테이너 미기동",
+            ],
+        },
+        "infra": {
+            "flow_title": "Infrastructure Change Plan",
+            "summary_fallback": "로컬 또는 운영 인프라 구성 변경을 재현 가능하고 롤백 가능하게 설계한다.",
+            "scope_fallback": ["Docker, CI/CD, 배포, 네트워크, 운영 환경 설정을 추가하거나 수정한다."],
+            "acceptance_fallback": ["인프라 변경 후 로컬/대상 환경에서 재현 가능하게 실행된다.", "롤백 기준이 명확하다."],
+            "expected_files": [
+                "docker-compose 또는 Dockerfile",
+                "CI/CD workflow 파일",
+                "운영 환경 설정 문서",
+                "scripts 하위 실행/검증 스크립트",
+            ],
+            "steps": [
+                "변경 목적과 영향을 받는 실행 환경을 확인한다.",
+                "필요한 컨테이너, 포트, 볼륨, 네트워크 조건을 정리한다.",
+                "CI/CD 또는 배포 경로의 변경 범위를 확정한다.",
+                "기동/중지/상태 확인/롤백 명령을 문서화한다.",
+                "재현 가능한 smoke 검증을 수행한다.",
+            ],
+            "open_questions": ["대상 환경", "포트/도메인 충돌 가능성", "secret 관리 방식", "롤백 절차"],
+            "edge_cases": ["포트 충돌", "볼륨 데이터 호환성", "컨테이너 health 실패", "CI 환경 변수 누락"],
+        },
+        "docs": {
+            "flow_title": "Documentation Plan",
+            "summary_fallback": "사용자나 개발자가 필요한 정보를 빠르게 이해할 수 있도록 문서를 작성하거나 정리한다.",
+            "scope_fallback": ["docs 하위 문서, README, 운영 가이드, API 설명을 추가하거나 수정한다."],
+            "acceptance_fallback": ["문서가 현재 구현과 일치한다.", "다음 행동과 확인 방법이 명확하다."],
+            "expected_files": ["docs 하위 문서", "README 또는 운영 가이드"],
+            "steps": [
+                "문서 독자와 사용 목적을 정한다.",
+                "현재 코드/설정과 맞지 않는 내용을 확인한다.",
+                "필요한 절차, 명령어, 확인 기준을 정리한다.",
+                "중복되거나 오래된 문서를 정리한다.",
+            ],
+            "open_questions": ["문서 대상 독자", "최종 저장 위치", "갱신 주기", "참조해야 할 원본 자료"],
+            "edge_cases": ["구현과 문서 불일치", "중복 문서", "오래된 명령어", "민감정보 노출"],
+        },
     }
     default_profile = {
         "flow_title": "Task Flow",
@@ -227,6 +295,11 @@ def _profile_for_issue_type(issue_type: str) -> dict[str, list[str] | str]:
         "edge_cases": ["누락된 요구사항", "기존 기능 회귀", "환경별 차이"],
     }
     return profiles.get(issue_type, default_profile)
+
+
+# 유스케이스 다이어그램이 의미 있는 이슈 타입인지 판단한다.
+def _should_include_usecase_diagrams(issue_type: str) -> bool:
+    return issue_type not in {"config", "infra", "docs"}
 
 
 # 이슈 타입에 맞는 유스케이스 중심 Mermaid 시퀀스 다이어그램을 만든다.
@@ -412,8 +485,9 @@ class PlanAgent:
         summary_fallback = [str(profile["summary_fallback"])]
         scope_fallback = list(profile["scope_fallback"])
         acceptance_fallback = list(profile["acceptance_fallback"])
-        sequence_diagram = _sequence_diagram_for_issue_type(issue_type)
-        flow_chart = _flow_chart_for_issue_type(issue_type)
+        include_diagrams = _should_include_usecase_diagrams(issue_type)
+        sequence_diagram = _sequence_diagram_for_issue_type(issue_type) if include_diagrams else []
+        flow_chart = _flow_chart_for_issue_type(issue_type) if include_diagrams else []
         work_units = render_work_units(issue_type)
 
         architecture = task_dir / "architecture.md"
@@ -458,11 +532,17 @@ class PlanAgent:
                         if design_direction
                         else []
                     ),
-                    f"## Proposed {flow_title}",
-                    "```mermaid",
-                    *flow_chart,
-                    "```",
-                    "",
+                    *(
+                        [
+                            f"## Proposed {flow_title}",
+                            "```mermaid",
+                            *flow_chart,
+                            "```",
+                            "",
+                        ]
+                        if include_diagrams
+                        else []
+                    ),
                     "## Expected Files",
                     *_format_bullets(inferred_files, []),
                     "",
@@ -486,35 +566,40 @@ class PlanAgent:
         )
 
         sequence = task_dir / "sequence-diagram.md"
-        sequence.write_text(
-            "\n".join(
+        flow = task_dir / "flow.md"
+        flow_chart_file = task_dir / "flow-chart.md"
+        if include_diagrams:
+            sequence.write_text(
+                "\n".join(
+                    [
+                        f"# {flow_title} Sequence Diagram",
+                        "",
+                        "```mermaid",
+                        *sequence_diagram,
+                        "```",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            flow_content = "\n".join(
                 [
-                    f"# {flow_title} Sequence Diagram",
+                    f"# {flow_title}",
                     "",
                     "```mermaid",
-                    *sequence_diagram,
+                    *flow_chart,
                     "```",
                 ]
-            ),
-            encoding="utf-8",
-        )
-
-        flow = task_dir / "flow.md"
-        flow_content = "\n".join(
-            [
-                f"# {flow_title}",
-                "",
-                "```mermaid",
-                *flow_chart,
-                "```",
-            ]
-        )
-        flow.write_text(
-            flow_content,
-            encoding="utf-8",
-        )
-        flow_chart_file = task_dir / "flow-chart.md"
-        flow_chart_file.write_text(flow_content, encoding="utf-8")
+            )
+            flow.write_text(
+                flow_content,
+                encoding="utf-8",
+            )
+            flow_chart_file.write_text(flow_content, encoding="utf-8")
+        else:
+            sequence.unlink(missing_ok=True)
+            flow.unlink(missing_ok=True)
+            flow_chart_file.unlink(missing_ok=True)
 
         work_units_file = task_dir / "work-units.md"
         work_units_file.write_text(
@@ -554,16 +639,25 @@ class PlanAgent:
             encoding="utf-8",
         )
 
-        return AgentResult(
-            status=AgentStatus.SUCCESS,
-            summary=f"{issue_type} Plan이 구현 순서와 엣지 케이스를 포함해 생성되었습니다.",
-            artifacts=[
-                ArtifactSpec("architecture-doc", Path(architecture)),
-                ArtifactSpec("sequence-diagram", Path(sequence)),
-                ArtifactSpec("flow", Path(flow)),
-                ArtifactSpec("flow-chart", Path(flow_chart_file)),
+        artifacts = [ArtifactSpec("architecture-doc", Path(architecture))]
+        if include_diagrams:
+            artifacts.extend(
+                [
+                    ArtifactSpec("sequence-diagram", Path(sequence)),
+                    ArtifactSpec("flow", Path(flow)),
+                    ArtifactSpec("flow-chart", Path(flow_chart_file)),
+                ]
+            )
+        artifacts.extend(
+            [
                 ArtifactSpec("work-units", Path(work_units_file)),
                 ArtifactSpec("ai-organization", Path(organization)),
                 ArtifactSpec("edge-case-checklist", Path(checklist)),
-            ],
+            ]
+        )
+
+        return AgentResult(
+            status=AgentStatus.SUCCESS,
+            summary=f"{issue_type} Plan이 구현 순서와 엣지 케이스를 포함해 생성되었습니다.",
+            artifacts=artifacts,
         )

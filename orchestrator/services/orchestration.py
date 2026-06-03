@@ -14,6 +14,7 @@ from agents.plan_agent import (
     _flow_chart_for_issue_type,
     _profile_for_issue_type,
     _sequence_diagram_for_issue_type,
+    _should_include_usecase_diagrams,
 )
 from orchestrator.api.schemas import EventResult, HumanApproval, ManualEvent, TaskCreate
 from orchestrator.core.settings import settings
@@ -1378,8 +1379,9 @@ class OrchestrationService:
         scope_fallback = list(profile["scope_fallback"])
         acceptance_fallback = list(profile["acceptance_fallback"])
         flow_title = str(profile["flow_title"])
-        sequence_diagram = _sequence_diagram_for_issue_type(issue_type)
-        flow_chart = _flow_chart_for_issue_type(issue_type)
+        include_diagrams = _should_include_usecase_diagrams(issue_type)
+        sequence_diagram = _sequence_diagram_for_issue_type(issue_type) if include_diagrams else []
+        flow_chart = _flow_chart_for_issue_type(issue_type) if include_diagrams else []
         work_units = render_work_units(issue_type)
         task_id = task.id
 
@@ -1415,16 +1417,22 @@ class OrchestrationService:
                     scope_fallback,
                 ),
                 "",
-                "### 시퀀스 다이어그램",
-                "```mermaid",
-                *sequence_diagram,
-                "```",
-                "",
-                f"### 플로우 차트 ({flow_title})",
-                "```mermaid",
-                *flow_chart,
-                "```",
-                "",
+                *(
+                    [
+                        "### 시퀀스 다이어그램",
+                        "```mermaid",
+                        *sequence_diagram,
+                        "```",
+                        "",
+                        f"### 플로우 차트 ({flow_title})",
+                        "```mermaid",
+                        *flow_chart,
+                        "```",
+                        "",
+                    ]
+                    if include_diagrams
+                    else []
+                ),
                 "### 구현 순서",
                 *[f"{index}. {step}" for index, step in enumerate(implementation_steps, start=1)],
                 "",
@@ -1442,9 +1450,15 @@ class OrchestrationService:
                 "",
                 "### 상세 Artifacts",
                 f"- `artifacts/{task_id}/plans/architecture.md`",
-                f"- `artifacts/{task_id}/plans/sequence-diagram.md`",
-                f"- `artifacts/{task_id}/plans/flow.md`",
-                f"- `artifacts/{task_id}/plans/flow-chart.md`",
+                *(
+                    [
+                        f"- `artifacts/{task_id}/plans/sequence-diagram.md`",
+                        f"- `artifacts/{task_id}/plans/flow.md`",
+                        f"- `artifacts/{task_id}/plans/flow-chart.md`",
+                    ]
+                    if include_diagrams
+                    else []
+                ),
                 f"- `artifacts/{task_id}/plans/work-units.md`",
                 f"- `artifacts/{task_id}/plans/ai-organization.md`",
                 f"- `artifacts/{task_id}/plans/edge-case-checklist.md`",
