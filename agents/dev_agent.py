@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from git import Repo
+from git import GitCommandError, Repo
 
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
 from agents.runners.base import DevRunner, DevRunnerContext, DevRunnerResult
@@ -182,7 +182,33 @@ def _select_runners(context: DevRunnerContext) -> list[DevRunner]:
     return [runner for runner in _dev_runners() if runner.can_handle(context)]
 
 
-def _checkout_branch(repo_path: Path, branch_name: str) -> str:
+# 현재 체크아웃된 브랜치 이름을 안전하게 반환한다.
+def _active_branch_name(repo: Repo) -> str:
+    try:
+        return repo.active_branch.name
+    except TypeError:
+        return "detached-head"
+
+
+# 새 개발 브랜치의 기준이 될 base branch 또는 remote ref를 찾는다.
+def _resolve_base_ref(repo: Repo, base_branch: str) -> str | None:
+    if base_branch in {head.name for head in repo.heads}:
+        return base_branch
+
+    remote_ref = f"origin/{base_branch}"
+    if "origin" in {remote.name for remote in repo.remotes}:
+        try:
+            repo.git.fetch("origin", base_branch)
+        except GitCommandError:
+            pass
+
+    if remote_ref in {ref.name for ref in repo.refs}:
+        return remote_ref
+    return None
+
+
+# 개발 브랜치를 checkout하고, 새 브랜치는 항상 설정된 base branch에서 생성한다.
+def _checkout_branch(repo_path: Path, branch_name: str, base_branch: str) -> str:
     repo = Repo(repo_path)
     dirty_note = ""
     if repo.is_dirty(untracked_files=True):
@@ -193,8 +219,25 @@ def _checkout_branch(repo_path: Path, branch_name: str) -> str:
         repo.git.checkout(branch_name)
         return f"기존 브랜치 체크아웃{dirty_note}"
 
-    repo.git.checkout("-b", branch_name)
-    return f"새 브랜치 생성{dirty_note}"
+    base_ref = _resolve_base_ref(repo, base_branch)
+    if base_ref is None:
+        current_branch = _active_branch_name(repo)
+        repo.git.checkout("-b", branch_name)
+        return f"새 브랜치 생성{dirty_note} (base={current_branch}, requested_base={base_branch} 없음)"
+
+    repo.git.checkout("-b", branch_name, base_ref)
+    return f"새 브랜치 생성{dirty_note} (base={base_ref})"
+
+
+# 구현 diff를 설정된 base branch 기준으로 생성한다.
+def _diff_against_base(repo: Repo, base_branch: str) -> str:
+    base_ref = _resolve_base_ref(repo, base_branch)
+    if base_ref is None:
+        base_ref = "HEAD"
+    try:
+        return repo.git.diff(f"{base_ref}...HEAD")
+    except GitCommandError:
+        return repo.git.diff("HEAD")
 
 
 class DevAgent:
@@ -206,6 +249,7 @@ class DevAgent:
         issue_type = _extract_issue_type(input_data.body)
         issue_number = _extract_metadata_value(input_data.body, "issue_number") or "unknown"
         branch_name = _branch_name(issue_type, issue_number)
+        base_branch = settings.development_base_branch
         feature_name = _feature_name(input_data.title)
         commit_units = _commit_units(issue_type)
         backend_style_lines = _backend_style_lines(issue_type)
@@ -224,7 +268,7 @@ class DevAgent:
 
         if repo_path.exists():
             repo = Repo(repo_path)
-            branch_status = _checkout_branch(repo_path, branch_name)
+            branch_status = _checkout_branch(repo_path, branch_name, base_branch)
         else:
             branch_status = f"blocked: target repository does not exist: {repo_path}"
 
@@ -299,6 +343,7 @@ class DevAgent:
                     f"- issue_type: `{issue_type}`",
                     f"- issue_number: `{issue_number}`",
                     f"- branch: `{branch_name}`",
+                    f"- base_branch: `{base_branch}`",
                     f"- branch_status: {branch_status}",
                     f"- selected_runner: `{runner_name}`",
                     f"- mode: `{'refactor' if is_refactor_mode else 'develop'}`",
@@ -345,6 +390,7 @@ class DevAgent:
                     "# Dev 상태",
                     "",
                     f"- branch: `{branch_name}`",
+                    f"- base_branch: `{base_branch}`",
                     f"- branch_status: {branch_status}",
                     f"- selected_runner: `{runner_name}`",
                     f"- mode: `{'refactor' if is_refactor_mode else 'develop'}`",
@@ -410,7 +456,7 @@ class DevAgent:
 
         patch = task_dir / "implementation.patch"
         if repo is not None:
-            diff = repo.git.diff("main...HEAD")
+            diff = _diff_against_base(repo, base_branch)
         else:
             diff = ""
         patch.write_text(
@@ -432,6 +478,7 @@ class DevAgent:
                     "# Dev 테스트 리포트",
                     "",
                     f"- branch: `{branch_name}`",
+                    f"- base_branch: `{base_branch}`",
                     f"- branch_status: {branch_status}",
                     f"- selected_runner: `{runner_name}`",
                     f"- runner_status: `{result_status.value}`",

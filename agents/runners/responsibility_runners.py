@@ -649,7 +649,7 @@ def _stage_and_commit(context: DevRunnerContext, paths: list[str], message: str)
 
 # 현재 브랜치에서 기준 브랜치 대비 프론트엔드 변경 파일을 찾는다.
 def _frontend_changed_paths(context: DevRunnerContext) -> list[str]:
-    candidates = ["main", "origin/main", "stage", "origin/stage"]
+    candidates = ["stage", "origin/stage", "main", "origin/main"]
     for base in candidates:
         exit_code, stdout = _git_name_only(context, base)
         if exit_code == 0:

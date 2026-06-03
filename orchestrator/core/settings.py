@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     github_use_gh_cli: bool = False
     github_webhook_secret: str | None = None
     enable_github_comment_commands: bool = False
+    development_base_branch: str = "stage"
     plan_trigger_label: str = "ai-plan-ready"
     plan_command: str = "@ai-harness plan"
     replan_command: str = "@ai-harness replan"
