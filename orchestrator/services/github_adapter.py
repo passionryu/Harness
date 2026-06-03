@@ -26,6 +26,12 @@ class GitHubAdapter:
             raise RuntimeError((completed.stderr or completed.stdout or f"exit_code={completed.returncode}").strip())
         return json.loads(completed.stdout or "{}")
 
+    # gh CLI를 실행하고 성공 여부만 확인한다.
+    def _run_gh(self, command: list[str]) -> None:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        if completed.returncode != 0:
+            raise RuntimeError((completed.stderr or completed.stdout or f"exit_code={completed.returncode}").strip())
+
     # gh issue payload를 GitHub REST API payload 형태에 가깝게 변환한다.
     def _normalize_issue(self, payload: dict) -> dict:
         normalized = dict(payload)
@@ -159,6 +165,116 @@ class GitHubAdapter:
         except Exception:
             if self.use_gh_cli:
                 self._create_issue_comment_with_gh(owner, repo, issue_number, body)
+                return
+            raise
+
+    # GitHub 이슈 댓글을 수정한다.
+    def update_issue_comment(self, owner: str, repo: str, comment_id: int | str, body: str) -> None:
+        if not self.token:
+            if self.use_gh_cli:
+                if isinstance(comment_id, str) and not comment_id.isdigit():
+                    self._run_gh(
+                        [
+                            "gh",
+                            "api",
+                            "graphql",
+                            "-f",
+                            "query=mutation($id:ID!,$body:String!){updateIssueComment(input:{id:$id,body:$body}){issueComment{id}}}",
+                            "-f",
+                            f"id={comment_id}",
+                            "-f",
+                            f"body={body}",
+                        ]
+                    )
+                    return
+                self._run_gh(
+                    [
+                        "gh",
+                        "api",
+                        "-X",
+                        "PATCH",
+                        f"repos/{owner}/{repo}/issues/comments/{comment_id}",
+                        "-f",
+                        f"body={body}",
+                    ]
+                )
+                return
+            raise ValueError("GitHub token이 설정되어 있지 않습니다.")
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/issues/comments/{comment_id}"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        response = httpx.patch(url, headers=headers, json={"body": body}, timeout=20)
+        try:
+            response.raise_for_status()
+        except Exception:
+            if self.use_gh_cli:
+                self._run_gh(
+                    [
+                        "gh",
+                        "api",
+                        "-X",
+                        "PATCH",
+                        f"repos/{owner}/{repo}/issues/comments/{comment_id}",
+                        "-f",
+                        f"body={body}",
+                    ]
+                )
+                return
+            raise
+
+    # GitHub 이슈 댓글을 삭제한다.
+    def delete_issue_comment(self, owner: str, repo: str, comment_id: int | str) -> None:
+        if not self.token:
+            if self.use_gh_cli:
+                if isinstance(comment_id, str) and not comment_id.isdigit():
+                    self._run_gh(
+                        [
+                            "gh",
+                            "api",
+                            "graphql",
+                            "-f",
+                            "query=mutation($id:ID!){deleteIssueComment(input:{id:$id}){clientMutationId}}",
+                            "-f",
+                            f"id={comment_id}",
+                        ]
+                    )
+                    return
+                self._run_gh(
+                    [
+                        "gh",
+                        "api",
+                        "-X",
+                        "DELETE",
+                        f"repos/{owner}/{repo}/issues/comments/{comment_id}",
+                    ]
+                )
+                return
+            raise ValueError("GitHub token이 설정되어 있지 않습니다.")
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/issues/comments/{comment_id}"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        response = httpx.delete(url, headers=headers, timeout=20)
+        try:
+            response.raise_for_status()
+        except Exception:
+            if self.use_gh_cli:
+                self._run_gh(
+                    [
+                        "gh",
+                        "api",
+                        "-X",
+                        "DELETE",
+                        f"repos/{owner}/{repo}/issues/comments/{comment_id}",
+                    ]
+                )
                 return
             raise
 

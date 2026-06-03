@@ -689,9 +689,77 @@ def test_issue_comment_plan_command_skips_duplicate_successful_plan(tmp_path, mo
     assert second_response.status_code == 200
     assert "Plan Agent 실행이 완료" in first_response.json()["message"]
     assert second_response.json()["message"] == "이미 Plan이 완료되어 중복 실행을 스킵했습니다."
-    assert len(captured_comments) == 2
-    assert "AI Plan이 이미 존재합니다" in captured_comments[-1]
-    assert "@ai-harness replan" in captured_comments[-1]
+    assert len(captured_comments) == 1
+    assert "AI Plan" in captured_comments[-1]
+
+
+def test_issue_comment_replan_updates_existing_plan_comment(tmp_path, monkeypatch):
+    secret = "test-secret"
+    monkeypatch.setattr(routes.settings, "github_webhook_secret", secret)
+    monkeypatch.setattr(routes.settings, "replan_command", "@ai-harness replan")
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+
+    updated_comments: list[tuple[int, str]] = []
+    deleted_comments: list[int] = []
+    created_comments: list[str] = []
+
+    class FakeGitHubAdapter:
+        def __init__(self, token: str, use_gh_cli: bool = False):
+            self.token = token
+            self.use_gh_cli = use_gh_cli
+
+        def is_configured(self) -> bool:
+            return True
+
+        def list_issue_comments(self, owner: str, repo: str, issue_number: int) -> list[dict]:
+            return [
+                {"id": 101, "body": "<!-- ai-harness-generated -->\n\n# 🏗️ AI Plan: old"},
+                {"id": 102, "body": "<!-- ai-harness-generated -->\n\n# ♻️ 🏗️ AI Re-Plan: older"},
+            ]
+
+        def update_issue_comment(self, owner: str, repo: str, comment_id: int, body: str) -> None:
+            updated_comments.append((comment_id, body))
+
+        def delete_issue_comment(self, owner: str, repo: str, comment_id: int) -> None:
+            deleted_comments.append(comment_id)
+
+        def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> None:
+            created_comments.append(body)
+
+    monkeypatch.setattr(orchestration.settings, "github_token", "token")
+    monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "targetApp")
+    monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
+
+    issue_number = uuid4().int % 1_000_000_000
+    payload = {
+        "action": "created",
+        "issue": {
+            "number": issue_number,
+            "title": "[BE] 로그인 API 구현",
+            "body": "로그인 API를 구현한다.",
+            "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
+        },
+        "comment": {"body": "@ai-harness replan\n\n로그인 흐름을 더 구체화한다."},
+    }
+
+    with TestClient(app) as client:
+        body = json.dumps(payload).encode("utf-8")
+        response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "issue_comment",
+                "X-Hub-Signature-256": _signature(secret, body),
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 200
+    assert created_comments == []
+    assert updated_comments[0][0] == 102
+    assert "# ♻️ 🏗️ AI Re-Plan" in updated_comments[0][1]
+    assert deleted_comments == [101]
 
 
 def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monkeypatch):
