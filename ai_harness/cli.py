@@ -17,6 +17,14 @@ from orchestrator.services.github_adapter import GitHubAdapter
 from orchestrator.services.orchestration import OrchestrationService
 
 
+# 테스트 fake adapter와 실제 gh CLI adapter 생성 방식을 함께 지원한다.
+def _github_adapter() -> GitHubAdapter:
+    try:
+        return GitHubAdapter(settings.github_token, settings.github_use_gh_cli)
+    except TypeError:
+        return GitHubAdapter(settings.github_token)
+
+
 # CLI 명령 실행 결과를 표현하기 쉬운 dict로 정규화한다.
 def _normalize_result(result: EventResult | dict[str, Any]) -> dict[str, Any]:
     if isinstance(result, EventResult):
@@ -43,10 +51,10 @@ def _print_result(result: EventResult | dict[str, Any], as_json: bool) -> None:
 
 # GitHub 이슈 본문과 라벨을 하네스 실행 입력으로 변환한다.
 def _fetch_issue_context(issue_number: int) -> dict[str, Any]:
-    if not settings.github_token:
+    if not settings.github_token and not settings.github_use_gh_cli:
         raise ValueError("GitHub 이슈를 읽으려면 GITHUB_TOKEN이 필요합니다.")
 
-    issue = GitHubAdapter(settings.github_token).get_issue(
+    issue = _github_adapter().get_issue(
         settings.github_owner,
         settings.github_repo,
         issue_number,
@@ -175,11 +183,11 @@ def _run_issue_command(args: argparse.Namespace) -> EventResult | dict[str, Any]
 
 # GitHub 이슈를 생성하고 하네스 DB에 동기화한 뒤 Discord 알림을 보낸다.
 def _create_issue(args: argparse.Namespace) -> dict[str, Any]:
-    if not settings.github_token:
+    if not settings.github_token and not settings.github_use_gh_cli:
         raise ValueError("GitHub 이슈 생성에는 GITHUB_TOKEN이 필요합니다.")
     body = Path(args.body_file).expanduser().read_text(encoding="utf-8")
     title = _normalize_issue_title(args.title, args.type)
-    issue = GitHubAdapter(settings.github_token).create_issue(
+    issue = _github_adapter().create_issue(
         settings.github_owner,
         settings.github_repo,
         title,
@@ -230,10 +238,10 @@ def _notify_issue_created(issue: dict[str, Any], task_id: str) -> str:
 
 # GitHub 이슈를 하네스 DB task로 동기화한다.
 def _sync_issues(args: argparse.Namespace) -> dict[str, Any]:
-    if not settings.github_token:
+    if not settings.github_token and not settings.github_use_gh_cli:
         raise ValueError("GitHub 이슈 동기화에는 GITHUB_TOKEN이 필요합니다.")
 
-    adapter = GitHubAdapter(settings.github_token)
+    adapter = _github_adapter()
     issues = (
         [adapter.get_issue(settings.github_owner, settings.github_repo, args.issue)]
         if args.issue

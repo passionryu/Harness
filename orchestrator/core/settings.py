@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     github_owner: str = "passionryu"
     github_repo: str = "studyHub"
     github_token: str | None = None
+    github_use_gh_cli: bool = False
     github_webhook_secret: str | None = None
     enable_github_comment_commands: bool = False
     plan_trigger_label: str = "ai-plan-ready"

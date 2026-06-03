@@ -12,6 +12,14 @@ router = APIRouter()
 AI_HARNESS_GENERATED_MARKER = "<!-- ai-harness-generated -->"
 
 
+# 테스트 fake adapter와 실제 gh CLI adapter 생성 방식을 함께 지원한다.
+def _github_adapter() -> GitHubAdapter:
+    try:
+        return GitHubAdapter(settings.github_token, settings.github_use_gh_cli)
+    except TypeError:
+        return GitHubAdapter(settings.github_token)
+
+
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -100,11 +108,11 @@ def sync_github_issue_plan(
     force: bool = Query(default=False),
     db: Session = Depends(get_db),
 ):
-    if not settings.github_token:
+    if not settings.github_token and not settings.github_use_gh_cli:
         raise HTTPException(status_code=400, detail="이슈 동기화에는 GITHUB_TOKEN이 필요합니다.")
 
     try:
-        issue = GitHubAdapter(settings.github_token).get_issue(
+        issue = _github_adapter().get_issue(
             settings.github_owner,
             settings.github_repo,
             issue_number,

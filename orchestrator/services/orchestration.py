@@ -53,6 +53,23 @@ class OrchestrationService:
     ) -> bool:
         api_error: str | None = None
         if not settings.github_token:
+            if settings.github_use_gh_cli:
+                gh_result = self._comment_on_github_issue_with_gh(issue_number, body)
+                if gh_result[0]:
+                    self._audit(
+                        task.id,
+                        run_id,
+                        success_event,
+                        {"issue_number": issue_number, "method": "gh_cli", "api_error": None},
+                    )
+                    return True
+                self._audit(
+                    task.id,
+                    run_id,
+                    failure_event,
+                    {"issue_number": issue_number, "api_error": None, "gh_error": gh_result[1]},
+                )
+                return False
             self._audit(
                 task.id,
                 run_id,

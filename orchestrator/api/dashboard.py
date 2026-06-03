@@ -16,6 +16,14 @@ from orchestrator.services.orchestration import OrchestrationService
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
+# 테스트 fake adapter와 실제 gh CLI adapter 생성 방식을 함께 지원한다.
+def _github_adapter() -> GitHubAdapter:
+    try:
+        return GitHubAdapter(settings.github_token, settings.github_use_gh_cli)
+    except TypeError:
+        return GitHubAdapter(settings.github_token)
+
+
 # 작업 목록을 서버 사이드 HTML로 렌더링한다.
 @router.get("", response_class=HTMLResponse)
 def dashboard_home(
@@ -202,11 +210,11 @@ async def dashboard_save_memo(
 
 # GitHub issue 목록을 읽어 신규 task를 Backlog로 만들고 기존 task 정보를 갱신한다.
 def _sync_github_issues(db: Session) -> int:
-    if not settings.github_token:
+    if not settings.github_token and not settings.github_use_gh_cli:
         raise ValueError("GitHub issue 동기화에는 GITHUB_TOKEN이 필요합니다.")
 
     service = OrchestrationService(db)
-    issues = GitHubAdapter(settings.github_token).list_issues(
+    issues = _github_adapter().list_issues(
         settings.github_owner,
         settings.github_repo,
     )
