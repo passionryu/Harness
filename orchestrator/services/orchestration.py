@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 from agents.base import AgentInput, AgentStatus
 from agents.organization import render_work_units
 from agents.plan_agent import (
+    _extract_sql_blocks,
     _flow_chart_for_issue_type,
+    _is_login_api_plan,
     _profile_for_issue_type,
     _sequence_diagram_for_issue_type,
     _should_include_usecase_diagrams,
@@ -1392,13 +1394,20 @@ class OrchestrationService:
         implementation_steps = list(profile["steps"])
         expected_files = list(profile["expected_files"])
         open_questions = list(profile["open_questions"])
+        sql_blocks = _extract_sql_blocks(task.body)
+        if _is_login_api_plan(task.title, task.body):
+            open_questions = [
+                question
+                for question in open_questions
+                if question not in {"DDL/migration 필요 여부", "외부 시스템 연동 여부"}
+            ]
         summary_fallback = [str(profile["summary_fallback"])]
         scope_fallback = list(profile["scope_fallback"])
         acceptance_fallback = list(profile["acceptance_fallback"])
         flow_title = str(profile["flow_title"])
         include_diagrams = _should_include_usecase_diagrams(issue_type)
-        sequence_diagram = _sequence_diagram_for_issue_type(issue_type) if include_diagrams else []
-        flow_chart = _flow_chart_for_issue_type(issue_type) if include_diagrams else []
+        sequence_diagram = _sequence_diagram_for_issue_type(issue_type, task.title, task.body) if include_diagrams else []
+        flow_chart = _flow_chart_for_issue_type(issue_type, task.title, task.body) if include_diagrams else []
         work_units = render_work_units(issue_type)
         task_id = task.id
 
@@ -1434,6 +1443,18 @@ class OrchestrationService:
                     scope_fallback,
                 ),
                 "",
+                *(
+                    [
+                        "### DDL",
+                        *[
+                            "\n".join(["```sql", sql_block, "```"])
+                            for sql_block in sql_blocks
+                        ],
+                        "",
+                    ]
+                    if sql_blocks
+                    else []
+                ),
                 *(
                     [
                         "### 시퀀스 다이어그램",

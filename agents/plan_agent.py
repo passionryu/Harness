@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
 from agents.organization import render_ai_organization_catalog, render_work_units
@@ -59,6 +60,24 @@ def _extract_issue_type(markdown: str) -> str:
             if label.startswith("type: "):
                 return label.removeprefix("type: ").strip()
     return "unspecified"
+
+
+# Markdown 본문에 포함된 SQL code block을 추출한다.
+def _extract_sql_blocks(markdown: str) -> list[str]:
+    return [
+        match.group(1).strip()
+        for match in re.finditer(r"```sql\s+(.*?)```", markdown, re.DOTALL | re.IGNORECASE)
+    ]
+
+
+# 로그인 API 유스케이스인지 판단한다.
+def _is_login_api_plan(title: str, body: str) -> bool:
+    haystack = f"{title}\n{body}".lower()
+    return (
+        ("로그인" in haystack or "login" in haystack)
+        and ("/api/auth/login" in haystack or "auth/login" in haystack)
+        and ("refresh token" in haystack or "리프레시" in haystack or "redis" in haystack)
+    )
 
 
 # 이슈 타입별 Plan 산출물의 기본 구조와 질문을 결정한다.
@@ -303,7 +322,37 @@ def _should_include_usecase_diagrams(issue_type: str) -> bool:
 
 
 # 이슈 타입에 맞는 유스케이스 중심 Mermaid 시퀀스 다이어그램을 만든다.
-def _sequence_diagram_for_issue_type(issue_type: str) -> list[str]:
+def _sequence_diagram_for_issue_type(issue_type: str, title: str = "", body: str = "") -> list[str]:
+    if _is_login_api_plan(title, body):
+        return [
+            "sequenceDiagram",
+            "    actor User as 사용자",
+            "    participant AuthApi as Auth API",
+            "    participant LoginUseCase as Login UseCase",
+            "    participant MemberRepository as MemberRepository",
+            "    participant PasswordVerifier as PasswordVerifier",
+            "    participant JwtTokenIssuer as JwtTokenIssuer",
+            "    participant RefreshTokenStore as Redis RefreshTokenStore",
+            "    User->>AuthApi: 로그인 ID 또는 이메일과 비밀번호로 로그인을 요청한다",
+            "    AuthApi->>LoginUseCase: LoginCommand(identifier, password)를 전달한다",
+            "    LoginUseCase->>MemberRepository: login_id 또는 email로 회원을 조회한다",
+            "    alt 회원을 찾지 못함",
+            "        LoginUseCase-->>AuthApi: 로그인 정보를 다시 확인하라는 오류를 반환한다",
+            "        AuthApi-->>User: 한국어 오류 메시지를 안내한다",
+            "    else 회원을 찾음",
+            "        LoginUseCase->>PasswordVerifier: 입력 비밀번호와 저장된 해시를 검증한다",
+            "        alt 비밀번호 불일치",
+            "            LoginUseCase-->>AuthApi: 로그인 정보를 다시 확인하라는 오류를 반환한다",
+            "            AuthApi-->>User: 한국어 오류 메시지를 안내한다",
+            "        else 비밀번호 일치",
+            "            LoginUseCase->>JwtTokenIssuer: Access Token 1시간, Refresh Token 7일을 발급한다",
+            "            LoginUseCase->>RefreshTokenStore: Refresh Token을 Redis에 7일 TTL로 저장한다",
+            "            LoginUseCase-->>AuthApi: token 응답을 반환한다",
+            "            AuthApi-->>User: 로그인 성공과 token 정보를 반환한다",
+            "        end",
+            "    end",
+        ]
+
     diagrams = {
         "feFeature": [
             "sequenceDiagram",
@@ -397,7 +446,24 @@ def _sequence_diagram_for_issue_type(issue_type: str) -> list[str]:
 
 
 # 이슈 타입에 맞는 유스케이스 중심 Mermaid 플로우 차트를 만든다.
-def _flow_chart_for_issue_type(issue_type: str) -> list[str]:
+def _flow_chart_for_issue_type(issue_type: str, title: str = "", body: str = "") -> list[str]:
+    if _is_login_api_plan(title, body):
+        return [
+            "flowchart TD",
+            "    A[사용자가 identifier와 비밀번호를 입력한다] --> B{identifier가 비어 있지 않은가?}",
+            "    B -- 아니오 --> C[로그인 정보를 입력해달라고 안내한다]",
+            "    B -- 예 --> D[login_id 또는 email 후보로 회원을 조회한다]",
+            "    D --> E{회원이 존재하는가?}",
+            "    E -- 아니오 --> F[로그인 정보를 다시 확인하라고 안내한다]",
+            "    E -- 예 --> G[비밀번호를 검증한다]",
+            "    G --> H{비밀번호가 일치하는가?}",
+            "    H -- 아니오 --> F",
+            "    H -- 예 --> I[Access Token 1시간을 발급한다]",
+            "    I --> J[Refresh Token 7일을 발급한다]",
+            "    J --> K[Refresh Token을 Redis에 7일 TTL로 저장한다]",
+            "    K --> L[로그인 성공 응답을 반환한다]",
+        ]
+
     charts = {
         "feFeature": [
             "flowchart TD",
@@ -474,20 +540,27 @@ class PlanAgent:
         design_direction = _extract_section(input_data.body, "디자인 방향")
         acceptance = _extract_bullets(input_data.body, "완료 기준")
         replan_request = _extract_section(input_data.body, "Human Replan Request")
+        sql_blocks = _extract_sql_blocks(input_data.body)
         issue_type = _extract_issue_type(input_data.body)
         profile = _profile_for_issue_type(issue_type)
 
         inferred_files = list(profile["expected_files"])
         implementation_steps = list(profile["steps"])
         open_questions = list(profile["open_questions"])
+        if _is_login_api_plan(input_data.title, input_data.body):
+            open_questions = [
+                question
+                for question in open_questions
+                if question not in {"DDL/migration 필요 여부", "외부 시스템 연동 여부"}
+            ]
         edge_cases = list(profile["edge_cases"])
         flow_title = str(profile["flow_title"])
         summary_fallback = [str(profile["summary_fallback"])]
         scope_fallback = list(profile["scope_fallback"])
         acceptance_fallback = list(profile["acceptance_fallback"])
         include_diagrams = _should_include_usecase_diagrams(issue_type)
-        sequence_diagram = _sequence_diagram_for_issue_type(issue_type) if include_diagrams else []
-        flow_chart = _flow_chart_for_issue_type(issue_type) if include_diagrams else []
+        sequence_diagram = _sequence_diagram_for_issue_type(issue_type, input_data.title, input_data.body) if include_diagrams else []
+        flow_chart = _flow_chart_for_issue_type(issue_type, input_data.title, input_data.body) if include_diagrams else []
         work_units = render_work_units(issue_type)
 
         architecture = task_dir / "architecture.md"
@@ -514,6 +587,18 @@ class PlanAgent:
                     "## Change Scope",
                     *_format_bullets(scope, scope_fallback),
                     "",
+                    *(
+                        [
+                            "## DDL",
+                            *[
+                                "\n".join(["```sql", sql_block, "```"])
+                                for sql_block in sql_blocks
+                            ],
+                            "",
+                        ]
+                        if sql_blocks
+                        else []
+                    ),
                     *(
                         [
                             "## Components",
