@@ -198,11 +198,11 @@ def _implement_member_signup_api(context: DevRunnerContext) -> DevRunnerResult:
 
 
 def _write_member_domain_files(context: DevRunnerContext) -> list[str]:
-    base = context.repo_path / "apps/server/modules/domain/src/main/kotlin/com/studyhub/server/domain/member"
+    base = context.repo_path / "apps/server/modules/domain/src/main/kotlin/com/example/server/domain/member"
     member_path = base / "Member.kt"
     _write_text(
         member_path,
-        """package com.studyhub.server.domain.member
+        """package com.example.server.domain.member
 
 data class Member(
     val id: Long? = null,
@@ -218,10 +218,10 @@ data class Member(
 
 
 def _write_member_application_files(context: DevRunnerContext) -> list[str]:
-    base = context.repo_path / "apps/server/modules/application/src/main/kotlin/com/studyhub/server/application/member"
+    base = context.repo_path / "apps/server/modules/application/src/main/kotlin/com/example/server/application/member"
     port_base = base / "port"
     paths = {
-        base / "RegisterMemberCommand.kt": """package com.studyhub.server.application.member
+        base / "RegisterMemberCommand.kt": """package com.example.server.application.member
 
 data class RegisterMemberCommand(
     val name: String,
@@ -231,7 +231,7 @@ data class RegisterMemberCommand(
     val interests: List<String>,
 )
 """,
-        base / "RegisterMemberResult.kt": """package com.studyhub.server.application.member
+        base / "RegisterMemberResult.kt": """package com.example.server.application.member
 
 data class RegisterMemberResult(
     val memberId: Long,
@@ -239,15 +239,15 @@ data class RegisterMemberResult(
     val email: String,
 )
 """,
-        base / "DuplicateMemberEmailException.kt": """package com.studyhub.server.application.member
+        base / "DuplicateMemberEmailException.kt": """package com.example.server.application.member
 
 class DuplicateMemberEmailException(
     val email: String,
 ) : RuntimeException("이미 가입된 이메일입니다.")
 """,
-        port_base / "MemberRepository.kt": """package com.studyhub.server.application.member.port
+        port_base / "MemberRepository.kt": """package com.example.server.application.member.port
 
-import com.studyhub.server.domain.member.Member
+import com.example.server.domain.member.Member
 
 interface MemberRepository {
     fun existsByEmail(email: String): Boolean
@@ -255,15 +255,15 @@ interface MemberRepository {
     fun save(member: Member): Member
 }
 """,
-        port_base / "MemberPasswordHasher.kt": """package com.studyhub.server.application.member.port
+        port_base / "MemberPasswordHasher.kt": """package com.example.server.application.member.port
 
 interface MemberPasswordHasher {
     fun hashMemberPassword(rawPassword: String): String
 }
 """,
-        base / "MemberEmailDuplicateChecker.kt": """package com.studyhub.server.application.member
+        base / "MemberEmailDuplicateChecker.kt": """package com.example.server.application.member
 
-import com.studyhub.server.application.member.port.MemberRepository
+import com.example.server.application.member.port.MemberRepository
 import org.springframework.stereotype.Component
 
 @Component
@@ -278,9 +278,9 @@ class MemberEmailDuplicateChecker(
     }
 }
 """,
-        base / "MemberRegistrationFactory.kt": """package com.studyhub.server.application.member
+        base / "MemberRegistrationFactory.kt": """package com.example.server.application.member
 
-import com.studyhub.server.domain.member.Member
+import com.example.server.domain.member.Member
 import org.springframework.stereotype.Component
 
 @Component
@@ -307,9 +307,9 @@ class MemberRegistrationFactory {
     }
 }
 """,
-        base / "RegisterMemberResultMapper.kt": """package com.studyhub.server.application.member
+        base / "RegisterMemberResultMapper.kt": """package com.example.server.application.member
 
-import com.studyhub.server.domain.member.Member
+import com.example.server.domain.member.Member
 import org.springframework.stereotype.Component
 
 @Component
@@ -323,9 +323,9 @@ class RegisterMemberResultMapper {
         )
 }
 """,
-        base / "Sha256MemberPasswordHasher.kt": """package com.studyhub.server.application.member
+        base / "Sha256MemberPasswordHasher.kt": """package com.example.server.application.member
 
-import com.studyhub.server.application.member.port.MemberPasswordHasher
+import com.example.server.application.member.port.MemberPasswordHasher
 import org.springframework.stereotype.Component
 import java.security.MessageDigest
 import java.util.Base64
@@ -343,10 +343,10 @@ class Sha256MemberPasswordHasher : MemberPasswordHasher {
     }
 }
 """,
-        base / "RegisterMemberService.kt": """package com.studyhub.server.application.member
+        base / "RegisterMemberService.kt": """package com.example.server.application.member
 
-import com.studyhub.server.application.member.port.MemberPasswordHasher
-import com.studyhub.server.application.member.port.MemberRepository
+import com.example.server.application.member.port.MemberPasswordHasher
+import com.example.server.application.member.port.MemberRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -387,12 +387,12 @@ class RegisterMemberService(
 def _write_member_persistence_files(context: DevRunnerContext) -> list[str]:
     base = context.repo_path / (
         "apps/server/modules/infrastructure/persistence/src/main/kotlin/"
-        "com/studyhub/server/infrastructure/persistence/member"
+        "com/example/server/infrastructure/persistence/member"
     )
     paths = {
-        base / "MemberJpaEntity.kt": """package com.studyhub.server.infrastructure.persistence.member
+        base / "MemberJpaEntity.kt": """package com.example.server.infrastructure.persistence.member
 
-import com.studyhub.server.domain.member.Member
+import com.example.server.domain.member.Member
 import jakarta.persistence.CollectionTable
 import jakarta.persistence.Column
 import jakarta.persistence.ElementCollection
@@ -448,7 +448,7 @@ class MemberJpaEntity(
         )
 }
 """,
-        base / "MemberJpaRepository.kt": """package com.studyhub.server.infrastructure.persistence.member
+        base / "MemberJpaRepository.kt": """package com.example.server.infrastructure.persistence.member
 
 import org.springframework.data.jpa.repository.JpaRepository
 
@@ -456,10 +456,10 @@ interface MemberJpaRepository : JpaRepository<MemberJpaEntity, Long> {
     fun existsByEmail(email: String): Boolean
 }
 """,
-        base / "MemberRepositoryAdapter.kt": """package com.studyhub.server.infrastructure.persistence.member
+        base / "MemberRepositoryAdapter.kt": """package com.example.server.infrastructure.persistence.member
 
-import com.studyhub.server.application.member.port.MemberRepository
-import com.studyhub.server.domain.member.Member
+import com.example.server.application.member.port.MemberRepository
+import com.example.server.domain.member.Member
 import org.springframework.stereotype.Repository
 
 @Repository
@@ -491,15 +491,15 @@ class MemberRepositoryAdapter(
 
 def _write_member_bootstrap_files(context: DevRunnerContext) -> list[str]:
     base = context.repo_path / (
-        "apps/server/modules/bootstrap/studyhub/src/main/kotlin/"
-        "com/studyhub/server/bootstrap/presentation/member"
+        "apps/server/modules/bootstrap/app/src/main/kotlin/"
+        "com/example/server/bootstrap/presentation/member"
     )
-    resources_base = context.repo_path / "apps/server/modules/bootstrap/studyhub/src/main/resources"
-    build_gradle = context.repo_path / "apps/server/modules/bootstrap/studyhub/build.gradle.kts"
+    resources_base = context.repo_path / "apps/server/modules/bootstrap/app/src/main/resources"
+    build_gradle = context.repo_path / "apps/server/modules/bootstrap/app/build.gradle.kts"
     paths = {
-        base / "MemberSignupController.kt": """package com.studyhub.server.bootstrap.presentation.member
+        base / "MemberSignupController.kt": """package com.example.server.bootstrap.presentation.member
 
-import com.studyhub.server.application.member.RegisterMemberService
+import com.example.server.application.member.RegisterMemberService
 import io.swagger.v3.oas.annotations.Operation
 import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
@@ -536,9 +536,9 @@ class MemberSignupController(
     }
 }
 """,
-        base / "MemberSignupRequest.kt": """package com.studyhub.server.bootstrap.presentation.member
+        base / "MemberSignupRequest.kt": """package com.example.server.bootstrap.presentation.member
 
-import com.studyhub.server.application.member.RegisterMemberCommand
+import com.example.server.application.member.RegisterMemberCommand
 import jakarta.validation.constraints.Email
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Size
@@ -568,7 +568,7 @@ data class MemberSignupRequest(
         )
 }
 """,
-        base / "MemberSignupResponse.kt": """package com.studyhub.server.bootstrap.presentation.member
+        base / "MemberSignupResponse.kt": """package com.example.server.bootstrap.presentation.member
 
 data class MemberSignupResponse(
     val memberId: Long,
@@ -578,9 +578,9 @@ data class MemberSignupResponse(
     val email: String,
 )
 """,
-        base / "ApiExceptionHandler.kt": """package com.studyhub.server.bootstrap.presentation.member
+        base / "ApiExceptionHandler.kt": """package com.example.server.bootstrap.presentation.member
 
-import com.studyhub.server.application.member.DuplicateMemberEmailException
+import com.example.server.application.member.DuplicateMemberEmailException
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -646,7 +646,7 @@ class ApiExceptionHandler {
     }
 }
 """,
-        base / "ApiErrorResponse.kt": """package com.studyhub.server.bootstrap.presentation.member
+        base / "ApiErrorResponse.kt": """package com.example.server.bootstrap.presentation.member
 
 data class ApiErrorResponse(
     val message: String,
@@ -694,15 +694,15 @@ def _ensure_flyway_dependencies(build_gradle: Path) -> None:
 def _write_member_test_files(context: DevRunnerContext) -> list[str]:
     paths = {
         context.repo_path / (
-            "apps/server/modules/domain/src/test/kotlin/com/studyhub/server/domain/member/MemberTest.kt"
-        ): """package com.studyhub.server.domain.member
+            "apps/server/modules/domain/src/test/kotlin/com/example/server/domain/member/MemberTest.kt"
+        ): """package com.example.server.domain.member
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class MemberTest {
     @Test
-    fun `register member normalizes email and interests`() {
+    fun `회원 도메인은 이메일과 관심 영역을 보존한다`() {
         val member = Member(
             name = "Ryu",
             email = "ryu@example.com",
@@ -718,19 +718,19 @@ class MemberTest {
 """,
         context.repo_path / (
             "apps/server/modules/application/src/test/kotlin/"
-            "com/studyhub/server/application/member/RegisterMemberServiceTest.kt"
-        ): """package com.studyhub.server.application.member
+            "com/example/server/application/member/RegisterMemberServiceTest.kt"
+        ): """package com.example.server.application.member
 
-import com.studyhub.server.application.member.port.MemberPasswordHasher
-import com.studyhub.server.application.member.port.MemberRepository
-import com.studyhub.server.domain.member.Member
+import com.example.server.application.member.port.MemberPasswordHasher
+import com.example.server.application.member.port.MemberRepository
+import com.example.server.domain.member.Member
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class RegisterMemberServiceTest {
     @Test
-    fun `register member stores encoded password`() {
+    fun `회원가입은 인코딩된 비밀번호를 저장한다`() {
         val repository = FakeMemberRepository()
         val service = RegisterMemberService(
             memberEmailDuplicateChecker = MemberEmailDuplicateChecker(repository),
@@ -755,7 +755,7 @@ class RegisterMemberServiceTest {
     }
 
     @Test
-    fun `register member rejects duplicated email`() {
+    fun `회원가입은 중복 이메일을 거부한다`() {
         val repository = FakeMemberRepository(existingEmails = setOf("ryu@example.com"))
         val service = RegisterMemberService(
             memberEmailDuplicateChecker = MemberEmailDuplicateChecker(repository),

@@ -33,7 +33,7 @@ def test_cli_sync_issue_imports_github_issue(monkeypatch, capsys):
                 "number": issue_number,
                 "title": "[FS] 로그인 아이디 기반 회원가입/로그인",
                 "body": "loginId를 추가한다.",
-                "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+                "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
                 "labels": [{"name": "type: fullstackFeature"}],
             }
 
@@ -147,7 +147,7 @@ def test_cli_plan_runs_plan_agent_from_github_issue(tmp_path, monkeypatch, capsy
                         "- 회원가입 API 테스트가 통과한다.",
                     ]
                 ),
-                "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+                "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
                 "labels": [{"name": "type: beFeature"}],
             }
 
@@ -179,7 +179,7 @@ def test_cli_approve_plan_moves_task_to_dev_ready(tmp_path, monkeypatch, capsys)
             title="[BE] 승인 테스트",
             body="승인 gate 테스트입니다.",
             github_issue_number=issue_number,
-            github_issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            github_issue_url=f"https://github.com/passionryu/targetApp/issues/{issue_number}",
             state="Plan Review",
         )
         db.add(task)

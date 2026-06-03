@@ -481,19 +481,19 @@ class SecurityConfigurationTest {
     private lateinit var mockMvc: MockMvc
 
     @Test
-    fun `signup endpoint is permitted without authentication`() {
+    fun `회원가입 API는 인증 없이 접근할 수 있다`() {
         mockMvc.perform(post("/api/members/signup"))
             .andExpect(status().isOk)
     }
 
     @Test
-    fun `protected api requires authentication`() {
+    fun `보호 API는 인증 없이 접근하면 차단된다`() {
         mockMvc.perform(get("/api/protected-resource"))
             .andExpect(status().isForbidden)
     }
 
     @Test
-    fun `localhost web origin can send cors preflight request`() {
+    fun `로컬 웹 화면은 회원가입 CORS 사전 요청을 보낼 수 있다`() {
         mockMvc.perform(
             options("/api/members/signup")
                 .header("Origin", "http://localhost:3000")

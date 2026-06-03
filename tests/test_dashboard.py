@@ -27,7 +27,7 @@ def _create_dashboard_task() -> Task:
                 ]
             ),
             github_issue_number=issue_number,
-            github_issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            github_issue_url=f"https://github.com/passionryu/targetApp/issues/{issue_number}",
             state="Plan Review",
         )
         db.add(task)
@@ -246,7 +246,7 @@ def test_dashboard_sync_all_github_issues_imports_missing_issues(monkeypatch):
     create_db()
     monkeypatch.setattr(dashboard.settings, "github_token", "token")
     monkeypatch.setattr(dashboard.settings, "github_owner", "passionryu")
-    monkeypatch.setattr(dashboard.settings, "github_repo", "studyHub")
+    monkeypatch.setattr(dashboard.settings, "github_repo", "targetApp")
 
     class FakeGitHubAdapter:
         def __init__(self, token: str):
@@ -255,20 +255,20 @@ def test_dashboard_sync_all_github_issues_imports_missing_issues(monkeypatch):
         # 테스트용 open issue 목록을 반환한다.
         def list_issues(self, owner: str, repo: str) -> list[dict]:
             assert owner == "passionryu"
-            assert repo == "studyHub"
+            assert repo == "targetApp"
             return [
                 {
                     "number": 8,
                     "title": "[FS] 기능 구현 로그인 기능 구현",
                     "body": "로그인 기능을 구현한다.",
-                    "html_url": "https://github.com/passionryu/studyHub/issues/8",
+                    "html_url": "https://github.com/passionryu/targetApp/issues/8",
                     "labels": [{"name": "type: fullstackFeature"}],
                 },
                 {
                     "number": 9,
                     "title": "[BE] DB 및 도메인 설계",
                     "body": "DB를 설계한다.",
-                    "html_url": "https://github.com/passionryu/studyHub/issues/9",
+                    "html_url": "https://github.com/passionryu/targetApp/issues/9",
                     "labels": [{"name": "type: beFeature"}],
                 },
             ]

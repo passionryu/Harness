@@ -8,7 +8,7 @@ from agents.runners.base import DevRunnerContext, DevRunnerResult
 class FullstackRunner:
     name = "fullstack_runner"
 
-    # 풀스택 기능 이슈와 StudyHub FE/BE 구조가 모두 있는지 확인한다.
+    # 풀스택 기능 이슈와 Target service FE/BE 구조가 모두 있는지 확인한다.
     def can_handle(self, context: DevRunnerContext) -> bool:
         return (
             context.issue_type == "fullstackFeature"

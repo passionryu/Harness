@@ -21,17 +21,18 @@ class CodebaseSnapshot:
 def inspect_codebase(context: DevRunnerContext) -> CodebaseSnapshot:
     web_root = context.repo_path / "apps/web"
     server_root = context.repo_path / "apps/server"
+    bootstrap_root = _bootstrap_root(server_root)
     return CodebaseSnapshot(
         repo_path=context.repo_path,
         has_nextjs_app=(web_root / "package.json").exists(),
         has_kotlin_server=(server_root / "build.gradle.kts").exists(),
         next_routes=_list_next_routes(web_root),
         api_controllers=_list_relative_files(
-            server_root / "modules/bootstrap/studyhub/src/main/kotlin",
+            bootstrap_root / "src/main/kotlin",
             "*Controller.kt",
         ),
         migrations=_list_relative_files(
-            server_root / "modules/bootstrap/studyhub/src/main/resources/db/migration",
+            bootstrap_root / "src/main/resources/db/migration",
             "*.sql",
         ),
         package_scripts=_read_package_scripts(web_root / "package.json"),
@@ -95,6 +96,15 @@ def backend_test_commands(snapshot: CodebaseSnapshot) -> list[list[str]]:
     if not snapshot.has_kotlin_server:
         return []
     return [["./gradlew", "test"]]
+
+
+# 서버의 bootstrap 모듈 root를 찾는다.
+def _bootstrap_root(server_root: Path) -> Path:
+    root = server_root / "modules/bootstrap"
+    if not root.exists():
+        return root / "app"
+    candidates = sorted(path for path in root.iterdir() if path.is_dir())
+    return candidates[0] if candidates else root / "app"
 
 
 # glob 결과를 기준 디렉토리 상대 경로 목록으로 반환한다.

@@ -717,7 +717,7 @@ def _ddd_model_from_context(context: DevRunnerContext) -> DDDScaffoldSpec | None
     )
 
 
-# 복수형 path segment를 StudyHub 도메인 단수 표현으로 변환한다.
+# 복수형 path segment를 도메인 단수 표현으로 변환한다.
 def _singular_domain(value: str) -> str:
     aliases = {
         "members": "member",
@@ -782,18 +782,55 @@ def _camel_case(value: str) -> str:
     return value[:1].lower() + value[1:]
 
 
+# 현재 서버의 bootstrap 모듈 root를 찾는다.
+def _bootstrap_module_root(context: DevRunnerContext) -> Path:
+    bootstrap_root = context.repo_path / "apps/server/modules/bootstrap"
+    candidates = sorted(path for path in bootstrap_root.iterdir() if path.is_dir()) if bootstrap_root.exists() else []
+    if candidates:
+        return candidates[0]
+    return bootstrap_root / "app"
+
+
+# Kotlin 파일에서 첫 package 선언을 찾아 반환한다.
+def _first_package_under(root: Path) -> str | None:
+    if not root.exists():
+        return None
+    for kotlin_file in sorted(root.rglob("*.kt")):
+        match = re.search(r"^package\s+([A-Za-z0-9_.]+)", kotlin_file.read_text(encoding="utf-8"), re.MULTILINE)
+        if match:
+            return match.group(1)
+    return None
+
+
+# application layer에 사용할 package 이름을 현재 프로젝트 구조에서 추론한다.
+def _application_package(context: DevRunnerContext) -> str:
+    application_root = context.repo_path / "apps/server/modules/application/src/main/kotlin"
+    existing_package = _first_package_under(application_root)
+    if existing_package:
+        return existing_package.rsplit(".", 1)[0] if existing_package.endswith(".member") else existing_package
+
+    bootstrap_package = _first_package_under(_bootstrap_module_root(context) / "src/main/kotlin")
+    if bootstrap_package:
+        return bootstrap_package.replace(".bootstrap", ".application")
+
+    project_name = re.sub(r"[^0-9a-zA-Z]+", "", context.repo_path.name).lower() or "app"
+    return f"com.{project_name}.server.application"
+
+
 # DDD application layer scaffold 파일들을 생성하고 상대 경로 목록을 반환한다.
 def _write_ddd_scaffold(context: DevRunnerContext, spec: DDDScaffoldSpec) -> list[str]:
+    application_package = _application_package(context)
     base_dir = (
         context.repo_path
-        / "apps/server/modules/application/src/main/kotlin/com/studyhub/server/application"
+        / "apps/server/modules/application/src/main/kotlin"
+        / Path(*application_package.split("."))
         / spec.domain
     )
     files = {
-        base_dir / f"{spec.usecase_name}Command.kt": _ddd_command_content(spec),
-        base_dir / f"{spec.usecase_name}Result.kt": _ddd_result_content(spec),
-        base_dir / f"{spec.usecase_name}Service.kt": _ddd_service_content(spec),
-        base_dir / f"{spec.domain_class}PolicyChecker.kt": _ddd_policy_checker_content(spec),
+        base_dir / f"{spec.usecase_name}Command.kt": _ddd_command_content(spec, application_package),
+        base_dir / f"{spec.usecase_name}Result.kt": _ddd_result_content(spec, application_package),
+        base_dir / f"{spec.usecase_name}Service.kt": _ddd_service_content(spec, application_package),
+        base_dir / f"{spec.domain_class}PolicyChecker.kt": _ddd_policy_checker_content(spec, application_package),
     }
     changed_paths = []
     for path, content in files.items():
@@ -805,10 +842,10 @@ def _write_ddd_scaffold(context: DevRunnerContext, spec: DDDScaffoldSpec) -> lis
 
 
 # DDD Command data class의 Kotlin 소스 내용을 생성한다.
-def _ddd_command_content(spec: DDDScaffoldSpec) -> str:
+def _ddd_command_content(spec: DDDScaffoldSpec, application_package: str) -> str:
     return "\n".join(
         [
-            f"package com.studyhub.server.application.{spec.domain}",
+            f"package {application_package}.{spec.domain}",
             "",
             f"data class {spec.usecase_name}Command(",
             "    val requestedBy: String? = null,",
@@ -819,10 +856,10 @@ def _ddd_command_content(spec: DDDScaffoldSpec) -> str:
 
 
 # DDD Result data class의 Kotlin 소스 내용을 생성한다.
-def _ddd_result_content(spec: DDDScaffoldSpec) -> str:
+def _ddd_result_content(spec: DDDScaffoldSpec, application_package: str) -> str:
     return "\n".join(
         [
-            f"package com.studyhub.server.application.{spec.domain}",
+            f"package {application_package}.{spec.domain}",
             "",
             f"data class {spec.usecase_name}Result(",
             "    val id: Long? = null,",
@@ -833,10 +870,10 @@ def _ddd_result_content(spec: DDDScaffoldSpec) -> str:
 
 
 # usecase-orchestration-style을 반영한 application service 내용을 생성한다.
-def _ddd_service_content(spec: DDDScaffoldSpec) -> str:
+def _ddd_service_content(spec: DDDScaffoldSpec, application_package: str) -> str:
     return "\n".join(
         [
-            f"package com.studyhub.server.application.{spec.domain}",
+            f"package {application_package}.{spec.domain}",
             "",
             f"class {spec.usecase_name}Service(",
             f"    private val {spec.domain}PolicyChecker: {spec.domain_class}PolicyChecker,",
@@ -853,10 +890,10 @@ def _ddd_service_content(spec: DDDScaffoldSpec) -> str:
 
 
 # 책임 객체 public method에 한국어 한 줄 주석을 포함한 정책 검증 scaffold를 생성한다.
-def _ddd_policy_checker_content(spec: DDDScaffoldSpec) -> str:
+def _ddd_policy_checker_content(spec: DDDScaffoldSpec, application_package: str) -> str:
     return "\n".join(
         [
-            f"package com.studyhub.server.application.{spec.domain}",
+            f"package {application_package}.{spec.domain}",
             "",
             f"class {spec.domain_class}PolicyChecker {{",
             f"    // {spec.domain_class} 유스케이스를 수행할 수 있는 도메인 정책 상태인지 검증한다.",
@@ -888,8 +925,8 @@ def _extract_sql_ddl(context: DevRunnerContext) -> str | None:
 # 기존 Flyway migration 번호 다음 번호로 새 migration 경로를 만든다.
 def _next_migration_path(context: DevRunnerContext) -> Path:
     migration_dir = (
-        context.repo_path
-        / "apps/server/modules/bootstrap/studyhub/src/main/resources/db/migration"
+        _bootstrap_module_root(context)
+        / "src/main/resources/db/migration"
     )
     migration_dir.mkdir(parents=True, exist_ok=True)
     versions = []
@@ -974,8 +1011,8 @@ def _requests_controller_data_class_split(markdown: str) -> bool:
 # controller 파일 안의 data class를 같은 패키지의 별도 파일로 분리한다.
 def _split_controller_data_classes(context: DevRunnerContext) -> list[RefactorSplitResult]:
     source_root = (
-        context.repo_path
-        / "apps/server/modules/bootstrap/studyhub/src/main/kotlin"
+        _bootstrap_module_root(context)
+        / "src/main/kotlin"
     )
     if not source_root.exists():
         return []
@@ -1056,7 +1093,7 @@ def _find_kotlin_class_end(text: str, start_index: int) -> int:
 # Kotlin package 선언을 추출한다.
 def _extract_package_name(text: str) -> str:
     match = re.search(r"^package\s+([A-Za-z0-9_.]+)", text, re.MULTILINE)
-    return match.group(1) if match else "com.studyhub.server.bootstrap"
+    return match.group(1) if match else "com.example.server.bootstrap"
 
 
 # 리팩터링 결과를 Markdown으로 변환한다.

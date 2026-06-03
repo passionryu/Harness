@@ -180,7 +180,7 @@ export class SignupApiError extends Error {
   }
 }
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_STUDYHUB_API_BASE_URL ?? "http://localhost:3001"
+const apiBaseUrl = process.env.NEXT_PUBLIC_TARGET_API_BASE_URL ?? "http://localhost:3001"
 
 export function toSignupMemberRequest(values: SignupFormValues): SignupMemberRequest {
   return {
@@ -306,7 +306,7 @@ export function SignupForm() {
     setIsSubmitting(true)
     try {
       const member = await signupMember(values)
-      setSubmitMessage(`${member.name}님, StudyHub 회원가입이 완료되었습니다.`)
+      setSubmitMessage(`${member.name}님, 회원가입이 완료되었습니다.`)
       setValues(initialValues)
       setSubmitted(false)
     } catch (error) {
@@ -396,10 +396,10 @@ const contents = Object.fromEntries(
 
 const checks = [
   [contents.signupApi.includes("/api/members/signup"), "회원가입 API endpoint 확인"],
-  [contents.signupApi.includes("NEXT_PUBLIC_STUDYHUB_API_BASE_URL"), "API base URL 환경변수 확인"],
+  [contents.signupApi.includes("NEXT_PUBLIC_TARGET_API_BASE_URL"), "API base URL 환경변수 확인"],
   [contents.signupApi.includes("toSignupMemberRequest"), "request 변환 함수 확인"],
   [contents.signupForm.includes("await signupMember(values)"), "회원가입 submit API 호출 확인"],
-  [contents.signupForm.includes("StudyHub 회원가입이 완료되었습니다."), "성공 메시지 확인"],
+  [contents.signupForm.includes("회원가입이 완료되었습니다."), "성공 메시지 확인"],
   [contents.signupForm.includes("가입 처리 중..."), "제출 중 상태 확인"],
   [contents.validation.includes("비밀번호가 서로 일치하지 않습니다."), "한국어 검증 메시지 확인"],
 ]

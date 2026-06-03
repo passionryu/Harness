@@ -9,7 +9,7 @@ from orchestrator.main import app
 
 def test_task_lifecycle(tmp_path, monkeypatch):
     artifact_root = tmp_path / "artifacts"
-    target_repo = tmp_path / "studyHub"
+    target_repo = tmp_path / "targetApp"
     target_repo.mkdir()
     repo = Repo.init(target_repo)
     (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")

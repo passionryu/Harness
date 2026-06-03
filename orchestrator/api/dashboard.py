@@ -65,7 +65,7 @@ def dashboard_home(
               </div>
             </section>
             <p class="hint">
-              기본 목록은 GitHub issue number가 있는 실제 StudyHub 작업만 보여줍니다.
+              기본 목록은 GitHub issue number가 있는 실제 프로젝트 작업만 보여줍니다.
               과거 테스트/수동 task는 “내부 task 포함”에서 확인할 수 있습니다.
             </p>
             <section class="panel">

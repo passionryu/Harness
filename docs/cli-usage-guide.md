@@ -67,10 +67,10 @@ python -m ai_harness.cli --help
 ```env
 DATABASE_URL=sqlite:///./ai_harness.db
 ARTIFACT_ROOT=artifacts
-TARGET_REPO_PATH=/Users/rsy/Desktop/myPlayGround/studyHub
+TARGET_REPO_PATH=/Users/rsy/Desktop/myPlayGround/targetApp
 
 GITHUB_OWNER=passionryu
-GITHUB_REPO=studyHub
+GITHUB_REPO=targetApp
 GITHUB_TOKEN=...
 
 ENABLE_GITHUB_COMMENT_COMMANDS=false

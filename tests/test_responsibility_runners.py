@@ -18,18 +18,27 @@ from agents.runners.responsibility_runners import (
 )
 
 
-# 테스트용 DevRunnerContext를 최소 StudyHub 저장소 구조와 함께 만든다.
+# 테스트용 DevRunnerContext를 최소 Target service 저장소 구조와 함께 만든다.
 def _make_context(tmp_path: Path, body: str, issue_type: str = "beFeature") -> DevRunnerContext:
-    repo_path = tmp_path / "studyHub"
+    repo_path = tmp_path / "targetApp"
     migration_dir = (
         repo_path
-        / "apps/server/modules/bootstrap/studyhub/src/main/resources/db/migration"
+        / "apps/server/modules/bootstrap/app/src/main/resources/db/migration"
     )
     migration_dir.mkdir(parents=True)
+    app_file = repo_path / "apps/server/modules/bootstrap/app/src/main/kotlin/com/example/server/bootstrap/TargetApplication.kt"
+    app_file.parent.mkdir(parents=True)
+    app_file.write_text("package com.example.server.bootstrap\n", encoding="utf-8")
     (repo_path / "apps/server/build.gradle.kts").write_text("", encoding="utf-8")
     (migration_dir / "V1__init.sql").write_text("create table sample(id bigint);\n", encoding="utf-8")
     repo = Repo.init(repo_path)
-    repo.index.add(["apps/server/build.gradle.kts", "apps/server/modules/bootstrap/studyhub/src/main/resources/db/migration/V1__init.sql"])
+    repo.index.add(
+        [
+            "apps/server/build.gradle.kts",
+            "apps/server/modules/bootstrap/app/src/main/kotlin/com/example/server/bootstrap/TargetApplication.kt",
+            "apps/server/modules/bootstrap/app/src/main/resources/db/migration/V1__init.sql",
+        ]
+    )
     repo.index.commit("Initial commit")
     task_dir = tmp_path / "artifacts" / str(uuid4()) / "dev"
     task_dir.mkdir(parents=True)
@@ -87,7 +96,7 @@ def test_db_migration_runner_applies_explicit_sql(tmp_path):
     assert result.status == AgentStatus.SUCCESS
     migration = (
         context.repo_path
-        / "apps/server/modules/bootstrap/studyhub/src/main/resources/db/migration/V2__테스트_기능.sql"
+        / "apps/server/modules/bootstrap/app/src/main/resources/db/migration/V2__테스트_기능.sql"
     )
     assert migration.exists()
     assert "login_id" in migration.read_text(encoding="utf-8")
@@ -114,7 +123,7 @@ def test_ddd_modeling_runner_creates_usecase_scaffold(tmp_path):
     assert result.status == AgentStatus.NEEDS_HUMAN
     base_dir = (
         context.repo_path
-        / "apps/server/modules/application/src/main/kotlin/com/studyhub/server/application/member"
+        / "apps/server/modules/application/src/main/kotlin/com/example/server/application/member"
     )
     command = base_dir / "RegisterMemberCommand.kt"
     service = base_dir / "RegisterMemberService.kt"
@@ -141,14 +150,14 @@ def test_refactoring_runner_splits_controller_data_classes(tmp_path):
     )
     controller_dir = (
         context.repo_path
-        / "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/presentation/member"
+        / "apps/server/modules/bootstrap/app/src/main/kotlin/com/example/server/bootstrap/presentation/member"
     )
     controller_dir.mkdir(parents=True)
     controller = controller_dir / "MemberController.kt"
     controller.write_text(
         "\n".join(
             [
-                "package com.studyhub.server.bootstrap.presentation.member",
+                "package com.example.server.bootstrap.presentation.member",
                 "",
                 "import org.springframework.web.bind.annotation.RestController",
                 "",

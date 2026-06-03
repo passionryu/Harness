@@ -47,7 +47,7 @@ def test_github_plan_label_webhook_triggers_plan(tmp_path, monkeypatch):
             "number": issue_number,
             "title": "[FE] 회원 가입 기능 구현",
             "body": "회원가입 화면을 추가한다.",
-            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
             "labels": [{"name": "ai-plan-ready"}],
         },
     }
@@ -106,7 +106,7 @@ def test_github_issue_comment_commands_are_disabled_when_setting_is_off(monkeypa
             "number": 1,
             "title": "[FE] 회원 가입 기능 구현",
             "body": "회원가입 화면을 추가한다.",
-            "html_url": "https://github.com/passionryu/studyHub/issues/1",
+            "html_url": "https://github.com/passionryu/targetApp/issues/1",
         },
         "comment": {"body": "@ai-harness plan"},
     }
@@ -144,7 +144,7 @@ def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
 
     monkeypatch.setattr(orchestration.settings, "github_token", "token")
     monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
-    monkeypatch.setattr(orchestration.settings, "github_repo", "studyHub")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "targetApp")
     monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
 
     from orchestrator.db.session import SessionLocal, create_db
@@ -170,7 +170,7 @@ def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
                     "- 사용자가 회원가입 화면으로 이동할 수 있다.",
                 ]
             ),
-            issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            issue_url=f"https://github.com/passionryu/targetApp/issues/{issue_number}",
         )
 
     assert event.message == "Plan Agent 실행이 완료되어 Plan Review에서 사람 승인을 기다립니다."
@@ -312,7 +312,7 @@ def test_issue_comment_replan_command_forces_new_plan(tmp_path, monkeypatch):
                     "- 사용자가 회원가입 화면으로 이동할 수 있다.",
                 ]
             ),
-            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
         },
         "comment": {
             "body": "\n".join(
@@ -364,7 +364,7 @@ def test_issue_comment_plan_command_triggers_initial_plan(tmp_path, monkeypatch)
             "number": issue_number,
             "title": "[FE] 회원 가입 기능 구현",
             "body": "회원가입 화면을 추가한다.",
-            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
             "labels": [{"name": "type: feFeature"}],
         },
         "comment": {"body": "@ai-harness plan"},
@@ -408,7 +408,7 @@ def test_issue_comment_status_command_comments_current_state(tmp_path, monkeypat
 
     monkeypatch.setattr(orchestration.settings, "github_token", "token")
     monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
-    monkeypatch.setattr(orchestration.settings, "github_repo", "studyHub")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "targetApp")
     monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
 
     issue_number = uuid4().int % 1_000_000_000
@@ -416,7 +416,7 @@ def test_issue_comment_status_command_comments_current_state(tmp_path, monkeypat
         "number": issue_number,
         "title": "[FE] 회원 가입 기능 구현",
         "body": "회원가입 화면을 추가한다.",
-        "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
         "labels": [{"name": "type: feFeature"}],
     }
 
@@ -475,7 +475,7 @@ def test_issue_comment_cancel_command_marks_task_cancelled(tmp_path, monkeypatch
 
     monkeypatch.setattr(orchestration.settings, "github_token", "token")
     monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
-    monkeypatch.setattr(orchestration.settings, "github_repo", "studyHub")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "targetApp")
     monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
 
     issue_number = uuid4().int % 1_000_000_000
@@ -483,7 +483,7 @@ def test_issue_comment_cancel_command_marks_task_cancelled(tmp_path, monkeypatch
         "number": issue_number,
         "title": "[BE] 회원가입 API 구현",
         "body": "회원가입 API를 추가한다.",
-        "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
         "labels": [{"name": "type: beFeature"}],
     }
 
@@ -546,7 +546,7 @@ def test_plan_agent_uses_backend_feature_profile(tmp_path, monkeypatch):
                     "- 서버 빌드가 통과한다.",
                 ]
             ),
-            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
             "labels": [{"name": "type: beFeature"}],
         },
         "comment": {"body": "@ai-harness plan"},
@@ -595,7 +595,7 @@ def test_backend_plan_comment_uses_backend_profile(tmp_path, monkeypatch):
 
     monkeypatch.setattr(orchestration.settings, "github_token", "token")
     monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
-    monkeypatch.setattr(orchestration.settings, "github_repo", "studyHub")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "targetApp")
     monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
 
     from orchestrator.db.session import SessionLocal, create_db
@@ -618,7 +618,7 @@ def test_backend_plan_comment_uses_backend_profile(tmp_path, monkeypatch):
                     "- 비밀번호는 해싱되어 저장된다.",
                 ]
             ),
-            issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            issue_url=f"https://github.com/passionryu/targetApp/issues/{issue_number}",
             issue_labels=["type: beFeature"],
         )
 
@@ -649,7 +649,7 @@ def test_issue_comment_plan_command_skips_duplicate_successful_plan(tmp_path, mo
 
     monkeypatch.setattr(orchestration.settings, "github_token", "token")
     monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
-    monkeypatch.setattr(orchestration.settings, "github_repo", "studyHub")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "targetApp")
     monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
 
     issue_number = uuid4().int % 1_000_000_000
@@ -659,7 +659,7 @@ def test_issue_comment_plan_command_skips_duplicate_successful_plan(tmp_path, mo
             "number": issue_number,
             "title": "[FE] 회원 가입 기능 구현",
             "body": "회원가입 화면을 추가한다.",
-            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
         },
         "comment": {"body": "@ai-harness plan"},
     }
@@ -701,13 +701,13 @@ def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monk
     monkeypatch.setattr(routes.settings, "develop_command", "@ai-harness develop")
     monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
     monkeypatch.setattr(orchestration.settings, "github_token", None)
-    target_repo = tmp_path / "studyHub"
+    target_repo = tmp_path / "targetApp"
     target_repo.mkdir()
     repo = Repo.init(target_repo)
     (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
     (target_repo / "apps/web").mkdir(parents=True)
     (target_repo / "apps/web/package.json").write_text(
-        json.dumps({"name": "@studyhub/web", "private": True, "scripts": {}}),
+        json.dumps({"name": "@app/web", "private": True, "scripts": {}}),
         encoding="utf-8",
     )
     repo.index.add(["README.md"])
@@ -720,7 +720,7 @@ def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monk
         "number": issue_number,
         "title": "[FE] 회원 가입 기능 구현",
         "body": "회원가입 화면을 추가한다.",
-        "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
         "labels": [{"name": "type: feFeature"}],
     }
 
@@ -791,7 +791,7 @@ def test_issue_comment_develop_command_without_plan_is_ignored(monkeypatch):
             "number": issue_number,
             "title": "[FE] 회원 가입 기능 구현",
             "body": "회원가입 화면을 추가한다.",
-            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
             "labels": [{"name": "type: feFeature"}],
         },
         "comment": {"body": "@ai-harness develop"},
@@ -820,7 +820,7 @@ def test_fix_develop_command_is_deprecated(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
     monkeypatch.setattr(orchestration.settings, "github_token", "token")
     monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
-    monkeypatch.setattr(orchestration.settings, "github_repo", "studyHub")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "targetApp")
 
     captured: dict[str, str] = {}
 
@@ -853,7 +853,7 @@ def test_fix_develop_command_is_deprecated(tmp_path, monkeypatch):
                 ]
             ),
             github_issue_number=issue_number,
-            github_issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            github_issue_url=f"https://github.com/passionryu/targetApp/issues/{issue_number}",
             state="Dev Review",
         )
         db.add(task)
@@ -892,7 +892,7 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
     monkeypatch.setattr(routes.settings, "develop_command", "@ai-harness develop")
     monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
     monkeypatch.setattr(orchestration.settings, "github_token", None)
-    target_repo = tmp_path / "studyHub"
+    target_repo = tmp_path / "targetApp"
     (target_repo / "apps/server").mkdir(parents=True)
     repo = Repo.init(target_repo)
     (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
@@ -900,8 +900,8 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
         "plugins { kotlin(\"jvm\") version \"2.0.0\" }\n",
         encoding="utf-8",
     )
-    (target_repo / "apps/server/modules/bootstrap/studyhub").mkdir(parents=True)
-    (target_repo / "apps/server/modules/bootstrap/studyhub/build.gradle.kts").write_text(
+    (target_repo / "apps/server/modules/bootstrap/app").mkdir(parents=True)
+    (target_repo / "apps/server/modules/bootstrap/app/build.gradle.kts").write_text(
         "\n".join(
             [
                 "dependencies {",
@@ -916,7 +916,7 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
         [
             "README.md",
             "apps/server/build.gradle.kts",
-            "apps/server/modules/bootstrap/studyhub/build.gradle.kts",
+            "apps/server/modules/bootstrap/app/build.gradle.kts",
         ]
     )
     repo.index.commit("Initial commit")
@@ -927,7 +927,7 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
         "number": issue_number,
         "title": "[BE] 회원가입 API 구현",
         "body": "회원가입 API를 추가한다.",
-        "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
         "labels": [{"name": "type: beFeature"}],
     }
 
@@ -986,7 +986,7 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
     ).read_text()
     assert not (
         target_repo
-        / "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/presentation/member/MemberSignupController.kt"
+        / "apps/server/modules/bootstrap/app/src/main/kotlin/com/example/server/bootstrap/presentation/member/MemberSignupController.kt"
     ).exists()
 
 
@@ -997,13 +997,13 @@ def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monk
     monkeypatch.setattr(routes.settings, "develop_command", "@ai-harness develop")
     monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
     monkeypatch.setattr(orchestration.settings, "github_token", None)
-    target_repo = tmp_path / "studyHub"
+    target_repo = tmp_path / "targetApp"
     target_repo.mkdir()
     repo = Repo.init(target_repo)
     (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
     (target_repo / "apps/web").mkdir(parents=True)
     (target_repo / "apps/web/package.json").write_text(
-        json.dumps({"name": "@studyhub/web", "private": True, "scripts": {}}),
+        json.dumps({"name": "@app/web", "private": True, "scripts": {}}),
         encoding="utf-8",
     )
     repo.index.add(["README.md"])
@@ -1035,7 +1035,7 @@ def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monk
         "number": issue_number,
         "title": "[FE] 회원 가입 기능 구현",
         "body": "회원가입 화면을 추가한다.",
-        "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
         "labels": [{"name": "type: feFeature"}],
     }
 
@@ -1112,13 +1112,13 @@ def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypa
     monkeypatch.setattr(routes.settings, "refactor_command", "@ai-harness refactor")
     monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
     monkeypatch.setattr(orchestration.settings, "github_token", None)
-    target_repo = tmp_path / "studyHub"
+    target_repo = tmp_path / "targetApp"
     target_repo.mkdir()
     repo = Repo.init(target_repo)
     (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
     (target_repo / "apps/web").mkdir(parents=True)
     (target_repo / "apps/web/package.json").write_text(
-        json.dumps({"name": "@studyhub/web", "private": True, "scripts": {}}),
+        json.dumps({"name": "@app/web", "private": True, "scripts": {}}),
         encoding="utf-8",
     )
     repo.index.add(["README.md"])
@@ -1154,7 +1154,7 @@ def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypa
         "number": issue_number,
         "title": "[FE] 회원 가입 기능 구현",
         "body": "회원가입 화면을 추가한다.",
-        "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
         "labels": [{"name": "type: feFeature"}],
     }
 
@@ -1252,7 +1252,7 @@ def test_refactor_command_allows_successful_fix_develop_run(tmp_path, monkeypatc
             title="[FS] [기능 수정] 로그인 아이디 기반 회원가입/로그인 구조를 추가한다.",
             body="로그인 아이디 기반 회원가입/로그인 구조를 추가한다.",
             github_issue_number=issue_number,
-            github_issue_url=f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            github_issue_url=f"https://github.com/passionryu/targetApp/issues/{issue_number}",
             state="QA Review",
         )
         db.add(task)
@@ -1366,13 +1366,13 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
         "https://discord.com/api/webhooks/test/token",
     )
 
-    target_repo = tmp_path / "studyHub"
+    target_repo = tmp_path / "targetApp"
     target_repo.mkdir()
     repo = Repo.init(target_repo)
     (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
     (target_repo / "apps/web").mkdir(parents=True)
     (target_repo / "apps/web/package.json").write_text(
-        json.dumps({"name": "@studyhub/web", "private": True, "scripts": {}}),
+        json.dumps({"name": "@app/web", "private": True, "scripts": {}}),
         encoding="utf-8",
     )
     repo.index.add(["README.md"])
@@ -1415,7 +1415,7 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
             encoding="utf-8",
         )
         (target_repo / "apps/web/package.json").write_text(
-            json.dumps({"name": "@studyhub/web", "private": True, "scripts": {"test:signup": "node scripts/verify-signup-page.mjs"}}),
+            json.dumps({"name": "@app/web", "private": True, "scripts": {"test:signup": "node scripts/verify-signup-page.mjs"}}),
             encoding="utf-8",
         )
         run = Run(
@@ -1439,7 +1439,7 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
         "number": issue_number,
         "title": "[FE] 회원 가입 기능 구현",
         "body": "회원가입 화면을 추가한다.",
-        "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+        "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
         "labels": [{"name": "type: feFeature"}],
     }
 
@@ -1575,7 +1575,7 @@ def test_issue_comment_qa_command_without_development_is_ignored(monkeypatch):
             "number": issue_number,
             "title": "[FE] 회원 가입 기능 구현",
             "body": "회원가입 화면을 추가한다.",
-            "html_url": f"https://github.com/passionryu/studyHub/issues/{issue_number}",
+            "html_url": f"https://github.com/passionryu/targetApp/issues/{issue_number}",
             "labels": [{"name": "type: feFeature"}],
         },
         "comment": {"body": "@ai-harness qa"},
@@ -1611,7 +1611,7 @@ def test_issue_comment_ignores_commands_not_on_first_content_line(monkeypatch):
             "number": uuid4().int % 1_000_000_000,
             "title": "[FE] 회원 가입 기능 구현",
             "body": "회원가입 화면을 추가한다.",
-            "html_url": "https://github.com/passionryu/studyHub/issues/1",
+            "html_url": "https://github.com/passionryu/targetApp/issues/1",
         },
         "comment": {
             "body": "\n".join(
@@ -1654,7 +1654,7 @@ def test_issue_comment_ignores_ai_harness_generated_comment(monkeypatch):
             "number": uuid4().int % 1_000_000_000,
             "title": "[FE] 회원 가입 기능 구현",
             "body": "회원가입 화면을 추가한다.",
-            "html_url": "https://github.com/passionryu/studyHub/issues/1",
+            "html_url": "https://github.com/passionryu/targetApp/issues/1",
         },
         "comment": {
             "body": "\n".join(

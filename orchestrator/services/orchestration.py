@@ -1946,10 +1946,10 @@ class OrchestrationService:
                 "http://localhost:3000/signup",
                 "",
                 "Swagger 주소:",
-                settings.studyhub_swagger_url,
+                settings.target_swagger_url,
                 "",
                 "API 확인 URL:",
-                settings.studyhub_api_base_url,
+                settings.target_api_base_url,
             ]
             if issue_type in {"beFeature", "apiConnect", "fullstackFeature"}
             else [

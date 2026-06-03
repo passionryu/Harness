@@ -52,7 +52,7 @@ CHECK_NAME_KO = {
     "frontend page content is visible": "프론트엔드 화면 주요 문구 확인",
     "test:signup script exists": "test:signup 스크립트 존재",
     "test:signup passes": "test:signup 통과",
-    "StudyHub API server is reachable": "StudyHub API 서버 응답",
+    "Target API server is reachable": "대상 API 서버 응답",
     "backend happy smoke test passes": "백엔드 해피케이스 smoke test 통과",
     "config security test passes": "Config Security 설정 테스트 통과",
     "config backend health is UP": "Config 백엔드 health UP",
@@ -311,21 +311,21 @@ def _curl_json(
 
 
 def _api_url(path: str) -> str:
-    return urljoin(settings.studyhub_api_base_url.rstrip("/") + "/", path.lstrip("/"))
+    return urljoin(settings.target_api_base_url.rstrip("/") + "/", path.lstrip("/"))
 
 
 # settings.gradle.kts에서 bootstrap 모듈명을 찾아 현재 프로젝트의 실행 모듈을 결정한다.
 def _bootstrap_module_name(repo_path: Path) -> str:
     settings_file = repo_path / "apps/server/settings.gradle.kts"
     if not settings_file.exists():
-        return "studyhub"
+        return "app"
 
     text = settings_file.read_text(encoding="utf-8")
     for line in text.splitlines():
         stripped = line.strip().strip(",").strip('"')
         if stripped.startswith(":modules:bootstrap:"):
             return stripped.removeprefix(":modules:bootstrap:")
-    return "studyhub"
+    return "app"
 
 
 # Gradle에서 사용할 bootstrap project path를 반환한다.
@@ -351,7 +351,7 @@ def _is_api_alive() -> bool:
     return exit_code == 0 and status_code is not None and 200 <= status_code < 500
 
 
-def _start_studyhub_api_if_needed(repo_path: Path, timeout_seconds: int) -> tuple[subprocess.Popen[str] | None, str]:
+def _start_target_api_if_needed(repo_path: Path, timeout_seconds: int) -> tuple[subprocess.Popen[str] | None, str]:
     if _is_api_alive():
         return None, f"이미 실행 중인 {_target_project_label(repo_path)} API 서버를 사용했습니다."
 
@@ -359,7 +359,7 @@ def _start_studyhub_api_if_needed(repo_path: Path, timeout_seconds: int) -> tupl
     if not server_root.exists():
         return None, f"{_target_project_label(repo_path)} 서버 디렉토리를 찾지 못했습니다."
 
-    port = settings.studyhub_api_base_url.rsplit(":", 1)[-1].split("/", 1)[0]
+    port = settings.target_api_base_url.rsplit(":", 1)[-1].split("/", 1)[0]
     gradle_module = _bootstrap_gradle_path(repo_path)
     process = _run_background_command(
         [
@@ -375,7 +375,7 @@ def _start_studyhub_api_if_needed(repo_path: Path, timeout_seconds: int) -> tupl
             stdout, stderr = process.communicate(timeout=5)
             return None, f"{_target_project_label(repo_path)} API 서버 시작 실패. stdout={stdout[-1000:]}, stderr={stderr[-1000:]}"
         if _is_api_alive():
-            return process, f"{_target_project_label(repo_path)} API 서버를 {settings.studyhub_api_base_url} 에서 시작했습니다."
+            return process, f"{_target_project_label(repo_path)} API 서버를 {settings.target_api_base_url} 에서 시작했습니다."
         time.sleep(2)
 
     process.terminate()
@@ -394,7 +394,7 @@ def _stop_process(process: subprocess.Popen[str] | None) -> None:
 
 def _signup_cases() -> tuple[ApiSmokeCase, list[ApiSmokeCase]]:
     unique = int(time.time())
-    email = f"qa-smoke-{unique}@studyhub.local"
+    email = f"qa-smoke-{unique}@example.local"
     happy = ApiSmokeCase(
         name="회원가입 해피케이스",
         path="/api/members/signup",
@@ -431,7 +431,7 @@ def _signup_cases() -> tuple[ApiSmokeCase, list[ApiSmokeCase]]:
             path="/api/members/signup",
             request_json={
                 "name": "QA사용자",
-                "email": f"qa-short-password-{unique}@studyhub.local",
+                "email": f"qa-short-password-{unique}@example.local",
                 "password": "123",
                 "phone": None,
                 "interests": [],
@@ -568,14 +568,14 @@ def _verify_config_backend_health(timeout_seconds: int) -> ConfigQaCheckResult:
 def _verify_config_swagger(timeout_seconds: int) -> ConfigQaCheckResult:
     exit_code, response_body, stderr, status_code = _curl_json(
         "GET",
-        settings.studyhub_swagger_url,
+        settings.target_swagger_url,
         None,
         min(timeout_seconds, 10),
     )
     return ConfigQaCheckResult(
         name="Swagger 접근",
         passed=exit_code == 0 and status_code is not None and 200 <= status_code < 400,
-        target=f"GET {settings.studyhub_swagger_url}",
+        target=f"GET {settings.target_swagger_url}",
         expected="http_status=2xx 또는 3xx",
         actual=f"http_status={status_code}, response={response_body[:300] or stderr or '(응답 없음)'}",
     )
@@ -804,11 +804,11 @@ class QAAgent:
         if issue_type in {"beFeature", "apiConnect", "fullstackFeature"}:
             process: subprocess.Popen[str] | None = None
             try:
-                process, server_status = _start_studyhub_api_if_needed(
+                process, server_status = _start_target_api_if_needed(
                     repo_path,
                     input_data.timeout_seconds,
                 )
-                checks.append(("StudyHub API server is reachable", _is_api_alive(), server_status))
+                checks.append(("Target API server is reachable", _is_api_alive(), server_status))
                 if _is_api_alive():
                     happy_case, edge_cases = _signup_cases()
                     happy_result = _run_api_case(happy_case, input_data.timeout_seconds)
@@ -833,7 +833,7 @@ class QAAgent:
                         [
                             "## API Smoke Test 결과",
                             "",
-                            "- StudyHub API 서버가 응답하지 않아 curl smoke test를 실행하지 못했습니다.",
+                            "- 대상 API 서버가 응답하지 않아 curl smoke test를 실행하지 못했습니다.",
                             f"- server_status: {server_status}",
                         ]
                     )
@@ -850,11 +850,11 @@ class QAAgent:
 
                 process: subprocess.Popen[str] | None = None
                 try:
-                    process, server_status = _start_studyhub_api_if_needed(
+                    process, server_status = _start_target_api_if_needed(
                         repo_path,
                         input_data.timeout_seconds,
                     )
-                    checks.append(("StudyHub API server is reachable", _is_api_alive(), server_status))
+                    checks.append(("Target API server is reachable", _is_api_alive(), server_status))
                     if _is_api_alive():
                         config_results.extend(
                             [
@@ -869,8 +869,8 @@ class QAAgent:
                             ConfigQaCheckResult(
                                 name="백엔드 런타임",
                                 passed=False,
-                                target=settings.studyhub_api_base_url,
-                                expected="StudyHub API 서버 응답",
+                                target=settings.target_api_base_url,
+                                expected="대상 API 서버 응답",
                                 actual=server_status,
                             )
                         )
@@ -913,8 +913,8 @@ class QAAgent:
             checklist_source = FE_HUMAN_QA_CHECKLIST
         human_qa_lines = [f"- [ ] {item}" for item in checklist_source]
         qa_request = _extract_section(input_data.body, "Human QA Request")
-        swagger_url = settings.studyhub_swagger_url if issue_type in {"beFeature", "apiConnect", "fullstackFeature", "config"} else "N/A"
-        check_url = settings.frontend_base_url if issue_type == "feFeature" else settings.studyhub_api_base_url
+        swagger_url = settings.target_swagger_url if issue_type in {"beFeature", "apiConnect", "fullstackFeature", "config"} else "N/A"
+        check_url = settings.frontend_base_url if issue_type == "feFeature" else settings.target_api_base_url
 
         report = task_dir / "qa-report.md"
         report.write_text(

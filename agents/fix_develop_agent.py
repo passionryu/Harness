@@ -161,7 +161,7 @@ def _checkout_branch(repo: Repo, branch_name: str) -> str:
 
 # CORS 테스트가 Security 필터에 막히지 않도록 테스트 구성을 보정한다.
 def _apply_cors_preflight_test_fix(repo_path: Path) -> list[str]:
-    test_path = repo_path / "apps/server/modules/bootstrap/studyhub/src/test/kotlin/com/studyhub/server/bootstrap/config/WebCorsConfigurationTest.kt"
+    test_path = repo_path / "apps/server/modules/bootstrap/app/src/test/kotlin/com/example/server/bootstrap/config/WebCorsConfigurationTest.kt"
     if not test_path.exists():
         return []
 

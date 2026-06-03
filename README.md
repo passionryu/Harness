@@ -91,7 +91,7 @@ Configure `.env` with:
 
 ```env
 GITHUB_OWNER=passionryu
-GITHUB_REPO=studyHub
+GITHUB_REPO=targetApp
 GITHUB_TOKEN=...
 GITHUB_WEBHOOK_SECRET=...
 ENABLE_GITHUB_COMMENT_COMMANDS=false
@@ -130,10 +130,10 @@ GitHub issue comments are not used as human command input anymore:
 
 External notifications are blocked by default. Set `ALLOW_EXTERNAL_NOTIFICATIONS=true` only when you intentionally want real Google Chat or Discord messages to be sent. When enabled, `GOOGLE_CHAT_WEBHOOK_URL` or `DISCORD_WEBHOOK_URL` receives a notification after System QA or re-QA passes.
 
-For the current StudyHub frontend, run the web app locally from the target repository:
+For the current Target service frontend, run the web app locally from the target repository:
 
 ```bash
-cd /Users/rsy/Desktop/myPlayGround/studyHub
+cd /Users/rsy/Desktop/myPlayGround/targetApp
 pnpm --dir apps/web dev
 ```
 

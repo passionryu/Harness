@@ -85,7 +85,7 @@ def test_fe_qa_agent_requires_frontend_runtime_before_human_qa(tmp_path, monkeyp
 
 
 def test_be_qa_agent_reports_curl_smoke_details_and_human_checklist(tmp_path, monkeypatch):
-    target_repo = tmp_path / "studyHub"
+    target_repo = tmp_path / "targetApp"
     target_repo.mkdir()
     repo = Repo.init(target_repo)
     (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
@@ -107,15 +107,15 @@ def test_be_qa_agent_reports_curl_smoke_details_and_human_checklist(tmp_path, mo
         path.write_text("ok\n", encoding="utf-8")
 
     monkeypatch.setattr(qa_agent.settings, "target_repo_path", target_repo)
-    monkeypatch.setattr(qa_agent.settings, "studyhub_api_base_url", "http://localhost:18080")
+    monkeypatch.setattr(qa_agent.settings, "target_api_base_url", "http://localhost:18080")
     monkeypatch.setattr(
         qa_agent.settings,
-        "studyhub_swagger_url",
+        "target_swagger_url",
         "http://localhost:18080/swagger-ui/index.html",
     )
     monkeypatch.setattr(
         qa_agent,
-        "_start_studyhub_api_if_needed",
+        "_start_target_api_if_needed",
         lambda repo_path, timeout_seconds: (None, "테스트 서버 사용"),
     )
     monkeypatch.setattr(qa_agent, "_is_api_alive", lambda: True)
@@ -170,20 +170,20 @@ def test_be_qa_agent_reports_curl_smoke_details_and_human_checklist(tmp_path, mo
 
 
 def test_config_qa_agent_runs_security_runtime_checks(tmp_path, monkeypatch):
-    target_repo = tmp_path / "studyHub"
+    target_repo = tmp_path / "targetApp"
     target_repo.mkdir()
     repo = Repo.init(target_repo)
     (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
     (target_repo / "apps/server").mkdir(parents=True)
     controller = (
         target_repo
-        / "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/presentation/TestController.kt"
+        / "apps/server/modules/bootstrap/app/src/main/kotlin/com/example/server/bootstrap/presentation/TestController.kt"
     )
     controller.parent.mkdir(parents=True, exist_ok=True)
     controller.write_text(
         "\n".join(
             [
-                "package com.studyhub.server.bootstrap.presentation",
+                "package com.example.server.bootstrap.presentation",
                 "",
                 "import org.springframework.web.bind.annotation.GetMapping",
                 "import org.springframework.web.bind.annotation.PostMapping",
@@ -209,7 +209,7 @@ def test_config_qa_agent_runs_security_runtime_checks(tmp_path, monkeypatch):
         [
             "README.md",
             "apps/server/docker-compose.infra.local.yml",
-            "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/presentation/TestController.kt",
+            "apps/server/modules/bootstrap/app/src/main/kotlin/com/example/server/bootstrap/presentation/TestController.kt",
         ]
     )
     repo.index.commit("Initial commit")
@@ -229,15 +229,15 @@ def test_config_qa_agent_runs_security_runtime_checks(tmp_path, monkeypatch):
         path.write_text("ok\n", encoding="utf-8")
 
     monkeypatch.setattr(qa_agent.settings, "target_repo_path", target_repo)
-    monkeypatch.setattr(qa_agent.settings, "studyhub_api_base_url", "http://localhost:3001")
+    monkeypatch.setattr(qa_agent.settings, "target_api_base_url", "http://localhost:3001")
     monkeypatch.setattr(
         qa_agent.settings,
-        "studyhub_swagger_url",
+        "target_swagger_url",
         "http://localhost:3001/swagger-ui/index.html",
     )
     monkeypatch.setattr(
         qa_agent,
-        "_start_studyhub_api_if_needed",
+        "_start_target_api_if_needed",
         lambda repo_path, timeout_seconds: (None, "테스트 서버 사용"),
     )
     monkeypatch.setattr(qa_agent, "_is_api_alive", lambda: True)
