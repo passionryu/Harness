@@ -1,4 +1,6 @@
 import logging
+import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -37,6 +39,116 @@ class OrchestrationService:
         self.state_machine = StateMachine()
         self.agent_registry = AgentRegistry()
         self.artifact_store = ArtifactStore(db)
+
+    # GitHub API 댓글 작성이 실패하면 gh CLI로 한 번 더 시도한다.
+    def _comment_on_github_issue(
+        self,
+        task: Task,
+        run_id: str | None,
+        issue_number: int,
+        body: str,
+        success_event: str,
+        failure_event: str,
+    ) -> bool:
+        api_error: str | None = None
+        if not settings.github_token:
+            self._audit(
+                task.id,
+                run_id,
+                failure_event,
+                {"issue_number": issue_number, "api_error": "GITHUB_TOKEN이 설정되어 있지 않습니다."},
+            )
+            return False
+
+        if settings.github_token:
+            try:
+                GitHubAdapter(settings.github_token).create_issue_comment(
+                    settings.github_owner,
+                    settings.github_repo,
+                    issue_number,
+                    body,
+                )
+                self._audit(
+                    task.id,
+                    run_id,
+                    success_event,
+                    {"issue_number": issue_number, "method": "github_api"},
+                )
+                return True
+            except Exception as exc:  # noqa: BLE001 - fallback decides final result
+                api_error = str(exc)
+
+        gh_result = self._comment_on_github_issue_with_gh(issue_number, body)
+        if gh_result[0]:
+            self._audit(
+                task.id,
+                run_id,
+                success_event,
+                {
+                    "issue_number": issue_number,
+                    "method": "gh_cli",
+                    "api_error": api_error,
+                },
+            )
+            return True
+
+        self._audit(
+            task.id,
+            run_id,
+            failure_event,
+            {
+                "issue_number": issue_number,
+                "api_error": api_error,
+                "gh_error": gh_result[1],
+            },
+        )
+        return False
+
+    # gh CLI 인증을 사용해 GitHub 이슈 댓글을 작성한다.
+    def _comment_on_github_issue_with_gh(self, issue_number: int, body: str) -> tuple[bool, str]:
+        repo = f"{settings.github_owner}/{settings.github_repo}"
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as file:
+            file.write(body)
+            body_path = Path(file.name)
+        try:
+            completed = subprocess.run(
+                [
+                    "gh",
+                    "issue",
+                    "comment",
+                    str(issue_number),
+                    "--repo",
+                    repo,
+                    "--body-file",
+                    str(body_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if completed.returncode == 0:
+                return True, ""
+            return False, (completed.stderr or completed.stdout or f"exit_code={completed.returncode}").strip()
+        except Exception as exc:  # noqa: BLE001 - caller records fallback failure
+            return False, str(exc)
+        finally:
+            body_path.unlink(missing_ok=True)
+
+    # task가 아직 없거나 로드되지 않은 안내 댓글도 가능한 범위에서 작성한다.
+    def _comment_on_github_issue_best_effort(self, issue_number: int, body: str) -> bool:
+        if settings.github_token:
+            try:
+                GitHubAdapter(settings.github_token).create_issue_comment(
+                    settings.github_owner,
+                    settings.github_repo,
+                    issue_number,
+                    body,
+                )
+                return True
+            except Exception:  # noqa: BLE001 - gh CLI fallback is intentionally best-effort
+                pass
+        return self._comment_on_github_issue_with_gh(issue_number, body)[0]
 
     def create_task(self, payload: TaskCreate) -> Task:
         task = Task(
@@ -158,18 +270,14 @@ class OrchestrationService:
                 "plan.skipped_duplicate",
                 {"issue_number": issue_number, "comment_on_duplicate": comment_on_duplicate},
             )
-            if settings.github_token and comment_on_duplicate:
-                GitHubAdapter(settings.github_token).create_issue_comment(
-                    settings.github_owner,
-                    settings.github_repo,
+            if comment_on_duplicate:
+                self._comment_on_github_issue(
+                    task,
+                    None,
                     issue_number,
                     self._build_duplicate_plan_comment(task),
-                )
-                self._audit(
-                    task.id,
-                    None,
                     "github.duplicate_plan_commented",
-                    {"issue_number": issue_number},
+                    "github.duplicate_plan_comment_failed",
                 )
             self.db.commit()
             return EventResult(
@@ -201,34 +309,14 @@ class OrchestrationService:
             },
         )
 
-        if settings.github_token:
-            try:
-                GitHubAdapter(settings.github_token).create_issue_comment(
-                    settings.github_owner,
-                    settings.github_repo,
-                    issue_number,
-                    self._build_plan_comment(task),
-                )
-                self._audit(
-                    task.id,
-                    run_id,
-                    "github.issue_commented",
-                    {"issue_number": issue_number},
-                )
-            except Exception as exc:
-                self._audit(
-                    task.id,
-                    run_id,
-                    "github.issue_comment_failed",
-                    {"issue_number": issue_number, "error": str(exc)},
-                )
-        else:
-            self._audit(
-                task.id,
-                run_id,
-                "github.comment_skipped",
-                {"reason": "GITHUB_TOKEN이 설정되어 있지 않습니다.", "issue_number": issue_number},
-            )
+        self._comment_on_github_issue(
+            task,
+            run_id,
+            issue_number,
+            self._build_plan_comment(task),
+            "github.issue_commented",
+            "github.issue_comment_failed",
+        )
 
         self._notify_after_plan(task, run_id, force=force)
         self.db.commit()
@@ -310,27 +398,14 @@ class OrchestrationService:
             {"issue_number": issue_number, "issue_url": issue_url},
         )
 
-        if settings.github_token:
-            try:
-                GitHubAdapter(settings.github_token).create_issue_comment(
-                    settings.github_owner,
-                    settings.github_repo,
-                    issue_number,
-                    self._build_develop_comment(task, previous),
-                )
-                self._audit(
-                    task.id,
-                    run_id,
-                    "github.develop_commented",
-                    {"issue_number": issue_number},
-                )
-            except Exception as exc:
-                self._audit(
-                    task.id,
-                    run_id,
-                    "github.develop_comment_failed",
-                    {"issue_number": issue_number, "error": str(exc)},
-                )
+        self._comment_on_github_issue(
+            task,
+            run_id,
+            issue_number,
+            self._build_develop_comment(task, previous),
+            "github.develop_commented",
+            "github.develop_comment_failed",
+        )
 
         self._notify_after_dev(task, run_id)
         self.db.commit()
@@ -372,13 +447,14 @@ class OrchestrationService:
             "fix_develop.deprecated",
             {"issue_number": issue_number, "issue_url": issue_url},
         )
-        if settings.github_token:
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_fix_develop_deprecated_comment(task, reason),
-            )
+        self._comment_on_github_issue(
+            task,
+            None,
+            issue_number,
+            self._build_fix_develop_deprecated_comment(task, reason),
+            "github.fix_develop_deprecated_commented",
+            "github.fix_develop_deprecated_comment_failed",
+        )
         self.db.commit()
         return {"status": "deprecated", "reason": reason, "task_id": task.id}
 
@@ -447,19 +523,14 @@ class OrchestrationService:
             },
         )
 
-        if settings.github_token:
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_refactor_comment(task, previous),
-            )
-            self._audit(
-                task.id,
-                run_id,
-                "github.refactor_commented",
-                {"issue_number": issue_number},
-            )
+        self._comment_on_github_issue(
+            task,
+            run_id,
+            issue_number,
+            self._build_refactor_comment(task, previous),
+            "github.refactor_commented",
+            "github.refactor_comment_failed",
+        )
 
         self.db.commit()
         return EventResult(
@@ -519,33 +590,29 @@ class OrchestrationService:
             {"issue_number": issue_number, "issue_url": issue_url},
         )
 
-        if settings.github_token:
-            try:
-                GitHubAdapter(settings.github_token).create_issue_comment(
-                    settings.github_owner,
-                    settings.github_repo,
-                    issue_number,
-                    self._build_qa_comment(task, previous),
-                )
-                GitHubAdapter(settings.github_token).create_issue_comment(
-                    settings.github_owner,
-                    settings.github_repo,
-                    issue_number,
-                    self._build_human_qa_comment(task, rerun=False),
-                )
-                self._audit(
-                    task.id,
-                    run_id,
-                    "github.qa_commented",
-                    {"issue_number": issue_number},
-                )
-            except Exception as exc:
-                self._audit(
-                    task.id,
-                    run_id,
-                    "github.qa_comment_failed",
-                    {"issue_number": issue_number, "error": str(exc)},
-                )
+        qa_commented = self._comment_on_github_issue(
+            task,
+            run_id,
+            issue_number,
+            self._build_qa_comment(task, previous),
+            "github.qa_commented",
+            "github.qa_comment_failed",
+        )
+        human_qa_commented = self._comment_on_github_issue(
+            task,
+            run_id,
+            issue_number,
+            self._build_human_qa_comment(task, rerun=False),
+            "github.human_qa_commented",
+            "github.human_qa_comment_failed",
+        )
+        if qa_commented and human_qa_commented:
+            self._audit(
+                task.id,
+                run_id,
+                "github.qa_comments_completed",
+                {"issue_number": issue_number},
+            )
 
         self._notify_after_qa(task, run_id, rerun=False)
         self.db.commit()
@@ -607,33 +674,29 @@ class OrchestrationService:
             {"issue_number": issue_number, "issue_url": issue_url},
         )
 
-        if settings.github_token:
-            try:
-                GitHubAdapter(settings.github_token).create_issue_comment(
-                    settings.github_owner,
-                    settings.github_repo,
-                    issue_number,
-                    self._build_qa_comment(task, previous, rerun=True),
-                )
-                GitHubAdapter(settings.github_token).create_issue_comment(
-                    settings.github_owner,
-                    settings.github_repo,
-                    issue_number,
-                    self._build_human_qa_comment(task, rerun=True),
-                )
-                self._audit(
-                    task.id,
-                    run_id,
-                    "github.qa_rerun_commented",
-                    {"issue_number": issue_number},
-                )
-            except Exception as exc:
-                self._audit(
-                    task.id,
-                    run_id,
-                    "github.qa_rerun_comment_failed",
-                    {"issue_number": issue_number, "error": str(exc)},
-                )
+        qa_commented = self._comment_on_github_issue(
+            task,
+            run_id,
+            issue_number,
+            self._build_qa_comment(task, previous, rerun=True),
+            "github.qa_rerun_commented",
+            "github.qa_rerun_comment_failed",
+        )
+        human_qa_commented = self._comment_on_github_issue(
+            task,
+            run_id,
+            issue_number,
+            self._build_human_qa_comment(task, rerun=True),
+            "github.human_qa_rerun_commented",
+            "github.human_qa_rerun_comment_failed",
+        )
+        if qa_commented and human_qa_commented:
+            self._audit(
+                task.id,
+                run_id,
+                "github.qa_rerun_comments_completed",
+                {"issue_number": issue_number},
+            )
 
         self._notify_after_qa(task, run_id, rerun=True)
         self.db.commit()
@@ -665,14 +728,14 @@ class OrchestrationService:
             task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
             task.github_issue_url = issue_url
 
-        if settings.github_token:
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_status_comment(task),
-            )
-        self._audit(task.id, None, "status.commented", {"issue_number": issue_number})
+        self._comment_on_github_issue(
+            task,
+            None,
+            issue_number,
+            self._build_status_comment(task),
+            "status.commented",
+            "status.comment_failed",
+        )
         self.db.commit()
         return {"status": "ok", "message": "상태 댓글을 생성했습니다.", "task_id": task.id}
 
@@ -712,13 +775,14 @@ class OrchestrationService:
                 "had_running_run": bool(running_run),
             },
         )
-        if settings.github_token:
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_cancel_comment(task, previous, reason, bool(running_run)),
-            )
+        self._comment_on_github_issue(
+            task,
+            running_run.id if running_run else None,
+            issue_number,
+            self._build_cancel_comment(task, previous, reason, bool(running_run)),
+            "github.cancel_commented",
+            "github.cancel_comment_failed",
+        )
         self.db.commit()
         return {"status": "ok", "message": "작업을 중지했습니다.", "task_id": task.id}
 
@@ -752,13 +816,14 @@ class OrchestrationService:
             "command.failed",
             {"issue_number": issue_number, "command": command, "error": error},
         )
-        if settings.github_token:
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_command_failure_comment(task, command, error),
-            )
+        self._comment_on_github_issue(
+            task,
+            latest_run.id if latest_run else None,
+            issue_number,
+            self._build_command_failure_comment(task, command, error),
+            "github.command_failure_commented",
+            "github.command_failure_comment_failed",
+        )
         self.db.commit()
         return {"status": "failed", "reason": error, "task_id": task.id}
 
@@ -1264,26 +1329,20 @@ class OrchestrationService:
     def _skip_develop_command(
         self, issue_number: int, reason: str, task_id: str | None = None
     ) -> dict[str, str]:
-        if settings.github_token:
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_develop_not_ready_comment(reason, task_id),
-            )
+        self._comment_on_github_issue_best_effort(
+            issue_number,
+            self._build_develop_not_ready_comment(reason, task_id),
+        )
         self.db.commit()
         return {"status": "ignored", "reason": reason}
 
     def _skip_refactor_command(
         self, issue_number: int, reason: str, task_id: str | None = None
     ) -> dict[str, str]:
-        if settings.github_token:
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_refactor_not_ready_comment(reason, task_id),
-            )
+        self._comment_on_github_issue_best_effort(
+            issue_number,
+            self._build_refactor_not_ready_comment(reason, task_id),
+        )
         self.db.commit()
         return {"status": "ignored", "reason": reason}
 
@@ -1294,17 +1353,14 @@ class OrchestrationService:
         task_id: str | None = None,
         next_command: str | None = None,
     ) -> dict[str, str]:
-        if settings.github_token:
-            GitHubAdapter(settings.github_token).create_issue_comment(
-                settings.github_owner,
-                settings.github_repo,
-                issue_number,
-                self._build_qa_not_ready_comment(
-                    reason,
-                    task_id,
-                    next_command or settings.develop_command,
-                ),
-            )
+        self._comment_on_github_issue_best_effort(
+            issue_number,
+            self._build_qa_not_ready_comment(
+                reason,
+                task_id,
+                next_command or settings.develop_command,
+            ),
+        )
         self.db.commit()
         return {"status": "ignored", "reason": reason}
 

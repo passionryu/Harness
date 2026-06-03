@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -183,6 +184,49 @@ def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
     assert "### 다음 추천 명령어" in captured["body"]
     assert "`harness approve --issue" in captured["body"]
     assert "`@ai-harness replan`" in captured["body"]
+
+
+def test_github_comment_falls_back_to_gh_cli_when_api_forbidden(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    captured: dict[str, str] = {}
+
+    class ForbiddenGitHubAdapter:
+        def __init__(self, token: str):
+            self.token = token
+
+        def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> None:
+            raise RuntimeError("403 Forbidden")
+
+    # gh CLI fallback이 받은 body-file 내용을 캡처한다.
+    def fake_run(command, capture_output, text, timeout, check):
+        captured["command"] = " ".join(command)
+        captured["body"] = Path(command[-1]).read_text()
+        return SimpleNamespace(returncode=0, stderr="", stdout="commented")
+
+    monkeypatch.setattr(orchestration.settings, "github_token", "token")
+    monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "myMentalCare")
+    monkeypatch.setattr(orchestration, "GitHubAdapter", ForbiddenGitHubAdapter)
+    monkeypatch.setattr(orchestration.subprocess, "run", fake_run)
+
+    from orchestrator.db.session import SessionLocal, create_db
+    from orchestrator.services.orchestration import OrchestrationService
+
+    issue_number = uuid4().int % 1_000_000_000
+    create_db()
+    with SessionLocal() as db:
+        service = OrchestrationService(db)
+        event = service.run_plan_for_github_issue(
+            issue_number=issue_number,
+            title="[Config] 인증 기반 설정",
+            body="## 목표\nSpring Security와 JWT 설정을 추가한다.",
+            issue_url=f"https://github.com/passionryu/myMentalCare/issues/{issue_number}",
+        )
+
+    assert event.current_state == "Plan Review"
+    assert f"gh issue comment {issue_number}" in captured["command"]
+    assert "# 🏗️ AI Plan:" in captured["body"]
+    assert "Spring Security와 JWT 설정을 추가한다." in captured["body"]
 
 
 def test_issue_comment_replan_command_forces_new_plan(tmp_path, monkeypatch):
