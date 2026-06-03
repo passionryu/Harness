@@ -1171,6 +1171,7 @@ internal class AuthenticationService(
     private val jwtTokenIssuer: JwtTokenIssuer,
     private val refreshTokenStore: RefreshTokenStore,
 ) : AuthenticationInputPort {{
+    // 로그인
     override fun signIn(request: SignInRequest): SignInResponse {{
         val member = loginMemberReader.readMemberByLoginIdentifier(request.identifier)
 
@@ -1618,6 +1619,7 @@ def _ddd_service_content(spec: DDDScaffoldSpec, application_package: str) -> str
             f"class {spec.usecase_name}Service(",
             f"    private val {spec.domain}PolicyChecker: {spec.domain_class}PolicyChecker,",
             ") {",
+            f"    // {spec.domain_class} 유스케이스를 처리한다.",
             f"    fun {spec.method_name}(command: {spec.usecase_name}Command): {spec.usecase_name}Result {{",
             f"        {spec.domain}PolicyChecker.{spec.policy_method_name}(command)",
             "",
