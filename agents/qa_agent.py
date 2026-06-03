@@ -23,12 +23,12 @@ FE_HUMAN_QA_CHECKLIST = [
 ]
 
 BE_HUMAN_QA_CHECKLIST = [
-    "Swagger UI에서 회원가입 API의 summary와 description이 한국어로 보이는가",
+    "Swagger UI에서 대상 API의 summary와 description이 한국어로 보이는가",
     "해피케이스 curl 결과가 의도대로 2xx 응답을 반환하는가",
-    "중복 이메일, 잘못된 이메일, 짧은 비밀번호 같은 최소 엣지 케이스가 의도한 오류 응답을 반환하는가",
+    "주요 엣지 케이스가 의도한 오류 응답을 반환하는가",
     "API 오류 메시지가 사용자에게 안전하고 이해 가능한 한국어로 반환되는가",
-    "회원가입 성공 후 DB에 회원과 관심 영역이 의도대로 저장되는가",
-    "비밀번호가 평문이 아니라 해싱된 값으로 저장되는가",
+    "DB 상태가 API 동작과 일치하는가",
+    "민감정보가 응답에 노출되지 않는가",
 ]
 
 CONFIG_HUMAN_QA_CHECKLIST = [
@@ -442,6 +442,83 @@ def _signup_cases() -> tuple[ApiSmokeCase, list[ApiSmokeCase]]:
     return happy, edges
 
 
+def _login_cases() -> tuple[ApiSmokeCase, list[ApiSmokeCase]]:
+    happy = ApiSmokeCase(
+        name="로그인 ID 로그인 해피케이스",
+        path="/api/auth/login",
+        request_json={
+            "identifier": "qa_login_user",
+            "password": "password123!",
+        },
+        expected_status=200,
+    )
+    edges = [
+        ApiSmokeCase(
+            name="이메일 로그인 해피케이스",
+            path="/api/auth/login",
+            request_json={
+                "identifier": "qa-login-user@example.local",
+                "password": "password123!",
+            },
+            expected_status=200,
+        ),
+        ApiSmokeCase(
+            name="잘못된 비밀번호 차단",
+            path="/api/auth/login",
+            request_json={
+                "identifier": "qa_login_user",
+                "password": "wrong-password",
+            },
+            expected_status=401,
+        ),
+        ApiSmokeCase(
+            name="존재하지 않는 계정 차단",
+            path="/api/auth/login",
+            request_json={
+                "identifier": "missing_login_user",
+                "password": "password123!",
+            },
+            expected_status=401,
+        ),
+    ]
+    return happy, edges
+
+
+def _is_login_api_target(title: str, body: str, repo_path: Path) -> bool:
+    haystack = f"{title}\n{body}".lower()
+    return "/api/auth/login" in haystack or _repo_has_endpoint_mapping(repo_path, "/api/auth/login")
+
+
+def _seed_login_member_for_qa() -> str:
+    password_hash = "$2y$10$9MeY8h2tvYeCGITnMFDJZ.fP0Qv6V6yhTmVda12jzRgvO0K2azZHi"
+    sql = (
+        "INSERT INTO members (login_id, email, password, name, phone, created_at, updated_at) "
+        "VALUES ('qa_login_user', 'qa-login-user@example.local', "
+        f"'{password_hash}', 'QA로그인사용자', NULL, NOW(), NOW()) "
+        "ON DUPLICATE KEY UPDATE password=VALUES(password), email=VALUES(email), updated_at=NOW();"
+    )
+    for container in ("server-mariadb-1", "mymentalcare-mariadb-1"):
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                container,
+                "mariadb",
+                "-umymentalcare",
+                "-pmymentalcare-local",
+                "mymentalcare",
+                "-e",
+                sql,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if result.returncode == 0:
+            return f"QA 로그인 회원 seed 완료 ({container})"
+    return "QA 로그인 회원 seed 실패"
+
+
 def _run_api_case(case: ApiSmokeCase, timeout_seconds: int) -> ApiSmokeResult:
     exit_code, response_body, stderr, status_code = _curl_json(
         "POST",
@@ -810,7 +887,12 @@ class QAAgent:
                 )
                 checks.append(("Target API server is reachable", _is_api_alive(), server_status))
                 if _is_api_alive():
-                    happy_case, edge_cases = _signup_cases()
+                    if _is_login_api_target(input_data.title, input_data.body, repo_path):
+                        seed_status = _seed_login_member_for_qa()
+                        checks.append(("login qa member seed", "완료" in seed_status, seed_status))
+                        happy_case, edge_cases = _login_cases()
+                    else:
+                        happy_case, edge_cases = _signup_cases()
                     happy_result = _run_api_case(happy_case, input_data.timeout_seconds)
                     edge_results = [_run_api_case(case, input_data.timeout_seconds) for case in edge_cases]
                     checks.append(("backend happy smoke test passes", happy_result.passed, happy_result.name))

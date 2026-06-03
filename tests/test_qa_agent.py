@@ -166,7 +166,7 @@ def test_be_qa_agent_reports_curl_smoke_details_and_human_checklist(tmp_path, mo
     assert "* 의도한 대로 성공했는지: Y" in content
     assert "* api path: /api/members/signup" in content
     assert "## Human QA 체크리스트" in content
-    assert "Swagger UI에서 회원가입 API의 summary와 description이 한국어로 보이는가" in content
+    assert "Swagger UI에서 대상 API의 summary와 description이 한국어로 보이는가" in content
 
 
 def test_config_qa_agent_runs_security_runtime_checks(tmp_path, monkeypatch):
