@@ -93,6 +93,52 @@ def _server_root(context: DevRunnerContext) -> Path:
     return context.repo_path / "apps/server"
 
 
+# 현재 서버의 실행 bootstrap 모듈 경로를 찾는다.
+def _bootstrap_module_root(context: DevRunnerContext) -> Path:
+    bootstrap_root = context.repo_path / "apps/server/modules/bootstrap"
+    candidates = [path for path in bootstrap_root.iterdir() if path.is_dir() and (path / "build.gradle.kts").exists()]
+    if not candidates:
+        raise FileNotFoundError(f"bootstrap module을 찾을 수 없습니다: {bootstrap_root}")
+    return sorted(candidates)[0]
+
+
+# Gradle에서 사용할 bootstrap 모듈 task path를 반환한다.
+def _bootstrap_gradle_path(context: DevRunnerContext) -> str:
+    module = _bootstrap_module_root(context).name
+    return f":modules:bootstrap:{module}"
+
+
+# bootstrap application class에서 Kotlin package 이름을 추출한다.
+def _bootstrap_package(context: DevRunnerContext) -> str:
+    module_root = _bootstrap_module_root(context)
+    kotlin_files = sorted((module_root / "src/main/kotlin").rglob("*.kt"))
+    for kotlin_file in kotlin_files:
+        for line in kotlin_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith("package "):
+                return line.removeprefix("package ").strip()
+    raise ValueError(f"bootstrap package를 찾을 수 없습니다: {module_root}")
+
+
+# 설정 파일에서 spring.application.name 값을 가져온다.
+def _application_name(context: DevRunnerContext) -> str:
+    application_yml = _bootstrap_module_root(context) / "src/main/resources/application.yml"
+    if not application_yml.exists():
+        return _bootstrap_module_root(context).name
+    lines = application_yml.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != "application:":
+            continue
+        for nested in lines[index + 1 : index + 5]:
+            if nested.strip().startswith("name:"):
+                return nested.split(":", 1)[1].strip()
+    return _bootstrap_module_root(context).name
+
+
+# 프로젝트 이름을 환경변수 prefix로 사용할 수 있는 대문자 snake case로 변환한다.
+def _env_prefix(context: DevRunnerContext) -> str:
+    return _application_name(context).replace("-", "_").replace(".", "_").upper()
+
+
 def _write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -173,14 +219,15 @@ def _implement_security_jwt_redis_config(context: DevRunnerContext) -> DevRunner
     commits.append(f"3. {commit_hash} [{context.feature_name}] : Security 설정 테스트 추가")
     progress.append("- [x] step 3: Security 설정 테스트 추가")
 
+    gradle_module = _bootstrap_gradle_path(context)
     exit_code, stdout, stderr = _run_command(
-        ["./gradlew", ":modules:bootstrap:studyhub:test", "--tests", "*SecurityConfigurationTest"],
+        ["./gradlew", f"{gradle_module}:test", "--tests", "*SecurityConfigurationTest"],
         _server_root(context),
         context.timeout_seconds,
     )
     verification.extend(
         [
-            "## :modules:bootstrap:studyhub:test --tests *SecurityConfigurationTest",
+            f"## {gradle_module}:test --tests *SecurityConfigurationTest",
             "",
             f"- exit_code: {exit_code}",
             "",
@@ -220,7 +267,7 @@ def _implement_security_jwt_redis_config(context: DevRunnerContext) -> DevRunner
                 "",
                 "## Verification",
                 "",
-                "- command: `./gradlew :modules:bootstrap:studyhub:test --tests '*SecurityConfigurationTest'`",
+                f"- command: `./gradlew {gradle_module}:test --tests '*SecurityConfigurationTest'`",
                 f"- exit_code: `{exit_code}`",
             ]
         ),
@@ -240,7 +287,7 @@ def _implement_security_jwt_redis_config(context: DevRunnerContext) -> DevRunner
 
 def _write_security_dependency_files(context: DevRunnerContext) -> list[str]:
     paths: list[str] = []
-    bootstrap_gradle = context.repo_path / "apps/server/modules/bootstrap/studyhub/build.gradle.kts"
+    bootstrap_gradle = _bootstrap_module_root(context) / "build.gradle.kts"
     text = bootstrap_gradle.read_text(encoding="utf-8")
     anchor = '    implementation("org.springframework.boot:spring-boot-starter-actuator")'
     text = _ensure_lines_after_anchor(
@@ -265,7 +312,7 @@ def _write_security_dependency_files(context: DevRunnerContext) -> list[str]:
     compose = context.repo_path / "apps/server/docker-compose.infra.local.yml"
     compose_text = compose.read_text(encoding="utf-8")
     if "redis:" not in compose_text:
-        compose_text = compose_text.rstrip() + "\n  redis:\n    image: redis:7-alpine\n    ports:\n      - \"6379:6379\"\n    healthcheck:\n      test: [\"CMD\", \"redis-cli\", \"ping\"]\n      interval: 10s\n      timeout: 5s\n      retries: 10\n"
+        compose_text = compose_text.rstrip() + "\n  redis:\n    image: redis:7-alpine\n    ports:\n      - \"6380:6379\"\n    healthcheck:\n      test: [\"CMD\", \"redis-cli\", \"ping\"]\n      interval: 10s\n      timeout: 5s\n      retries: 10\n"
     compose.write_text(compose_text, encoding="utf-8")
     paths.append(_relative(context, compose))
     return paths
@@ -273,50 +320,56 @@ def _write_security_dependency_files(context: DevRunnerContext) -> list[str]:
 
 def _write_security_config_files(context: DevRunnerContext) -> list[str]:
     paths: list[str] = []
-    resources = context.repo_path / "apps/server/modules/bootstrap/studyhub/src/main/resources"
+    module_root = _bootstrap_module_root(context)
+    package_name = _bootstrap_package(context)
+    env_prefix = _env_prefix(context)
+    property_prefix = f"{module_root.name}.security.jwt"
+    resources = module_root / "src/main/resources"
     application_yml = resources / "application.yml"
     yml = application_yml.read_text(encoding="utf-8")
     if "data:\n    redis:" not in yml:
         yml = _replace_once(
             yml,
-            "  application:\n    name: studyhub-server\n",
-            "  application:\n    name: studyhub-server\n  data:\n    redis:\n      host: ${STUDYHUB_REDIS_HOST:localhost}\n      port: ${STUDYHUB_REDIS_PORT:6379}\n",
+            f"  application:\n    name: {_application_name(context)}\n",
+            f"  application:\n    name: {_application_name(context)}\n  data:\n    redis:\n      host: ${{{env_prefix}_REDIS_HOST:localhost}}\n      port: ${{{env_prefix}_REDIS_PORT:6380}}\n",
         )
-    if "studyhub:\n  security:" not in yml:
-        yml = yml.rstrip() + "\n\nstudyhub:\n  security:\n    jwt:\n      secret: ${STUDYHUB_JWT_SECRET:local-studyhub-jwt-secret-must-be-changed}\n      access-token-expiration: ${STUDYHUB_ACCESS_TOKEN_EXPIRATION:1h}\n      refresh-token-expiration: ${STUDYHUB_REFRESH_TOKEN_EXPIRATION:7d}\n"
+    if f"{module_root.name}:\n  security:" not in yml:
+        yml = yml.rstrip() + f"\n\n{module_root.name}:\n  security:\n    jwt:\n      secret: ${{{env_prefix}_JWT_SECRET:local-{module_root.name}-jwt-secret-must-be-changed}}\n      access-token-expiration: ${{{env_prefix}_ACCESS_TOKEN_EXPIRATION:1h}}\n      refresh-token-expiration: ${{{env_prefix}_REFRESH_TOKEN_EXPIRATION:7d}}\n"
     application_yml.write_text(yml, encoding="utf-8")
     paths.append(_relative(context, application_yml))
 
-    config_base = context.repo_path / "apps/server/modules/bootstrap/studyhub/src/main/kotlin/com/studyhub/server/bootstrap/config"
+    config_base = module_root / "src/main/kotlin" / Path(*package_name.split(".")) / "config"
     jwt_properties = config_base / "JwtProperties.kt"
-    _write_text(jwt_properties, _jwt_properties_content())
+    _write_text(jwt_properties, _jwt_properties_content(package_name, property_prefix))
     paths.append(_relative(context, jwt_properties))
 
     cors_config = config_base / "WebCorsConfiguration.kt"
-    _write_text(cors_config, _web_cors_configuration_content())
+    _write_text(cors_config, _web_cors_configuration_content(package_name))
     paths.append(_relative(context, cors_config))
 
     security_config = config_base / "SecurityConfiguration.kt"
-    _write_text(security_config, _security_configuration_content())
+    _write_text(security_config, _security_configuration_content(package_name))
     paths.append(_relative(context, security_config))
 
     return paths
 
 
 def _write_security_test_files(context: DevRunnerContext) -> list[str]:
-    test_base = context.repo_path / "apps/server/modules/bootstrap/studyhub/src/test/kotlin/com/studyhub/server/bootstrap/config"
+    module_root = _bootstrap_module_root(context)
+    package_name = _bootstrap_package(context)
+    test_base = module_root / "src/test/kotlin" / Path(*package_name.split(".")) / "config"
     test_file = test_base / "SecurityConfigurationTest.kt"
-    _write_text(test_file, _security_configuration_test_content())
+    _write_text(test_file, _security_configuration_test_content(package_name, module_root.name))
     return [_relative(context, test_file)]
 
 
-def _jwt_properties_content() -> str:
-    return """package com.studyhub.server.bootstrap.config
+def _jwt_properties_content(package_name: str, property_prefix: str) -> str:
+    return f"""package {package_name}.config
 
 import org.springframework.boot.context.properties.ConfigurationProperties
 import java.time.Duration
 
-@ConfigurationProperties(prefix = "studyhub.security.jwt")
+@ConfigurationProperties(prefix = "{property_prefix}")
 data class JwtProperties(
     val secret: String,
     val accessTokenExpiration: Duration,
@@ -325,8 +378,8 @@ data class JwtProperties(
 """
 
 
-def _security_configuration_content() -> str:
-    return """package com.studyhub.server.bootstrap.config
+def _security_configuration_content(package_name: str) -> str:
+    return """package __PACKAGE__.config
 
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean
@@ -363,11 +416,11 @@ class SecurityConfiguration {
             }
             .build()
 }
-"""
+""".replace("__PACKAGE__", package_name)
 
 
-def _web_cors_configuration_content() -> str:
-    return """package com.studyhub.server.bootstrap.config
+def _web_cors_configuration_content(package_name: str) -> str:
+    return """package __PACKAGE__.config
 
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -377,7 +430,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 @Configuration
 class WebCorsConfiguration {
     @Bean
-    fun studyHubWebCorsConfigurer(): WebMvcConfigurer =
+    fun serviceWebCorsConfigurer(): WebMvcConfigurer =
         object : WebMvcConfigurer {
             override fun addCorsMappings(registry: CorsRegistry) {
                 registry
@@ -390,11 +443,11 @@ class WebCorsConfiguration {
             }
         }
 }
-"""
+""".replace("__PACKAGE__", package_name)
 
 
-def _security_configuration_test_content() -> str:
-    return """package com.studyhub.server.bootstrap.config
+def _security_configuration_test_content(package_name: str, property_root: str) -> str:
+    return """package __PACKAGE__.config
 
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -418,9 +471,9 @@ import org.springframework.web.bind.annotation.RestController
 @EnableConfigurationProperties(JwtProperties::class)
 @TestPropertySource(
     properties = [
-        "studyhub.security.jwt.secret=test-secret",
-        "studyhub.security.jwt.access-token-expiration=1h",
-        "studyhub.security.jwt.refresh-token-expiration=7d",
+        "__PROPERTY_ROOT__.security.jwt.secret=test-secret",
+        "__PROPERTY_ROOT__.security.jwt.access-token-expiration=1h",
+        "__PROPERTY_ROOT__.security.jwt.refresh-token-expiration=7d",
     ],
 )
 class SecurityConfigurationTest {
@@ -462,4 +515,4 @@ class SecurityTestController {
     fun protectedResource() {
     }
 }
-"""
+""".replace("__PACKAGE__", package_name).replace("__PROPERTY_ROOT__", property_root)

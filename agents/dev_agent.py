@@ -15,6 +15,7 @@ from agents.runners.responsibility_runners import (
     RefactoringRunner,
     TestImplementationRunner,
 )
+from agents.runners.infra_runner import InfraRunner
 from orchestrator.core.settings import settings
 
 
@@ -164,6 +165,7 @@ def _backend_style_lines(issue_type: str) -> list[str]:
 # Dev Agent가 선택할 수 있는 러너 목록을 우선순위대로 반환한다.
 def _dev_runners() -> list[DevRunner]:
     return [
+        InfraRunner(),
         DDDModelingRunner(),
         DBMigrationRunner(),
         APIImplementationRunner(),
