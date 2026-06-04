@@ -11,6 +11,7 @@ from agents.runners.codebase_inspector import (
     inspect_codebase,
 )
 from agents.runners.responsibility_runners import (
+    APIConnectRunner,
     APIImplementationRunner,
     DBMigrationRunner,
     DDDModelingRunner,
@@ -113,6 +114,64 @@ def test_api_implementation_runner_creates_contract_draft(tmp_path):
     assert contract.exists()
     assert "POST /api/members/signup" in contract.read_text(encoding="utf-8")
     assert context.repo.head.commit.message == "[테스트 기능] : API contract 초안 추가"
+
+
+def test_api_implementation_runner_does_not_handle_api_connect(tmp_path):
+    context = _make_context(tmp_path, "API는 `POST /api/auth/login`으로 제공한다.", issue_type="apiConnect")
+
+    assert APIImplementationRunner().can_handle(context) is False
+
+
+def test_api_connect_runner_connects_login_modal_to_api(tmp_path):
+    context = _make_context(
+        tmp_path,
+        "로그인 화면은 `POST /api/auth/login` API와 연동한다.",
+        issue_type="apiConnect",
+    )
+    page = context.repo_path / "apps/web/app/page.tsx"
+    page.parent.mkdir(parents=True)
+    page.write_text(
+        "\n".join(
+            [
+                "'use client'",
+                "",
+                "import { FormEvent, useState } from 'react'",
+                "",
+                "export default function Page() { return null }",
+                "",
+                "function AuthModal() {",
+                "  const [message, setMessage] = useState('')",
+                "  const isSignup = false",
+                "",
+                "  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {",
+                "    event.preventDefault()",
+                "    setMessage(",
+                "      isSignup",
+                "        ? '회원가입 API 연동 전입니다. 입력 흐름만 안전하게 확인했습니다.'",
+                "        : '로그인 API 연동 전입니다. 입력 흐름만 안전하게 확인했습니다.',",
+                "    )",
+                "  }",
+                "",
+                "  return <button>{isSignup ? '회원가입' : '로그인'}</button>",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    context.repo.index.add(["apps/web/app/page.tsx"])
+    context.repo.index.commit("Add login modal")
+
+    result = APIConnectRunner().run(context)
+
+    assert result.status == AgentStatus.SUCCESS
+    auth_api = context.repo_path / "apps/web/lib/auth-api.ts"
+    assert auth_api.exists()
+    assert "/api/auth/login" in auth_api.read_text(encoding="utf-8")
+    page_text = page.read_text(encoding="utf-8")
+    assert "await loginMember" in page_text
+    assert "myMentalCare.accessToken" in page_text
+    assert context.repo.head.commit.message == "[테스트 기능] : 로그인 API 프론트엔드 연동"
 
 
 def test_ddd_modeling_runner_creates_service_scaffold(tmp_path):

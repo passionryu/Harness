@@ -278,7 +278,7 @@ class DBMigrationRunner(ResponsibilityCapabilityRunner):
 class APIImplementationRunner(ResponsibilityCapabilityRunner):
     name = "api_implementation_runner"
     responsibility = "API endpoint, request/response, application 연결 구현"
-    supported_issue_types = {"beFeature", "fullstackFeature", "apiConnect"}
+    supported_issue_types = {"beFeature", "fullstackFeature"}
 
     # 명시된 API endpoint를 기준으로 contract 문서를 생성하고 구현 경계를 기록한다.
     def run(self, context: DevRunnerContext) -> DevRunnerResult:
@@ -399,7 +399,7 @@ class APIImplementationRunner(ResponsibilityCapabilityRunner):
 class FrontendImplementationRunner(ResponsibilityCapabilityRunner):
     name = "frontend_implementation_runner"
     responsibility = "화면, 상태, 폼, 사용자 메시지 구현"
-    supported_issue_types = {"feFeature", "fullstackFeature", "apiConnect"}
+    supported_issue_types = {"feFeature", "fullstackFeature"}
 
     # route가 명확한 프론트엔드 작업은 안전한 page scaffold까지 생성한다.
     def run(self, context: DevRunnerContext) -> DevRunnerResult:
@@ -520,6 +520,61 @@ class APIConnectRunner(ResponsibilityCapabilityRunner):
     name = "api_connect_runner"
     responsibility = "프론트엔드 요청과 백엔드 API contract 연결"
     supported_issue_types = {"apiConnect", "fullstackFeature"}
+
+    # 로그인 API 연동처럼 contract와 기존 화면이 명확한 경우 프론트엔드 API 연결을 수행한다.
+    def run(self, context: DevRunnerContext) -> DevRunnerResult:
+        if not _is_login_api_connect_request(context):
+            return super().run(context)
+
+        changed_paths = _connect_login_api(context)
+        commit_hash = _stage_and_commit(
+            context,
+            changed_paths,
+            f"[{context.feature_name}] : 로그인 API 프론트엔드 연동",
+        )
+        report = context.task_dir / f"{self.name}.md"
+        snapshot = inspect_codebase(context)
+        report.write_text(
+            "\n".join(
+                [
+                    f"# {self.name}",
+                    "",
+                    f"- branch: `{context.branch_name}`",
+                    f"- issue_type: `{context.issue_type}`",
+                    "- status: success",
+                    "- api: `POST /api/auth/login`",
+                    f"- commit: `{commit_hash}`",
+                    f"- changed_paths: `{', '.join(changed_paths)}`",
+                    "",
+                    *render_codebase_snapshot(snapshot),
+                    "## Capability",
+                    "",
+                    "- 로그인 모달 submit handler를 백엔드 로그인 API 호출로 연결합니다.",
+                    "- 로그인 성공 시 access token과 refresh token을 localStorage에 저장합니다.",
+                    "- 로그인 실패 시 백엔드의 한국어 오류 메시지를 화면에 표시합니다.",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return DevRunnerResult(
+            status=AgentStatus.SUCCESS,
+            summary="로그인 화면과 로그인 API를 연결했습니다.",
+            commits=[f"1. {commit_hash} [{context.feature_name}] : 로그인 API 프론트엔드 연동"],
+            progress=[
+                "- [x] 로그인 API contract 확인",
+                "- [x] 프론트엔드 API client 생성",
+                "- [x] 로그인 모달 submit handler 연동",
+                "- [x] 성공/실패 사용자 메시지 연결",
+            ],
+            verification=[
+                f"## {self.name}",
+                "",
+                "- status: success",
+                "- api: `POST /api/auth/login`",
+                "- storage: `myMentalCare.accessToken`, `myMentalCare.refreshToken`",
+            ],
+            artifacts=[ArtifactSpec(self.name, report)],
+        )
 
 
 class EventFlowRunner(ResponsibilityCapabilityRunner):
@@ -1845,6 +1900,150 @@ def _format_refactor_result(result: RefactorSplitResult) -> list[str]:
         f"- extracted_classes: `{', '.join(result.extracted_classes) if result.extracted_classes else 'none'}`",
         f"- changed_paths: `{', '.join(result.changed_paths) if result.changed_paths else 'none'}`",
     ]
+
+
+# 로그인 API 연동 요청인지 title/body/API mapping을 기준으로 판단한다.
+def _is_login_api_connect_request(context: DevRunnerContext) -> bool:
+    haystack = f"{context.title}\n{context.body}".lower()
+    return "/api/auth/login" in haystack or ("로그인" in haystack and "api" in haystack)
+
+
+# 로그인 API client와 기존 로그인 모달 submit handler를 연결한다.
+def _connect_login_api(context: DevRunnerContext) -> list[str]:
+    page_path = context.repo_path / "apps/web/app/page.tsx"
+    if not page_path.exists():
+        raise RuntimeError("apps/web/app/page.tsx 파일을 찾지 못해 로그인 API를 연동할 수 없습니다.")
+
+    auth_api_path = context.repo_path / "apps/web/lib/auth-api.ts"
+    _write_text(auth_api_path, _auth_api_ts_content())
+
+    page_text = page_path.read_text(encoding="utf-8")
+    updated = _apply_login_api_to_page(page_text)
+    if updated == page_text:
+        raise RuntimeError("로그인 모달 submit handler를 찾지 못해 로그인 API를 연동할 수 없습니다.")
+    page_path.write_text(updated, encoding="utf-8")
+
+    smoke_path = context.repo_path / "apps/web/scripts/verify-main-auth-screen.mjs"
+    changed = [_relative(context, auth_api_path), _relative(context, page_path)]
+    if smoke_path.exists():
+        smoke_text = smoke_path.read_text(encoding="utf-8")
+        smoke_updated = _apply_login_api_to_smoke_test(smoke_text)
+        smoke_path.write_text(smoke_updated, encoding="utf-8")
+        changed.append(_relative(context, smoke_path))
+    return changed
+
+
+# 로그인 API 호출용 프론트엔드 client 파일 내용을 생성한다.
+def _auth_api_ts_content() -> str:
+    return """export type LoginRequest = {
+  identifier: string
+  password: string
+}
+
+export type LoginResponse = {
+  accessToken: string
+  refreshToken: string
+  tokenType: string
+  expiresInSeconds: number
+}
+
+export class LoginApiError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'LoginApiError'
+  }
+}
+
+const apiBaseUrl = process.env.NEXT_PUBLIC_TARGET_API_BASE_URL ?? 'http://localhost:3001'
+
+export async function loginMember(request: LoginRequest): Promise<LoginResponse> {
+  const response = await fetch(`${apiBaseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+
+  const body = await response.json().catch(() => null)
+
+  if (!response.ok) {
+    throw new LoginApiError(body?.message ?? '로그인 처리 중 문제가 발생했습니다.')
+  }
+
+  return body as LoginResponse
+}
+"""
+
+
+# 기존 page.tsx의 로그인 모달을 API 호출 기반으로 변환한다.
+def _apply_login_api_to_page(page_text: str) -> str:
+    text = page_text
+    if "loginMember" not in text:
+        text = text.replace(
+            "import { FormEvent, useState } from 'react'",
+            "import { FormEvent, useState } from 'react'\nimport { LoginApiError, loginMember } from '@/lib/auth-api'",
+        )
+    if "const [isSubmitting, setIsSubmitting] = useState(false)" not in text:
+        text = text.replace(
+            "  const [message, setMessage] = useState('')\n  const isSignup = mode === 'signup'",
+            "  const [message, setMessage] = useState('')\n  const [isSubmitting, setIsSubmitting] = useState(false)\n  const isSignup = mode === 'signup'",
+        )
+
+    old_handler = """  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setMessage(
+      isSignup
+        ? '회원가입 API 연동 전입니다. 입력 흐름만 안전하게 확인했습니다.'
+        : '로그인 API 연동 전입니다. 입력 흐름만 안전하게 확인했습니다.',
+    )
+  }"""
+    new_handler = """  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setMessage('')
+
+    if (isSignup) {
+      setMessage('회원가입 API 연동 전입니다. 입력 흐름만 안전하게 확인했습니다.')
+      return
+    }
+
+    const formData = new FormData(event.currentTarget)
+    const identifier = String(formData.get('loginId') ?? '').trim()
+    const password = String(formData.get('password') ?? '')
+
+    setIsSubmitting(true)
+    try {
+      const response = await loginMember({ identifier, password })
+      localStorage.setItem('myMentalCare.accessToken', response.accessToken)
+      localStorage.setItem('myMentalCare.refreshToken', response.refreshToken)
+      setMessage('로그인이 완료되었습니다.')
+    } catch (error) {
+      setMessage(error instanceof LoginApiError ? error.message : '로그인 처리 중 문제가 발생했습니다.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }"""
+    text = text.replace(old_handler, new_handler)
+    text = text.replace(
+        "              {isSignup ? '회원가입' : '로그인'}",
+        "              {isSubmitting ? '처리 중...' : isSignup ? '회원가입' : '로그인'}",
+    )
+    return text
+
+
+# 프론트 smoke test를 로그인 API 연동 확인 기준으로 보강한다.
+def _apply_login_api_to_smoke_test(smoke_text: str) -> str:
+    text = smoke_text
+    if "const authApi =" not in text:
+        text = text.replace(
+            "const styles = readFileSync(resolve('app/globals.css'), 'utf8')",
+            "const styles = readFileSync(resolve('app/globals.css'), 'utf8')\nconst authApi = readFileSync(resolve('lib/auth-api.ts'), 'utf8')",
+        )
+    text = text.replace(
+        "  ['API 연동 전 안내 메시지', page.includes('API 연동 전입니다')],",
+        "  ['회원가입 API 연동 전 안내 메시지', page.includes('회원가입 API 연동 전입니다')],\n  ['로그인 API 호출 함수 사용', page.includes('await loginMember')],\n  ['로그인 성공 토큰 저장', page.includes('myMentalCare.accessToken') && page.includes('myMentalCare.refreshToken')],\n  ['로그인 API endpoint 확인', authApi.includes('/api/auth/login')],\n  ['로그인 실패 오류 메시지 처리', authApi.includes('LoginApiError')],",
+    )
+    return text
 
 
 # 이슈 타입에 맞는 테스트 명령 목록을 결정한다.
