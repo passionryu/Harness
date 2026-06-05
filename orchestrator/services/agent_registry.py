@@ -3,6 +3,7 @@ from agents.dev_agent import DevAgent
 from agents.domain_knowledge_agent import DomainKnowledgeAgent
 from agents.documentation_agent import DocumentationAgent
 from agents.plan_agent import PlanAgent
+from agents.planning_assistant_agent import PlanningAssistantAgent
 from agents.qa_agent import QAAgent
 from agents.review_agent import ReviewAgent
 
@@ -16,6 +17,7 @@ class AgentRegistry:
             "qa": QAAgent(),
             "documentation": DocumentationAgent(),
             "domain_knowledge": DomainKnowledgeAgent(),
+            "planning_assistant": PlanningAssistantAgent(),
         }
 
     def get(self, name: str) -> AgentRunner:

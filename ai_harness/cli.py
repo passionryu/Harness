@@ -2,12 +2,15 @@ import argparse
 import json
 import sys
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 
+from agents.base import AgentInput, AgentStatus
 from agents.documentation_agent import publish_harness_history_record
+from agents.planning_assistant_agent import PlanningAssistantAgent
 from orchestrator.api.schemas import EventResult, HumanApproval
 from orchestrator.core.logging import configure_logging
 from orchestrator.core.settings import settings
@@ -496,6 +499,39 @@ def _document_harness(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+# Obsidian 기반 Planning Assistant Agent를 이슈 생성 전 단계에서 실행한다.
+def _planning_assist(args: argparse.Namespace) -> dict[str, Any]:
+    task_id = f"planning-assistant-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    note = _resolve_note(args, "")
+    body = "\n".join(
+        [
+            f"topic: {args.topic or ''}",
+            "",
+            "## 요청 메모",
+            note or "기획 후보와 질문을 정리한다.",
+        ]
+    )
+    result = PlanningAssistantAgent().run(
+        AgentInput(
+            task_id=task_id,
+            title=args.topic or "Planning Assistant",
+            body=body,
+            state="Planning",
+            artifacts_root=settings.artifact_root,
+            timeout_seconds=settings.agent_timeout_seconds,
+            retry_count=0,
+            retry_limit=settings.agent_retry_limit,
+        )
+    )
+    if result.status != AgentStatus.SUCCESS:
+        raise ValueError(result.error or result.summary)
+    return {
+        "status": result.status.value,
+        "summary": result.summary,
+        "artifacts": [str(artifact.path) for artifact in result.artifacts],
+    }
+
+
 # GitHub 조회가 불가능한 환경에서는 로컬 DB 조회용 빈 issue_url을 반환한다.
 def _optional_issue_context(issue_number: int) -> dict[str, Any]:
     try:
@@ -639,6 +675,11 @@ def _build_parser() -> argparse.ArgumentParser:
     document_harness.add_argument("--feature", required=True, help="유비쿼터스 언어로 정리한 기능 설명")
     document_harness.add_argument("--usage", required=True, help="사용 방법 또는 호출 방식")
     document_harness.set_defaults(handler=_document_harness)
+
+    planning_assist = subparsers.add_parser("planning-assist", help="Obsidian 기반 기획 지원 Agent 실행")
+    planning_assist.add_argument("--topic", default="", help="기획 보조를 받을 주제")
+    _add_note_options(planning_assist)
+    planning_assist.set_defaults(handler=_planning_assist)
 
     approve = subparsers.add_parser("approve", help="Plan/Dev/QA/Deploy 승인 gate를 기록")
     approve_target = approve.add_mutually_exclusive_group(required=True)
