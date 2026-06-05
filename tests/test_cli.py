@@ -113,10 +113,10 @@ def test_cli_create_issue_syncs_task_and_notifies_discord(tmp_path, monkeypatch,
     assert payload["issue_number"] == issue_number
     assert payload["title"].startswith("[Config]")
     assert payload["notification"] == "sent"
-    assert payload["next"] == f"harness plan --issue {issue_number}"
+    assert payload["next"] == f"harness design --issue {issue_number}"
     assert captured_messages
     assert "이슈 생성 완료" in captured_messages[0]
-    assert f"harness plan --issue {issue_number}" in captured_messages[0]
+    assert f"harness design --issue {issue_number}" in captured_messages[0]
 
     with SessionLocal() as db:
         task = db.query(Task).filter(Task.github_issue_number == issue_number).one()
@@ -125,7 +125,7 @@ def test_cli_create_issue_syncs_task_and_notifies_discord(tmp_path, monkeypatch,
         assert "type: config" in task.body
 
 
-# CLI plan 명령이 FastAPI 없이 Plan Agent를 실행하는지 검증한다.
+# CLI design 명령이 FastAPI 없이 Design Agent를 실행하는지 검증한다.
 def test_cli_plan_runs_plan_agent_from_github_issue(tmp_path, monkeypatch, capsys):
     issue_number = uuid4().int % 1_000_000_000
     captured_comments: list[str] = []
@@ -159,14 +159,14 @@ def test_cli_plan_runs_plan_agent_from_github_issue(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(cli, "GitHubAdapter", FakeGitHubAdapter)
     monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
 
-    exit_code = cli.main(["--json", "plan", "--issue", str(issue_number)])
+    exit_code = cli.main(["--json", "design", "--issue", str(issue_number)])
 
     captured = capsys.readouterr()
     assert exit_code == 0
     payload = json.loads(captured.out)
     assert payload["current_state"] == "Plan Review"
-    assert "Plan Agent 실행이 완료" in payload["message"]
-    assert "AI Plan" in captured_comments[-1]
+    assert "Design Agent 실행이 완료" in payload["message"]
+    assert "AI Design" in captured_comments[-1]
     assert (tmp_path / "artifacts" / payload["task_id"] / "plans" / "architecture.md").exists()
 
 

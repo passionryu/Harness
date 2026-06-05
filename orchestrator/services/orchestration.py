@@ -213,11 +213,19 @@ class OrchestrationService:
             )
             return False
 
-    # 하네스가 작성한 Plan/Replan 댓글인지 판단한다.
+    # 하네스가 작성한 Design/Redesign 호환 댓글인지 판단한다.
     def _is_harness_plan_comment(self, body: str) -> bool:
         if "<!-- ai-harness-generated -->" not in body:
             return False
-        return "# 🏗️ AI Plan:" in body or "# ♻️ 🏗️ AI Re-Plan:" in body
+        return any(
+            title in body
+            for title in [
+                "# 🏗️ AI Design:",
+                "# ♻️ 🏗️ AI Re-Design:",
+                "# 🏗️ AI Plan:",
+                "# ♻️ 🏗️ AI Re-Plan:",
+            ]
+        )
 
     # gh CLI 인증을 사용해 GitHub 이슈 댓글을 작성한다.
     def _comment_on_github_issue_with_gh(self, issue_number: int, body: str) -> tuple[bool, str]:
@@ -358,6 +366,19 @@ class OrchestrationService:
             is not None
         )
 
+    # 기존 plan 실행과 새 design 실행을 모두 성공한 설계 기록으로 인정한다.
+    def has_successful_design_run(self, task_id: str) -> bool:
+        return (
+            self.db.scalar(
+                select(Run.id)
+                .where(Run.task_id == task_id)
+                .where(Run.agent_name.in_(["plan", "design"]))
+                .where(Run.status == AgentStatus.SUCCESS.value)
+                .limit(1)
+            )
+            is not None
+        )
+
     # Dev가 직접 성공했거나 fix-develop로 복구된 작업인지 판단한다.
     def has_successful_development_run(self, task_id: str) -> bool:
         return (
@@ -392,7 +413,7 @@ class OrchestrationService:
             self._audit(
                 task.id,
                 None,
-                "plan.blocked_by_issue_template",
+                "design.blocked_by_issue_template",
                 {
                     "issue_number": issue_number,
                     "issue_url": issue_url,
@@ -401,19 +422,19 @@ class OrchestrationService:
             )
             self.db.commit()
             raise ValueError(
-                "Plan Agent를 실행할 수 없습니다. 이슈 본문이 타입 템플릿을 만족하지 않습니다: "
+                "Design Agent를 실행할 수 없습니다. 이슈 본문이 타입 템플릿을 만족하지 않습니다: "
                 + "; ".join(template_errors)
             )
 
-        if not force and self.has_successful_agent_run(task.id, "plan"):
+        if not force and self.has_successful_design_run(task.id):
             self._audit(
                 task.id,
                 None,
-                "plan.skipped_duplicate",
+                "design.skipped_duplicate",
                 {
                     "issue_number": issue_number,
                     "comment_on_duplicate": False,
-                    "reason": "기존 Plan 댓글을 유지하고 새 안내 댓글을 남기지 않습니다.",
+                    "reason": "기존 Design 댓글을 유지하고 새 안내 댓글을 남기지 않습니다.",
                 },
             )
             self.db.commit()
@@ -421,23 +442,23 @@ class OrchestrationService:
                 task_id=task.id,
                 previous_state=previous,
                 current_state=task.state,
-                message="이미 Plan이 완료되어 중복 실행을 스킵했습니다.",
+                message="이미 Design이 완료되어 중복 실행을 스킵했습니다.",
             )
 
-        run_id = self._run_agent(task, "plan")
+        run_id = self._run_agent(task, "design")
         if task.state != KanbanState.PLAN_REVIEW.value:
             task.state = KanbanState.PLAN_REVIEW.value
             self._record_transition(
                 task.id,
                 previous,
                 task.state,
-                "plan agent completed; waiting for human plan approval",
+                "design agent completed; waiting for human design approval",
                 "agent",
             )
         self._audit(
             task.id,
             run_id,
-            "plan.completed" if not force else "plan.replanned",
+            "design.completed" if not force else "design.redesigned",
             {
                 "issue_number": issue_number,
                 "issue_url": issue_url,
@@ -455,7 +476,7 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="Plan Agent 실행이 완료되어 Plan Review에서 사람 승인을 기다립니다.",
+            message="Design Agent 실행이 완료되어 Plan Review에서 사람 승인을 기다립니다.",
         )
 
     def run_replan_for_github_issue(
@@ -553,24 +574,24 @@ class OrchestrationService:
         if task is None:
             return self._skip_develop_command(
                 issue_number,
-                "Plan을 찾을 수 없습니다. 먼저 @ai-harness plan을 실행하세요.",
+                f"Design을 찾을 수 없습니다. 먼저 {settings.design_command}을 실행하세요.",
             )
 
         task.title = title
         task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
         task.github_issue_url = issue_url
 
-        if not self.has_successful_agent_run(task.id, "plan"):
+        if not self.has_successful_design_run(task.id):
             return self._skip_develop_command(
                 issue_number,
-                "성공한 Plan 실행 기록이 없습니다. 먼저 @ai-harness plan을 실행하세요.",
+                f"성공한 Design 실행 기록이 없습니다. 먼저 {settings.design_command}을 실행하세요.",
                 task.id,
             )
 
         if task.state not in {KanbanState.DEV_READY.value, KanbanState.DEV_REVIEW.value}:
             return self._skip_develop_command(
                 issue_number,
-                f"현재 작업 상태는 `{task.state}`입니다. develop은 `{KanbanState.DEV_READY.value}`에서만 실행할 수 있습니다. 먼저 plan 승인을 기록하세요.",
+                f"현재 작업 상태는 `{task.state}`입니다. develop은 `{KanbanState.DEV_READY.value}`에서만 실행할 수 있습니다. 먼저 design 승인을 기록하세요.",
                 task.id,
             )
 
@@ -866,8 +887,8 @@ class OrchestrationService:
         if task is None:
             return self._skip_qa_command(
                 issue_number,
-                "작업을 찾을 수 없습니다. 먼저 plan과 develop을 실행하세요.",
-                next_command=settings.plan_command,
+                "작업을 찾을 수 없습니다. 먼저 design과 develop을 실행하세요.",
+                next_command=settings.design_command,
             )
 
         task.title = title
@@ -1435,7 +1456,7 @@ class OrchestrationService:
 
     def _next_command_for_state(self, state: str) -> str:
         return {
-            KanbanState.BACKLOG.value: settings.plan_command,
+            KanbanState.BACKLOG.value: settings.design_command,
             KanbanState.PLAN_REVIEW.value: "harness approve --stage plan",
             KanbanState.DEV_READY.value: settings.develop_command,
             KanbanState.DEV_REVIEW.value: "harness approve --stage dev",
@@ -1625,7 +1646,12 @@ class OrchestrationService:
             artifact_path = settings.artifact_root / task.id / "dev" / "dev-status.md"
         elif agent_name == "fix_develop" or command == settings.fix_develop_command:
             artifact_path = settings.artifact_root / task.id / "dev" / "fix-develop-report.md"
-        elif agent_name == "plan" or command in {settings.plan_command, settings.replan_command}:
+        elif agent_name in {"plan", "design"} or command in {
+            settings.design_command,
+            settings.redesign_command,
+            settings.plan_command,
+            settings.replan_command,
+        }:
             artifact_path = settings.artifact_root / task.id / "plans" / "architecture.md"
 
         if artifact_path is None:
@@ -1681,7 +1707,7 @@ class OrchestrationService:
         self.db.commit()
         return {"status": "ignored", "reason": reason}
 
-    # Plan Agent 결과를 사람이 검토할 수 있는 GitHub 댓글 본문으로 만든다.
+    # Design Agent 결과를 사람이 검토할 수 있는 GitHub 댓글 본문으로 만든다.
     def _build_plan_comment(self, task: Task) -> str:
         goal = self._extract_section(task.body, "목표")
         scope = self._extract_bullets(task.body, "작업 범위")
@@ -1801,9 +1827,9 @@ class OrchestrationService:
                 f"- `artifacts/{task_id}/plans/edge-case-checklist.md`",
                 "",
                 "### 다음 추천 명령어",
-                f"- 위 질문에 답을 보강하려면 `{settings.replan_command}`",
+                f"- 위 질문에 답을 보강하려면 `{settings.redesign_command}`",
                 f"- 계획이 충분하면 `{self._approval_command(task, 'plan')}`",
-                f"- 계획을 수정하고 싶으면 `{settings.replan_command}` 아래에 수정 요청을 적어 다시 논의하세요.",
+                f"- 계획을 수정하고 싶으면 `{settings.redesign_command}` 아래에 수정 요청을 적어 다시 논의하세요.",
             ]
         )
 
@@ -1887,16 +1913,16 @@ class OrchestrationService:
             [
                 "<!-- ai-harness-generated -->",
                 "",
-                f"# 🏗️ AI Plan이 이미 존재합니다: {task.title}",
+                f"# 🏗️ AI Design이 이미 존재합니다: {task.title}",
                 "",
                 f"Task ID: `{task.id}`",
                 "",
-                "이미 Plan Agent가 성공한 기록이 있습니다.",
+                "이미 Design Agent가 성공한 기록이 있습니다.",
                 "",
                 "기존 설계를 수정하고 싶다면 아래 명령을 새 댓글로 작성하세요.",
                 "",
                 "```markdown",
-                f"{settings.replan_command}",
+                f"{settings.redesign_command}",
                 "",
                 "- 수정하고 싶은 설계 방향을 적습니다.",
                 "```",
@@ -2125,7 +2151,7 @@ class OrchestrationService:
                 "",
                 "### 다음 명령",
                 "```markdown",
-                settings.plan_command,
+                settings.design_command,
                 "```",
             ]
         )
@@ -2292,8 +2318,8 @@ class OrchestrationService:
 
     def _plan_title(self, task: Task) -> str:
         if self._extract_section(task.body, "Human Replan Request"):
-            return f"♻️ 🏗️ AI Re-Plan: {task.title}"
-        return f"🏗️ AI Plan: {task.title}"
+            return f"♻️ 🏗️ AI Re-Design: {task.title}"
+        return f"🏗️ AI Design: {task.title}"
 
     def _qa_requested_at(self) -> str:
         return now_kst().strftime("%Y.%m.%d %H:%M:%S")
@@ -2363,9 +2389,9 @@ class OrchestrationService:
     def _build_qa_notification_message(self, task: Task, rerun: bool) -> str:
         return self._build_human_qa_message(task, rerun, github_comment=False)
 
-    # Plan 완료 후 Discord에 전달할 짧은 사람용 메시지를 만든다.
+    # Design 완료 후 Discord에 전달할 짧은 사람용 메시지를 만든다.
     def _build_plan_notification_message(self, task: Task, force: bool) -> str:
-        title = f"♻️ 🏗️ Re-Plan 완료: {task.title}" if force else f"🏗️ Plan 완료: {task.title}"
+        title = f"♻️ 🏗️ Re-Design 완료: {task.title}" if force else f"🏗️ Design 완료: {task.title}"
         return "\n".join(
             [
                 title,
@@ -2373,8 +2399,8 @@ class OrchestrationService:
                 f"작업 타입: {self._issue_type_label(self._extract_issue_type(task.body, task.title))}",
                 f"현재 상태: {task.state}",
                 "",
-                "설계 산출물이 생성되었습니다.",
-                "내용을 검토한 뒤 충분하면 Plan 승인을 기록하세요.",
+                "엔지니어링 설계 산출물이 생성되었습니다.",
+                "내용을 검토한 뒤 충분하면 Design 승인을 기록하세요.",
                 "",
                 "다음 명령:",
                 self._approval_command(task, "plan"),
@@ -2409,7 +2435,7 @@ class OrchestrationService:
             ]
         )
 
-    # Plan 완료 알림을 외부 채널로 전송한다.
+    # Design 완료 알림을 외부 채널로 전송한다.
     def _notify_after_plan(self, task: Task, run_id: str | None, force: bool) -> None:
         if not settings.allow_external_notifications:
             self._audit(
@@ -2419,7 +2445,7 @@ class OrchestrationService:
                 {"reason": "ALLOW_EXTERNAL_NOTIFICATIONS가 false입니다.", "agent": "plan"},
             )
             return
-        self._notify_discord_for_stage(task, run_id, "plan", self._build_plan_notification_message(task, force))
+        self._notify_discord_for_stage(task, run_id, "design", self._build_plan_notification_message(task, force))
 
     # Dev 완료 알림을 외부 채널로 전송한다.
     def _notify_after_dev(self, task: Task, run_id: str | None) -> None:

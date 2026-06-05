@@ -67,7 +67,7 @@ def test_github_plan_label_webhook_triggers_plan(tmp_path, monkeypatch):
     assert response.status_code == 200
     result = response.json()
     assert result["current_state"] == "Plan Review"
-    assert "Plan Agent 실행이 완료" in result["message"]
+    assert "Design Agent 실행이 완료" in result["message"]
 
     artifact_root = Path(tmp_path / "artifacts" / result["task_id"] / "plans")
     assert (artifact_root / "architecture.md").exists()
@@ -173,7 +173,7 @@ def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
             issue_url=f"https://github.com/passionryu/targetApp/issues/{issue_number}",
         )
 
-    assert event.message == "Plan Agent 실행이 완료되어 Plan Review에서 사람 승인을 기다립니다."
+    assert event.message == "Design Agent 실행이 완료되어 Plan Review에서 사람 승인을 기다립니다."
     assert "### 구현 요약" in captured["body"]
     assert "### 변경 대상" in captured["body"]
     assert "### 구현 순서" in captured["body"]
@@ -183,7 +183,7 @@ def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
     assert "### 플로우 차트" in captured["body"]
     assert "### 다음 추천 명령어" in captured["body"]
     assert "`harness approve --issue" in captured["body"]
-    assert "`@ai-harness replan`" in captured["body"]
+    assert "`@ai-harness redesign`" in captured["body"]
 
 
 def test_config_plan_omits_usecase_diagrams(tmp_path, monkeypatch):
@@ -283,7 +283,7 @@ def test_github_comment_falls_back_to_gh_cli_when_api_forbidden(tmp_path, monkey
 
     assert event.current_state == "Plan Review"
     assert f"gh issue comment {issue_number}" in captured["command"]
-    assert "# 🏗️ AI Plan:" in captured["body"]
+    assert "# 🏗️ AI Design:" in captured["body"]
     assert "Spring Security와 JWT 설정을 추가한다." in captured["body"]
 
 
@@ -340,7 +340,7 @@ def test_issue_comment_replan_command_forces_new_plan(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     result = response.json()
-    assert "Plan Agent 실행이 완료" in result["message"]
+    assert "Design Agent 실행이 완료" in result["message"]
 
     architecture = (
         tmp_path / "artifacts" / result["task_id"] / "plans" / "architecture.md"
@@ -384,7 +384,7 @@ def test_issue_comment_plan_command_triggers_initial_plan(tmp_path, monkeypatch)
 
     assert response.status_code == 200
     result = response.json()
-    assert "Plan Agent 실행이 완료" in result["message"]
+    assert "Design Agent 실행이 완료" in result["message"]
     architecture = tmp_path / "artifacts" / result["task_id"] / "plans" / "architecture.md"
     assert architecture.exists()
     assert "## Issue Type\nfeFeature" in architecture.read_text()
@@ -687,10 +687,10 @@ def test_issue_comment_plan_command_skips_duplicate_successful_plan(tmp_path, mo
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
-    assert "Plan Agent 실행이 완료" in first_response.json()["message"]
-    assert second_response.json()["message"] == "이미 Plan이 완료되어 중복 실행을 스킵했습니다."
+    assert "Design Agent 실행이 완료" in first_response.json()["message"]
+    assert second_response.json()["message"] == "이미 Design이 완료되어 중복 실행을 스킵했습니다."
     assert len(captured_comments) == 1
-    assert "AI Plan" in captured_comments[-1]
+    assert "AI Design" in captured_comments[-1]
 
 
 def test_issue_comment_replan_updates_existing_plan_comment(tmp_path, monkeypatch):
@@ -713,8 +713,8 @@ def test_issue_comment_replan_updates_existing_plan_comment(tmp_path, monkeypatc
 
         def list_issue_comments(self, owner: str, repo: str, issue_number: int) -> list[dict]:
             return [
-                {"id": 101, "body": "<!-- ai-harness-generated -->\n\n# 🏗️ AI Plan: old"},
-                {"id": 102, "body": "<!-- ai-harness-generated -->\n\n# ♻️ 🏗️ AI Re-Plan: older"},
+                {"id": 101, "body": "<!-- ai-harness-generated -->\n\n# 🏗️ AI Design: old"},
+                {"id": 102, "body": "<!-- ai-harness-generated -->\n\n# ♻️ 🏗️ AI Re-Design: older"},
             ]
 
         def update_issue_comment(self, owner: str, repo: str, comment_id: int, body: str) -> None:
@@ -758,7 +758,7 @@ def test_issue_comment_replan_updates_existing_plan_comment(tmp_path, monkeypatc
     assert response.status_code == 200
     assert created_comments == []
     assert updated_comments[0][0] == 102
-    assert "# ♻️ 🏗️ AI Re-Plan" in updated_comments[0][1]
+    assert "# ♻️ 🏗️ AI Re-Design" in updated_comments[0][1]
     assert deleted_comments == [101]
 
 
@@ -881,7 +881,7 @@ def test_issue_comment_develop_command_without_plan_is_ignored(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {
         "status": "ignored",
-        "reason": "Plan을 찾을 수 없습니다. 먼저 @ai-harness plan을 실행하세요.",
+        "reason": "Design을 찾을 수 없습니다. 먼저 @ai-harness design을 실행하세요.",
     }
 
 
@@ -1632,7 +1632,7 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     assert "`document` 명령" in captured_chat_messages[1]
     assert "`domain-knowledge` 명령" in captured_chat_messages[1]
     assert len(captured_discord_messages) == 4
-    assert "🏗️ Plan 완료" in captured_discord_messages[0]
+    assert "🏗️ Design 완료" in captured_discord_messages[0]
     assert "🛠️ 개발 완료" in captured_discord_messages[1]
     assert captured_discord_messages[2:] == captured_chat_messages
 
@@ -1691,7 +1691,7 @@ def test_issue_comment_ignores_commands_not_on_first_content_line(monkeypatch):
         "comment": {
             "body": "\n".join(
                 [
-                    "## AI Plan이 이미 존재합니다",
+                    "## AI Design이 이미 존재합니다",
                     "",
                     "```markdown",
                     "@ai-harness replan",

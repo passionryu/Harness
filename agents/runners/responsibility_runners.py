@@ -1820,7 +1820,7 @@ def _api_contract_content(context: DevRunnerContext, method: str, path: str) -> 
             "- Controller는 얇게 유지한다.",
             "- Request/Response DTO는 Controller 파일에서 분리한다.",
             "- 유스케이스 흐름은 application service에서 읽히도록 유지한다.",
-            "- 실제 구현 전 이 contract를 사람 또는 Plan Agent가 보강해야 한다.",
+            "- 실제 구현 전 이 contract를 사람 또는 Design Agent가 보강해야 한다.",
         ]
     )
 

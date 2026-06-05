@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     enable_github_comment_commands: bool = False
     development_base_branch: str = "stage"
     plan_trigger_label: str = "ai-plan-ready"
+    design_command: str = "@ai-harness design"
+    redesign_command: str = "@ai-harness redesign"
     plan_command: str = "@ai-harness plan"
     replan_command: str = "@ai-harness replan"
     develop_command: str = "@ai-harness develop"

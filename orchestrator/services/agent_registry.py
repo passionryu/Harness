@@ -18,6 +18,7 @@ class AgentRegistry:
             "documentation": DocumentationAgent(),
             "domain_knowledge": DomainKnowledgeAgent(),
             "planning_assistant": PlanningAssistantAgent(),
+            "design": PlanAgent(),
         }
 
     def get(self, name: str) -> AgentRunner:

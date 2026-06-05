@@ -152,9 +152,9 @@ def _run_issue_command(args: argparse.Namespace) -> EventResult | dict[str, Any]
     context = _fetch_issue_context(args.issue)
     with SessionLocal() as db:
         service = OrchestrationService(db)
-        if args.command == "plan":
+        if args.command in {"design", "plan"}:
             return service.run_plan_for_github_issue(force=args.force, **context)
-        if args.command == "replan":
+        if args.command in {"redesign", "replan"}:
             return service.run_replan_for_github_issue(
                 replan_request=_resolve_note(args, "CLI에서 재설계가 요청되었습니다."),
                 **context,
@@ -339,7 +339,7 @@ def _create_issue(args: argparse.Namespace) -> dict[str, Any]:
         "url": issue.get("html_url") or "",
         "task_id": task_id,
         "notification": notification,
-        "next": f"harness plan --issue {int(issue['number'])}",
+        "next": f"harness design --issue {int(issue['number'])}",
     }
 
 
@@ -361,7 +361,7 @@ def _notify_issue_created(issue: dict[str, Any], task_id: str) -> str:
             f"Task ID: {task_id}",
             "",
             "다음 단계:",
-            f"harness plan --issue {issue_number}",
+            f"harness design --issue {issue_number}",
         ]
     )
     notifier.send_text(message)
@@ -595,10 +595,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="결과를 JSON으로 출력")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    plan = subparsers.add_parser("plan", help="GitHub issue를 기반으로 Plan Agent를 실행")
-    _add_issue_option(plan)
-    plan.add_argument("--force", action="store_true", help="성공한 plan이 있어도 다시 실행")
-    plan.set_defaults(handler=_run_issue_command)
+    for command, help_text in [
+        ("design", "GitHub issue를 기반으로 Design Agent를 실행"),
+        ("plan", "Deprecated alias: design 명령을 사용"),
+    ]:
+        design_parser = subparsers.add_parser(command, help=help_text)
+        _add_issue_option(design_parser)
+        design_parser.add_argument("--force", action="store_true", help="성공한 design이 있어도 다시 실행")
+        design_parser.set_defaults(handler=_run_issue_command)
 
     create_issue = subparsers.add_parser("create-issue", help="GitHub issue 생성 후 하네스 DB 동기화와 Discord 알림 전송")
     create_issue.add_argument("--title", required=True, help="생성할 GitHub issue 제목")
@@ -623,7 +627,7 @@ def _build_parser() -> argparse.ArgumentParser:
     create_issue.set_defaults(handler=_create_issue)
 
     for command, help_text in [
-        ("develop", "Plan 승인 후 Dev Agent 실행"),
+        ("develop", "Design 승인 후 Dev Agent 실행"),
         ("fix-develop", "Deprecated: Dev Agent 내부 복구 또는 Codex 대화형 수정 흐름을 사용"),
     ]:
         command_parser = subparsers.add_parser(command, help=help_text)
@@ -631,7 +635,8 @@ def _build_parser() -> argparse.ArgumentParser:
         command_parser.set_defaults(handler=_run_issue_command)
 
     for command, help_text in [
-        ("replan", "요청 메모를 반영해 Plan Agent 재실행"),
+        ("redesign", "요청 메모를 반영해 Design Agent 재실행"),
+        ("replan", "Deprecated alias: redesign 명령을 사용"),
         ("refactor", "요청 메모 기준으로 구현 결과 리팩터링"),
         ("qa", "System QA Agent 실행"),
         ("re-qa", "System QA Agent 재실행"),

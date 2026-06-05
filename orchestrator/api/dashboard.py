@@ -172,7 +172,7 @@ def dashboard_task_detail(
                 <p class="section-help">
                   로컬 운영자가 직접 하네스 작업을 실행할 때만 사용하는 보조 패널입니다.
                   기본 입력 인터페이스는 Codex 대화이며, 이 화면은 상태 확인과 긴급 조작용으로 유지합니다.
-                  요청 메모는 Replan, QA, Re-QA, Refactor, Cancel에서 사람이 남긴 지시사항으로 전달됩니다.
+                  요청 메모는 Redesign, QA, Re-QA, Refactor, Cancel에서 사람이 남긴 지시사항으로 전달됩니다.
                 </p>
                 {_command_panel(task)}
               </article>
@@ -699,9 +699,9 @@ def _status_class(status: str) -> str:
 # 명령 실행 버튼과 메모 입력 UI를 생성한다.
 def _command_panel(task: Task) -> str:
     commands = [
-        ("plan", "Plan", "최초 설계를 생성합니다. 이미 성공한 Plan이 있으면 중복 실행을 막습니다."),
-        ("replan", "Replan", "기존 설계가 마음에 들지 않을 때 요청 메모를 반영해 다시 설계합니다."),
-        ("develop", "Develop", "사람이 Plan을 승인하고 개발 에이전트를 실행합니다."),
+        ("plan", "Design", "최초 엔지니어링 설계를 생성합니다. 이미 성공한 Design이 있으면 중복 실행을 막습니다."),
+        ("replan", "Redesign", "기존 설계가 마음에 들지 않을 때 요청 메모를 반영해 다시 설계합니다."),
+        ("develop", "Develop", "사람이 Design을 승인하고 개발 에이전트를 실행합니다."),
         ("fix-develop", "Fix Develop", "Deprecated: Dev Agent 내부 복구 또는 Codex 대화형 수정 흐름을 사용합니다."),
         ("qa", "System QA", "개발 결과를 시스템 검증으로 넘깁니다. In Progress 상태에서 사용합니다."),
         ("re-qa", "Re-QA", "System QA 이후 같은 작업을 다시 검증합니다."),
@@ -773,7 +773,7 @@ def _artifact_list(artifacts: list[Artifact]) -> str:
 
 # artifact 경로와 종류를 기준으로 사람이 이해할 수 있는 묶음을 만든다.
 def _group_artifacts(artifacts: list[Artifact]) -> dict[str, list[Artifact]]:
-    group_order = ["Plan 산출물", "Dev 산출물", "QA 산출물", "기타 산출물"]
+    group_order = ["Design 산출물", "Dev 산출물", "QA 산출물", "기타 산출물"]
     groups: dict[str, list[Artifact]] = {name: [] for name in group_order}
     seen: set[tuple[str, str]] = set()
     for artifact in artifacts:
@@ -789,7 +789,7 @@ def _group_artifacts(artifacts: list[Artifact]) -> dict[str, list[Artifact]]:
 def _artifact_group_name(artifact: Artifact) -> str:
     path = artifact.path
     if "/plans/" in path or artifact.kind in {"architecture-doc", "flow", "flow-chart", "sequence-diagram", "edge-case-checklist"}:
-        return "Plan 산출물"
+        return "Design 산출물"
     if "/qa/" in path or artifact.kind.startswith("qa-"):
         return "QA 산출물"
     if "/dev/" in path or artifact.kind in {"commit-plan", "dev-status", "patch", "test-report"}:

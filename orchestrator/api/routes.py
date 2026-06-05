@@ -156,7 +156,7 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
     )
     command, command_body = _parse_issue_comment_command(comment_body)
 
-    if command == settings.plan_command:
+    if command in {settings.design_command, settings.plan_command}:
         try:
             return OrchestrationService(db).run_plan_for_github_issue(
                 issue_number=issue_number,
@@ -302,7 +302,7 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
             reason=command_body or "cancel requested by GitHub comment",
         )
 
-    if command != settings.replan_command:
+    if command not in {settings.redesign_command, settings.replan_command}:
         return {"status": "ignored", "reason": "AI Harness 이슈 명령이 아닙니다."}
 
     replan_request = command_body
