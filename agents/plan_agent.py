@@ -3,6 +3,7 @@ import re
 
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
 from agents.organization import render_ai_organization_catalog, render_work_units
+from orchestrator.core.settings import settings
 
 
 def _extract_section(markdown: str, heading: str) -> list[str]:
@@ -39,6 +40,126 @@ def _extract_bullets(markdown: str, heading: str) -> list[str]:
 def _format_bullets(items: list[str], fallback: list[str]) -> list[str]:
     source = items or fallback
     return [f"- {item}" for item in source]
+
+
+# 파일을 짧게 읽어 설계 Agent의 코드베이스 스냅샷에 사용한다.
+def _read_text(path: Path, limit: int = 12000) -> str:
+    try:
+        return path.read_text(encoding="utf-8")[:limit]
+    except OSError:
+        return ""
+
+
+# FE 설계에 필요한 Next.js 구조와 스타일/아이콘 단서를 좁게 수집한다.
+def _inspect_frontend_codebase() -> dict[str, object]:
+    repo = settings.target_repo_path.expanduser().resolve()
+    web = repo / "apps" / "web"
+    page = web / "app" / "page.tsx"
+    package_json = web / "package.json"
+    components_dir = web / "components"
+    app_dir = web / "app"
+
+    page_text = _read_text(page)
+    package_text = _read_text(package_json)
+    component_files = sorted(
+        str(path.relative_to(web))
+        for path in components_dir.rglob("*")
+        if path.is_file() and path.suffix in {".tsx", ".ts"}
+    )[:40] if components_dir.exists() else []
+    app_files = sorted(
+        str(path.relative_to(web))
+        for path in app_dir.rglob("*")
+        if path.is_file() and path.suffix in {".tsx", ".ts", ".css"}
+    )[:40] if app_dir.exists() else []
+
+    style_markers: list[str] = []
+    if "className=" in page_text:
+        style_markers.append("className/Tailwind 계열 스타일")
+    if (web / "app" / "globals.css").exists():
+        style_markers.append("apps/web/app/globals.css 전역 스타일")
+    if "framer-motion" in package_text:
+        style_markers.append("framer-motion 사용 가능")
+    if not style_markers:
+        style_markers.append("스타일 방식은 구현 전 추가 확인 필요")
+
+    icon_library = "lucide-react" if "lucide-react" in package_text else "확인 필요"
+
+    return {
+        "repo": str(repo),
+        "web": str(web),
+        "page_exists": page.exists(),
+        "page": "apps/web/app/page.tsx",
+        "page_text": page_text,
+        "package_exists": package_json.exists(),
+        "icon_library": icon_library,
+        "style_markers": style_markers,
+        "component_files": component_files,
+        "app_files": app_files,
+        "settings_component": "apps/web/components/settings/settings-menu.tsx"
+        if components_dir.exists()
+        else "apps/web/app/page.tsx 내부 local component",
+    }
+
+
+# 이슈 본문과 현재 화면 파일을 기준으로 제거해야 할 화면 문구를 찾는다.
+def _requested_text_removals(title: str, body: str, page_text: str) -> list[str]:
+    candidates = [
+        "마음 기록 시작하기",
+        "이미 계정이 있어요",
+        "아직은 화면 구현 단계입니다.",
+    ]
+    haystack = f"{title}\n{body}\n{page_text}"
+    return [item for item in candidates if item in haystack]
+
+
+# FE V2 설계가 architecture.md에 포함할 코드베이스 기반 섹션을 만든다.
+def _frontend_design_v2_sections(title: str, body: str, snapshot: dict[str, object]) -> list[str]:
+    removals = _requested_text_removals(title, body, str(snapshot["page_text"]))
+    component_files = list(snapshot["component_files"])
+    app_files = list(snapshot["app_files"])
+    style_markers = list(snapshot["style_markers"])
+    settings_component = str(snapshot["settings_component"])
+    icon_library = str(snapshot["icon_library"])
+
+    target_lines = [
+        f"- `apps/web/app/page.tsx`: 메인 화면 CTA/문구 제거, 카드 hover 상태, 우측 상단 설정 진입점 추가",
+        f"- `{settings_component}`: 설정 메뉴 MVP를 분리 구현",
+        "- 설정 메뉴 항목: 알림 설정, 화면 분위기, 계정, 서비스 안내",
+    ]
+    if removals:
+        target_lines.append("- 제거 대상 문구: " + ", ".join(f"`{item}`" for item in removals))
+
+    return [
+        "## Current App Structure",
+        f"- target repo: `{snapshot['repo']}`",
+        f"- main page: `{snapshot['page']}` ({'존재' if snapshot['page_exists'] else '없음'})",
+        f"- app files: {', '.join(app_files[:8]) if app_files else '확인된 app 파일 없음'}",
+        f"- component files: {', '.join(component_files[:8]) if component_files else '확인된 component 파일 없음'}",
+        f"- style: {', '.join(style_markers)}",
+        f"- icon library: {icon_library}",
+        "",
+        "## Concrete Change Targets",
+        *target_lines,
+        "",
+        "## UI State Design",
+        "- `settingsOpen` boolean state로 설정 메뉴 열림/닫힘을 제어한다.",
+        "- 설정 버튼 클릭 시 메뉴를 열고, 바깥 영역 클릭 또는 Escape 입력으로 닫는다.",
+        "- 설정 버튼은 `aria-label`을 제공하고, 메뉴는 모바일에서도 화면 밖으로 넘치지 않게 배치한다.",
+        "- hover 효과는 카드 크기를 흔들지 않고 border/shadow/transform 정도로 따뜻하게 반응시킨다.",
+        "",
+        "## Commit Plan",
+        "- commit 1: 메인 화면 CTA 버튼과 임시 안내 문구 제거",
+        "- commit 2: 메인 카드 hover polish 적용",
+        "- commit 3: 설정 버튼과 설정 메뉴 MVP 추가",
+        "- commit 4: 화면 smoke test와 빌드 검증",
+        "",
+        "## QA Design",
+        "- 메인 화면에서 `마음 기록 시작하기`, `이미 계정이 있어요`, `아직은 화면 구현 단계입니다.` 문구가 보이지 않는다.",
+        "- 우측 상단 톱니바퀴 설정 버튼이 보이고 클릭 시 설정 메뉴가 열린다.",
+        "- 설정 메뉴에 알림 설정, 화면 분위기, 계정, 서비스 안내 항목이 보인다.",
+        "- 카드에 마우스를 올렸을 때 hover 반응이 있고 레이아웃이 밀리지 않는다.",
+        "- 모바일 폭에서 설정 메뉴가 화면 밖으로 넘치거나 텍스트가 겹치지 않는다.",
+    ]
 
 
 # 여러 이슈 템플릿 heading 중 먼저 발견되는 bullet 목록을 가져온다.
@@ -97,6 +218,12 @@ def _is_login_api_plan(title: str, body: str) -> bool:
         and ("/api/auth/login" in haystack or "auth/login" in haystack)
         and ("refresh token" in haystack or "리프레시" in haystack or "redis" in haystack)
     )
+
+
+# 메인 화면 설정 메뉴 FE 설계인지 판단한다.
+def _is_main_settings_fe_plan(title: str, body: str) -> bool:
+    haystack = f"{title}\n{body}"
+    return "메인" in haystack and "설정" in haystack and ("화면" in haystack or "[FE]" in title)
 
 
 # 이슈 타입별로 사람의 결정이 필요한 질문을 구체적인 문장으로 만든다.
@@ -408,6 +535,24 @@ def _sequence_diagram_for_issue_type(issue_type: str, title: str = "", body: str
             "        end",
             "    end",
         ]
+    if issue_type == "feFeature" and _is_main_settings_fe_plan(title, body):
+        return [
+            "sequenceDiagram",
+            "    actor User as 사용자",
+            "    participant Main as 메인 화면",
+            "    participant Cards as 메인 카드 영역",
+            "    participant SettingsButton as 설정 버튼",
+            "    participant SettingsMenu as 설정 메뉴",
+            "    User->>Main: 메인 화면에 진입한다",
+            "    Main-->>User: 임시 CTA 없이 핵심 콘텐츠와 설정 버튼을 보여준다",
+            "    User->>Cards: 카드 위에 마우스를 올린다",
+            "    Cards-->>User: 따뜻한 hover 반응을 보여준다",
+            "    User->>SettingsButton: 톱니바퀴 버튼을 누른다",
+            "    SettingsButton->>SettingsMenu: settingsOpen 상태를 연다",
+            "    SettingsMenu-->>User: 알림, 화면 분위기, 계정, 서비스 안내 항목을 보여준다",
+            "    User->>SettingsMenu: 바깥 영역 또는 Escape로 메뉴를 닫는다",
+            "    SettingsMenu-->>Main: settingsOpen 상태를 닫는다",
+        ]
 
     diagrams = {
         "feFeature": [
@@ -519,6 +664,22 @@ def _flow_chart_for_issue_type(issue_type: str, title: str = "", body: str = "")
             "    J --> K[Refresh Token을 Redis에 7일 TTL로 저장한다]",
             "    K --> L[로그인 성공 응답을 반환한다]",
         ]
+    if issue_type == "feFeature" and _is_main_settings_fe_plan(title, body):
+        return [
+            "flowchart TD",
+            "    A[사용자가 메인 화면에 들어온다] --> B[임시 CTA와 구현 단계 안내 문구 없이 화면을 본다]",
+            "    B --> C[사용자는 카드 콘텐츠를 탐색한다]",
+            "    C --> D{카드에 마우스를 올렸는가?}",
+            "    D -- 예 --> E[카드가 부드럽게 반응해 따뜻한 분위기를 만든다]",
+            "    D -- 아니오 --> F[기본 화면을 유지한다]",
+            "    E --> G[사용자가 우측 상단 설정 버튼을 누른다]",
+            "    F --> G",
+            "    G --> H[설정 메뉴가 열린다]",
+            "    H --> I[알림 설정, 화면 분위기, 계정, 서비스 안내를 확인한다]",
+            "    I --> J{메뉴를 닫는 행동을 했는가?}",
+            "    J -- 예 --> K[설정 메뉴를 닫고 메인 화면으로 돌아간다]",
+            "    J -- 아니오 --> H",
+        ]
 
     charts = {
         "feFeature": [
@@ -599,6 +760,12 @@ class PlanAgent:
         sql_blocks = _extract_sql_blocks(input_data.body)
         issue_type = _extract_issue_type(input_data.body, input_data.title)
         profile = _profile_for_issue_type(issue_type)
+        frontend_snapshot = _inspect_frontend_codebase() if issue_type == "feFeature" else None
+        frontend_design_sections = (
+            _frontend_design_v2_sections(input_data.title, input_data.body, frontend_snapshot)
+            if frontend_snapshot
+            else []
+        )
 
         inferred_files = list(profile["expected_files"])
         implementation_steps = list(profile["steps"])
@@ -611,6 +778,27 @@ class PlanAgent:
                 if question not in {"DDL/migration 필요 여부", "외부 시스템 연동 여부"}
             ]
         edge_cases = list(profile["edge_cases"])
+        if frontend_snapshot:
+            inferred_files = [
+                "apps/web/app/page.tsx",
+                str(frontend_snapshot["settings_component"]),
+                "apps/web/package.json",
+                "apps/web 하위 smoke/build 검증 스크립트",
+            ]
+            implementation_steps = [
+                "현재 앱 구조, 스타일 방식, 아이콘 라이브러리를 확인한다.",
+                "메인 화면에서 제거할 CTA/임시 문구와 유지할 콘텐츠를 특정한다.",
+                "카드 hover polish와 설정 메뉴 상태/닫힘 동작을 설계한다.",
+                "설정 메뉴 MVP 컴포넌트와 접근성 속성을 구현한다.",
+                "문구 제거, 설정 메뉴, hover, 모바일 레이아웃을 smoke test로 검증한다.",
+            ]
+            edge_cases = [
+                "제거 대상 문구가 화면에 남아 있는 경우",
+                "설정 메뉴가 열린 뒤 닫히지 않는 경우",
+                "hover 효과가 카드 크기나 주변 레이아웃을 밀어내는 경우",
+                "모바일 화면에서 설정 메뉴가 viewport 밖으로 넘치는 경우",
+                "아이콘 버튼에 접근성 이름이 없는 경우",
+            ]
         flow_title = str(profile["flow_title"])
         summary_fallback = [str(profile["summary_fallback"])]
         scope_fallback = list(profile["scope_fallback"])
@@ -672,6 +860,12 @@ class PlanAgent:
                             "",
                         ]
                         if design_direction
+                        else []
+                    ),
+                    *frontend_design_sections,
+                    *(
+                        [""]
+                        if frontend_design_sections
                         else []
                     ),
                     *(

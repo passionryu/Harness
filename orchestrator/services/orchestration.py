@@ -1708,6 +1708,27 @@ class OrchestrationService:
         return {"status": "ignored", "reason": reason}
 
     # Design Agent 결과를 사람이 검토할 수 있는 GitHub 댓글 본문으로 만든다.
+    # Design Agent V2가 만든 코드베이스 기반 설계 섹션을 댓글용으로 변환한다.
+    def _design_v2_comment_sections(self, task: Task) -> list[str]:
+        architecture = settings.artifact_root / task.id / "plans" / "architecture.md"
+        if not architecture.exists():
+            return []
+        markdown = architecture.read_text(encoding="utf-8")
+        mapping = [
+            ("Current App Structure", "현재 앱 구조 확인"),
+            ("Concrete Change Targets", "변경 대상 특정"),
+            ("UI State Design", "UI 상태 설계"),
+            ("Commit Plan", "구현 단위 설계"),
+            ("QA Design", "QA 설계"),
+        ]
+        sections: list[str] = []
+        for source_heading, comment_heading in mapping:
+            lines = self._extract_section(markdown, source_heading)
+            if not lines:
+                continue
+            sections.extend([f"### {comment_heading}", *lines, ""])
+        return sections
+
     def _build_plan_comment(self, task: Task) -> str:
         goal = self._extract_section(task.body, "목표")
         scope = self._extract_bullets(task.body, "작업 범위")
@@ -1735,6 +1756,7 @@ class OrchestrationService:
         flow_chart = _flow_chart_for_issue_type(issue_type, task.title, task.body) if include_diagrams else []
         work_units = render_work_units(issue_type)
         task_id = task.id
+        design_v2_sections = self._design_v2_comment_sections(task)
 
         return "\n".join(
             [
@@ -1768,6 +1790,7 @@ class OrchestrationService:
                     scope_fallback,
                 ),
                 "",
+                *design_v2_sections,
                 *(
                     [
                         "### DDL",
