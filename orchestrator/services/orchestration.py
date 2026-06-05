@@ -509,6 +509,38 @@ class OrchestrationService:
             message="Documentation Agent가 이슈별 작업 기록을 생성했습니다.",
         )
 
+    # GitHub 이슈의 기존 산출물을 Domain Knowledge Agent로 Obsidian에 정리한다.
+    def run_domain_knowledge_for_github_issue(
+        self,
+        issue_number: int,
+        title: str,
+        body: str,
+        issue_url: str,
+        issue_labels: list[str] | None = None,
+    ) -> EventResult:
+        task = self._find_github_issue_task(issue_number, issue_url)
+        if task is None:
+            raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
+        previous = task.state
+        task.title = title
+        task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
+        task.github_issue_url = issue_url
+
+        run_id = self._run_agent(task, "domain_knowledge")
+        self._audit(
+            task.id,
+            run_id,
+            "domain_knowledge.completed",
+            {"issue_number": issue_number, "issue_url": issue_url},
+        )
+        self.db.commit()
+        return EventResult(
+            task_id=task.id,
+            previous_state=previous,
+            current_state=task.state,
+            message="Domain Knowledge Agent가 Obsidian 서비스 지식을 정리했습니다.",
+        )
+
     def run_develop_for_github_issue(
         self,
         issue_number: int,
@@ -1108,6 +1140,8 @@ class OrchestrationService:
         )
         documentation_error: str | None = None
         documentation_run_id: str | None = None
+        domain_knowledge_error: str | None = None
+        domain_knowledge_run_id: str | None = None
         if stage == "qa":
             try:
                 documentation_run_id = self._run_agent(task, "documentation")
@@ -1125,16 +1159,35 @@ class OrchestrationService:
                     "documentation.failed_after_human_qa",
                     {"approved_by": payload.approved_by, "stage": stage, "error": documentation_error},
                 )
+            try:
+                domain_knowledge_run_id = self._run_agent(task, "domain_knowledge")
+                self._audit(
+                    task.id,
+                    domain_knowledge_run_id,
+                    "domain_knowledge.completed_after_human_qa",
+                    {"approved_by": payload.approved_by, "stage": stage},
+                )
+            except ValueError as exc:
+                domain_knowledge_error = str(exc)
+                self._audit(
+                    task.id,
+                    None,
+                    "domain_knowledge.failed_after_human_qa",
+                    {"approved_by": payload.approved_by, "stage": stage, "error": domain_knowledge_error},
+                )
         self._move_github_project_status_best_effort(task, None)
         self.db.commit()
 
-        suffix = (
-            " Documentation Agent도 실행했습니다."
-            if documentation_run_id
-            else f" Documentation Agent 실행은 실패했습니다: {documentation_error}"
-            if documentation_error
-            else ""
-        )
+        suffix_parts: list[str] = []
+        if documentation_run_id:
+            suffix_parts.append("Documentation Agent도 실행했습니다.")
+        elif documentation_error:
+            suffix_parts.append(f"Documentation Agent 실행은 실패했습니다: {documentation_error}")
+        if domain_knowledge_run_id:
+            suffix_parts.append("Domain Knowledge Agent도 실행했습니다.")
+        elif domain_knowledge_error:
+            suffix_parts.append(f"Domain Knowledge Agent 실행은 실패했습니다: {domain_knowledge_error}")
+        suffix = f" {' '.join(suffix_parts)}" if suffix_parts else ""
         return EventResult(
             task_id=task.id,
             previous_state=previous,

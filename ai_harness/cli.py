@@ -177,6 +177,8 @@ def _run_issue_command(args: argparse.Namespace) -> EventResult | dict[str, Any]
             )
         if args.command == "document":
             return service.run_documentation_for_github_issue(**context)
+        if args.command == "domain-knowledge":
+            return service.run_domain_knowledge_for_github_issue(**context)
         if args.command == "cancel":
             return service.cancel_github_issue_task(
                 reason=_resolve_note(args, "CLI에서 작업 중지가 요청되었습니다."),
@@ -598,6 +600,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ("qa", "System QA Agent 실행"),
         ("re-qa", "System QA Agent 재실행"),
         ("document", "Documentation Agent로 Notion 입력용 작업 기록 생성"),
+        ("domain-knowledge", "Domain Knowledge Agent로 Obsidian 서비스 지식 정리"),
         ("cancel", "작업을 중지 상태로 전환"),
     ]:
         command_parser = subparsers.add_parser(command, help=help_text)

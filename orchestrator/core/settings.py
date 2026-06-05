@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     notion_feature_data_source_id: str = "37368b52-435d-801a-9780-000b5b2a2199"
     notion_harness_history_data_source_id: str = "36c68b52-435d-8028-b881-000bae658f76"
     notion_version: str = "2026-03-11"
+    obsidian_vault_path: Path = Path("~/Documents/myMentalCare Obsidian Vault")
     frontend_base_url: str = "http://localhost:3000"
     target_api_base_url: str = "http://localhost:3001"
     target_swagger_url: str = "http://localhost:3001/swagger-ui/index.html"
