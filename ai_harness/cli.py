@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from agents.documentation_agent import publish_harness_history_record
 from orchestrator.api.schemas import EventResult, HumanApproval
 from orchestrator.core.logging import configure_logging
 from orchestrator.core.settings import settings
@@ -475,6 +476,24 @@ def _approve(args: argparse.Namespace) -> EventResult:
     raise ValueError("--issue 또는 --task-id 중 하나가 필요합니다.")
 
 
+# 하네스 세팅 변경 이력을 Notion History 표에 기록한다.
+def _document_harness(args: argparse.Namespace) -> dict[str, Any]:
+    result = publish_harness_history_record(
+        title=args.title,
+        category=args.category,
+        feature=args.feature,
+        usage=args.usage,
+    )
+    return {
+        "status": result["status"],
+        "target": "harness-history",
+        "title": args.title,
+        "category": args.category,
+        "url": result.get("url", ""),
+        "reason": result.get("reason", ""),
+    }
+
+
 # GitHub 조회가 불가능한 환경에서는 로컬 DB 조회용 빈 issue_url을 반환한다.
 def _optional_issue_context(issue_number: int) -> dict[str, Any]:
     try:
@@ -605,6 +624,18 @@ def _build_parser() -> argparse.ArgumentParser:
     auto_run.add_argument("--force-plan", action="store_true", help="성공한 plan이 있어도 다시 설계")
     _add_note_options(auto_run)
     auto_run.set_defaults(handler=_auto_run)
+
+    document_harness = subparsers.add_parser("document-harness", help="하네스 세팅 변경 이력을 Notion History 표에 기록")
+    document_harness.add_argument("--title", required=True, help="하네스 변경 이력 제목")
+    document_harness.add_argument(
+        "--category",
+        required=True,
+        choices=["스킬 생성", "에이전트 생성", "에이전트 보강", "하네스 강화", "스킬 강화", "기획 변경"],
+        help="Notion History 표의 다중 선택 값",
+    )
+    document_harness.add_argument("--feature", required=True, help="유비쿼터스 언어로 정리한 기능 설명")
+    document_harness.add_argument("--usage", required=True, help="사용 방법 또는 호출 방식")
+    document_harness.set_defaults(handler=_document_harness)
 
     approve = subparsers.add_parser("approve", help="Plan/Dev/QA/Deploy 승인 gate를 기록")
     approve_target = approve.add_mutually_exclusive_group(required=True)

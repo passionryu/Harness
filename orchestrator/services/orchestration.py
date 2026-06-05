@@ -1106,14 +1106,40 @@ class OrchestrationService:
             f"human.approved_{stage}",
             {"approved_by": payload.approved_by, "notes": payload.notes, "stage": stage},
         )
+        documentation_error: str | None = None
+        documentation_run_id: str | None = None
+        if stage == "qa":
+            try:
+                documentation_run_id = self._run_agent(task, "documentation")
+                self._audit(
+                    task.id,
+                    documentation_run_id,
+                    "documentation.completed_after_human_qa",
+                    {"approved_by": payload.approved_by, "stage": stage},
+                )
+            except ValueError as exc:
+                documentation_error = str(exc)
+                self._audit(
+                    task.id,
+                    None,
+                    "documentation.failed_after_human_qa",
+                    {"approved_by": payload.approved_by, "stage": stage, "error": documentation_error},
+                )
         self._move_github_project_status_best_effort(task, None)
         self.db.commit()
 
+        suffix = (
+            " Documentation Agent도 실행했습니다."
+            if documentation_run_id
+            else f" Documentation Agent 실행은 실패했습니다: {documentation_error}"
+            if documentation_error
+            else ""
+        )
         return EventResult(
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message=f"{stage} 승인 기록을 남겼고 작업 상태를 {task.state}로 변경했습니다.",
+            message=f"{stage} 승인 기록을 남겼고 작업 상태를 {task.state}로 변경했습니다.{suffix}",
         )
 
     # approval stage 문자열을 상태 머신 이벤트로 변환한다.
