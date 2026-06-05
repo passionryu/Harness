@@ -1628,6 +1628,9 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     assert "1. 브라우저에서 메인 화면에 접속했을 때 회원가입 진입 버튼 또는 링크가 보이는가" in captured_chat_messages[1]
     assert "화면 확인 URL:\nhttp://localhost:3000" in captured_chat_messages[1]
     assert f"GitHub Issue:\n{issue['html_url']}" in captured_chat_messages[1]
+    assert "정리 Agent를 호출할까요?" in captured_chat_messages[1]
+    assert "`document` 명령" in captured_chat_messages[1]
+    assert "`domain-knowledge` 명령" in captured_chat_messages[1]
     assert len(captured_discord_messages) == 4
     assert "🏗️ Plan 완료" in captured_discord_messages[0]
     assert "🛠️ 개발 완료" in captured_discord_messages[1]

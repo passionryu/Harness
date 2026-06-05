@@ -1138,56 +1138,14 @@ class OrchestrationService:
             f"human.approved_{stage}",
             {"approved_by": payload.approved_by, "notes": payload.notes, "stage": stage},
         )
-        documentation_error: str | None = None
-        documentation_run_id: str | None = None
-        domain_knowledge_error: str | None = None
-        domain_knowledge_run_id: str | None = None
-        if stage == "qa":
-            try:
-                documentation_run_id = self._run_agent(task, "documentation")
-                self._audit(
-                    task.id,
-                    documentation_run_id,
-                    "documentation.completed_after_human_qa",
-                    {"approved_by": payload.approved_by, "stage": stage},
-                )
-            except ValueError as exc:
-                documentation_error = str(exc)
-                self._audit(
-                    task.id,
-                    None,
-                    "documentation.failed_after_human_qa",
-                    {"approved_by": payload.approved_by, "stage": stage, "error": documentation_error},
-                )
-            try:
-                domain_knowledge_run_id = self._run_agent(task, "domain_knowledge")
-                self._audit(
-                    task.id,
-                    domain_knowledge_run_id,
-                    "domain_knowledge.completed_after_human_qa",
-                    {"approved_by": payload.approved_by, "stage": stage},
-                )
-            except ValueError as exc:
-                domain_knowledge_error = str(exc)
-                self._audit(
-                    task.id,
-                    None,
-                    "domain_knowledge.failed_after_human_qa",
-                    {"approved_by": payload.approved_by, "stage": stage, "error": domain_knowledge_error},
-                )
         self._move_github_project_status_best_effort(task, None)
         self.db.commit()
 
-        suffix_parts: list[str] = []
-        if documentation_run_id:
-            suffix_parts.append("Documentation Agent도 실행했습니다.")
-        elif documentation_error:
-            suffix_parts.append(f"Documentation Agent 실행은 실패했습니다: {documentation_error}")
-        if domain_knowledge_run_id:
-            suffix_parts.append("Domain Knowledge Agent도 실행했습니다.")
-        elif domain_knowledge_error:
-            suffix_parts.append(f"Domain Knowledge Agent 실행은 실패했습니다: {domain_knowledge_error}")
-        suffix = f" {' '.join(suffix_parts)}" if suffix_parts else ""
+        suffix = (
+            " 필요하면 Documentation Agent 또는 Domain Knowledge Agent를 수동으로 호출하세요."
+            if stage == "qa"
+            else ""
+        )
         return EventResult(
             task_id=task.id,
             previous_state=previous,
@@ -2395,6 +2353,10 @@ class OrchestrationService:
                 "",
                 "GitHub Issue:",
                 task.github_issue_url or "",
+                "",
+                "정리 Agent를 호출할까요?",
+                "- Notion 작업 기록이 필요하면 `document` 명령을 실행하세요.",
+                "- Obsidian 서비스 지식 정리가 필요하면 `domain-knowledge` 명령을 실행하세요.",
             ]
         )
 
