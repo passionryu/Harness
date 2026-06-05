@@ -26,6 +26,13 @@ class GitHubAdapter:
             raise RuntimeError((completed.stderr or completed.stdout or f"exit_code={completed.returncode}").strip())
         return json.loads(completed.stdout or "{}")
 
+    # gh CLI를 실행하고 원문 출력을 반환한다.
+    def _run_gh_text(self, command: list[str]) -> str:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        if completed.returncode != 0:
+            raise RuntimeError((completed.stderr or completed.stdout or f"exit_code={completed.returncode}").strip())
+        return completed.stdout
+
     # gh CLI를 실행하고 성공 여부만 확인한다.
     def _run_gh(self, command: list[str]) -> None:
         completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
@@ -387,6 +394,131 @@ class GitHubAdapter:
                 break
             page += 1
         return issues
+
+    # GitHub Project의 Status 필드를 지정한 상태명으로 이동한다.
+    def move_issue_project_status(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        project_number: int,
+        status_name: str,
+    ) -> None:
+        if not self.token and not self.use_gh_cli:
+            raise ValueError("GitHub token 또는 gh CLI 인증이 필요합니다.")
+
+        project = self._get_user_project_status_field(owner, project_number)
+        status_field = project["status_field"]
+        option_id = self._status_option_id(status_field, status_name)
+        item_id = self._get_project_item_id(owner, repo, issue_number, project["id"])
+        self._update_project_status(project["id"], item_id, status_field["id"], option_id)
+
+    # 사용자 GitHub Project에서 Status single select 필드를 찾는다.
+    def _get_user_project_status_field(self, owner: str, project_number: int) -> dict:
+        query = """
+        query($owner:String!, $number:Int!) {
+          user(login:$owner) {
+            projectV2(number:$number) {
+              id
+              fields(first:50) {
+                nodes {
+                  ... on ProjectV2FieldCommon { id name }
+                  ... on ProjectV2SingleSelectField { id name options { id name } }
+                }
+              }
+            }
+          }
+        }
+        """
+        payload = self._graphql(query, {"owner": owner, "number": project_number})
+        project = payload["data"]["user"]["projectV2"]
+        fields = project["fields"]["nodes"]
+        status_field = next((field for field in fields if field and field.get("name") == "Status"), None)
+        if not status_field:
+            raise RuntimeError("GitHub Project에서 Status 필드를 찾을 수 없습니다.")
+        return {"id": project["id"], "status_field": status_field}
+
+    # Status 필드 옵션 중 이동 대상 상태의 option id를 찾는다.
+    def _status_option_id(self, status_field: dict, status_name: str) -> str:
+        for option in status_field.get("options") or []:
+            if option.get("name") == status_name:
+                return option["id"]
+        options = ", ".join(option.get("name", "") for option in status_field.get("options") or [])
+        raise RuntimeError(f"GitHub Project Status 옵션을 찾을 수 없습니다: target={status_name}, options={options}")
+
+    # 이슈가 프로젝트 안에서 가진 item id를 찾는다.
+    def _get_project_item_id(self, owner: str, repo: str, issue_number: int, project_id: str) -> str:
+        query = """
+        query($owner:String!, $repo:String!, $issueNumber:Int!) {
+          repository(owner:$owner, name:$repo) {
+            issue(number:$issueNumber) {
+              projectItems(first:50) {
+                nodes {
+                  id
+                  project { id }
+                }
+              }
+            }
+          }
+        }
+        """
+        payload = self._graphql(query, {"owner": owner, "repo": repo, "issueNumber": issue_number})
+        items = payload["data"]["repository"]["issue"]["projectItems"]["nodes"]
+        for item in items:
+            if item and item.get("project", {}).get("id") == project_id:
+                return item["id"]
+        raise RuntimeError(f"이슈 #{issue_number}의 GitHub Project item을 찾을 수 없습니다.")
+
+    # Project item의 Status 값을 업데이트한다.
+    def _update_project_status(self, project_id: str, item_id: str, field_id: str, option_id: str) -> None:
+        query = """
+        mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $optionId:String!) {
+          updateProjectV2ItemFieldValue(input:{
+            projectId:$projectId,
+            itemId:$itemId,
+            fieldId:$fieldId,
+            value:{singleSelectOptionId:$optionId}
+          }) {
+            projectV2Item { id }
+          }
+        }
+        """
+        self._graphql(
+            query,
+            {
+                "projectId": project_id,
+                "itemId": item_id,
+                "fieldId": field_id,
+                "optionId": option_id,
+            },
+        )
+
+    # GitHub GraphQL API를 token 또는 gh CLI로 호출한다.
+    def _graphql(self, query: str, variables: dict) -> dict:
+        if self.token:
+            response = httpx.post(
+                "https://api.github.com/graphql",
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Accept": "application/vnd.github+json",
+                },
+                json={"query": query, "variables": variables},
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        elif self.use_gh_cli:
+            command = ["gh", "api", "graphql", "-f", f"query={query}"]
+            for key, value in variables.items():
+                flag = "-F" if isinstance(value, int) else "-f"
+                command.extend([flag, f"{key}={value}"])
+            payload = json.loads(self._run_gh_text(command) or "{}")
+        else:
+            raise ValueError("GitHub token 또는 gh CLI 인증이 필요합니다.")
+
+        if payload.get("errors"):
+            raise RuntimeError(json.dumps(payload["errors"], ensure_ascii=False))
+        return payload
 
     def list_issue_comments(self, owner: str, repo: str, issue_number: int) -> list[dict]:
         if not self.token:

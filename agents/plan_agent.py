@@ -9,19 +9,19 @@ def _extract_section(markdown: str, heading: str) -> list[str]:
     lines = markdown.splitlines()
     collected: list[str] = []
     in_section = False
+    section_level: int | None = None
 
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("## "):
-            if in_section:
+        if stripped.startswith("#"):
+            level = len(stripped) - len(stripped.lstrip("#"))
+            title = stripped[level:].strip()
+            if in_section and section_level is not None and level <= section_level:
                 break
-            in_section = stripped.removeprefix("## ").strip() == heading
-            continue
-        if stripped.startswith("### "):
-            if in_section:
-                break
-            in_section = stripped.removeprefix("### ").strip() == heading
-            continue
+            if level in {2, 3} and title == heading:
+                in_section = True
+                section_level = level
+                continue
         if in_section and stripped:
             collected.append(stripped)
 
@@ -50,7 +50,7 @@ def _extract_first_bullets(markdown: str, headings: list[str]) -> list[str]:
     return []
 
 
-def _extract_issue_type(markdown: str) -> str:
+def _extract_issue_type(markdown: str, title: str = "") -> str:
     metadata = _extract_section(markdown, "Harness Metadata")
     for line in metadata:
         if not line.startswith("- labels:"):
@@ -59,6 +59,25 @@ def _extract_issue_type(markdown: str) -> str:
         for label in labels:
             if label.startswith("type: "):
                 return label.removeprefix("type: ").strip()
+    normalized = title.lower()
+    if "[fe]" in normalized:
+        return "feFeature"
+    if "[be]" in normalized:
+        return "beFeature"
+    if "[fs]" in normalized:
+        return "fullstackFeature"
+    if "[api]" in normalized:
+        return "apiConnect"
+    if "[config]" in normalized:
+        return "config"
+    if "[infra]" in normalized:
+        return "infra"
+    if "[docs]" in normalized:
+        return "docs"
+    if "[bugfix]" in normalized:
+        return "bugfix"
+    if "[hotfix]" in normalized:
+        return "hotfix"
     return "unspecified"
 
 
@@ -78,6 +97,43 @@ def _is_login_api_plan(title: str, body: str) -> bool:
         and ("/api/auth/login" in haystack or "auth/login" in haystack)
         and ("refresh token" in haystack or "리프레시" in haystack or "redis" in haystack)
     )
+
+
+# 이슈 타입별로 사람의 결정이 필요한 질문을 구체적인 문장으로 만든다.
+def _decision_questions(issue_type: str, title: str, body: str, fallback: list[str]) -> list[str]:
+    haystack = f"{title}\n{body}".lower()
+    questions_by_type = {
+        "feFeature": [
+            "사용자가 이 기능을 처음 발견하는 진입점은 어디인가?",
+            "성공/실패/로딩 상태에서 화면에는 각각 어떤 한국어 메시지를 보여줄 것인가?",
+            "모바일 화면에서 반드시 보장해야 하는 핵심 동작은 무엇인가?",
+        ],
+        "beFeature": [
+            "이 유스케이스의 도메인 주체와 책임 객체는 무엇인가?",
+            "중복 요청, 권한 없음, 존재하지 않는 리소스는 각각 어떤 에러 코드와 한국어 메시지로 반환할 것인가?",
+            "DB 변경이 필요하다면 DDL, unique/index, rollback 기준은 무엇인가?",
+        ],
+        "apiConnect": [
+            "프론트엔드는 어떤 이벤트에서 API를 호출하고, 실패 시 사용자를 어디로 안내할 것인가?",
+            "백엔드 오류 code/message와 프론트엔드 사용자 메시지는 어떻게 매핑할 것인가?",
+            "재시도, 중복 submit, 인증 만료 같은 경계 상황은 몇 번까지 자동 처리할 것인가?",
+        ],
+        "fullstackFeature": [
+            "사용자가 이 기능을 완료했다고 느끼는 최종 화면/상태는 무엇인가?",
+            "API request/response/error contract에서 지금 확정해야 할 필드는 무엇인가?",
+            "DB 저장, 화면 상태, 사용자 메시지 중 실패 시 되돌려야 하는 것은 무엇인가?",
+        ],
+        "config": [
+            "이 설정 변경이 local/dev/prod 중 어느 환경에 적용되어야 하는가?",
+            "환경변수 또는 secret 관리 위치는 어디로 확정할 것인가?",
+            "public으로 열어야 하는 endpoint와 보호해야 하는 endpoint는 무엇인가?",
+            "설정 실패 시 사람이 확인할 health/check 명령은 무엇인가?",
+        ],
+    }
+    questions = questions_by_type.get(issue_type, [f"{item}에 대해 어떤 결정을 할 것인가?" for item in fallback])
+    if "refresh token" in haystack or "리프레시 토큰" in haystack:
+        questions.append("Refresh Token 재발급 실패 시 즉시 로그아웃할 것인가, 사용자에게 재로그인 모달을 먼저 보여줄 것인가?")
+    return questions
 
 
 # 이슈 타입별 Plan 산출물의 기본 구조와 질문을 결정한다.
@@ -541,12 +597,13 @@ class PlanAgent:
         acceptance = _extract_bullets(input_data.body, "완료 기준")
         replan_request = _extract_section(input_data.body, "Human Replan Request")
         sql_blocks = _extract_sql_blocks(input_data.body)
-        issue_type = _extract_issue_type(input_data.body)
+        issue_type = _extract_issue_type(input_data.body, input_data.title)
         profile = _profile_for_issue_type(issue_type)
 
         inferred_files = list(profile["expected_files"])
         implementation_steps = list(profile["steps"])
         open_questions = list(profile["open_questions"])
+        open_questions = _decision_questions(issue_type, input_data.title, input_data.body, open_questions)
         if _is_login_api_plan(input_data.title, input_data.body):
             open_questions = [
                 question
@@ -619,7 +676,7 @@ class PlanAgent:
                     ),
                     *(
                         [
-                            f"## Proposed {flow_title}",
+                            f"## Proposed {flow_title} - 사용자/도메인 관점",
                             "```mermaid",
                             *flow_chart,
                             "```",
@@ -669,7 +726,7 @@ class PlanAgent:
 
             flow_content = "\n".join(
                 [
-                    f"# {flow_title}",
+                    f"# {flow_title} - 사용자/도메인 관점",
                     "",
                     "```mermaid",
                     *flow_chart,

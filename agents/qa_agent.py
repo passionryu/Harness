@@ -106,14 +106,18 @@ def _extract_section(markdown: str, heading: str) -> list[str]:
     lines = markdown.splitlines()
     collected: list[str] = []
     in_section = False
+    section_level: int | None = None
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("## ") or stripped.startswith("### "):
-            marker = "## " if stripped.startswith("## ") else "### "
-            if in_section:
+        if stripped.startswith("#"):
+            level = len(stripped) - len(stripped.lstrip("#"))
+            title = stripped[level:].strip()
+            if in_section and section_level is not None and level <= section_level:
                 break
-            in_section = stripped.removeprefix(marker).strip() == heading
-            continue
+            if level in {2, 3} and title == heading:
+                in_section = True
+                section_level = level
+                continue
         if in_section and stripped:
             collected.append(stripped)
     return collected
@@ -284,6 +288,7 @@ def _curl_json(
     url: str,
     payload: dict[str, Any] | None,
     timeout_seconds: int,
+    extra_headers: list[str] | None = None,
 ) -> tuple[int, str, str, int | None]:
     command = [
         "curl",
@@ -295,6 +300,8 @@ def _curl_json(
         "--max-time",
         str(timeout_seconds),
     ]
+    for header in extra_headers or []:
+        command.extend(["-H", header])
     if payload is not None:
         command.extend(["-d", json.dumps(payload, ensure_ascii=False)])
     command.extend(["-w", "\n%{http_code}", url])
@@ -394,35 +401,36 @@ def _stop_process(process: subprocess.Popen[str] | None) -> None:
 
 def _signup_cases() -> tuple[ApiSmokeCase, list[ApiSmokeCase]]:
     unique = int(time.time())
-    email = f"qa-smoke-{unique}@example.local"
+    login_id = f"qa{str(unique)[-8:]}"
+    email = f"{login_id}@example.local"
     happy = ApiSmokeCase(
         name="회원가입 해피케이스",
         path="/api/members/signup",
         request_json={
+            "loginId": login_id,
             "name": "QA사용자",
             "email": email,
-            "password": "password123!",
-            "phone": "010-1234-5678",
-            "interests": ["Kotlin", "Spring Boot"],
+            "password": "Password1!",
+            "phone": None,
         },
         expected_status=201,
     )
     edges = [
         ApiSmokeCase(
-            name="중복 이메일 가입 차단",
+            name="중복 로그인 아이디 가입 차단",
             path="/api/members/signup",
             request_json=happy.request_json,
             expected_status=409,
         ),
         ApiSmokeCase(
-            name="잘못된 이메일 형식 차단",
+            name="영문 없는 로그인 아이디 차단",
             path="/api/members/signup",
             request_json={
+                "loginId": "1234",
                 "name": "QA사용자",
-                "email": "not-email",
-                "password": "password123!",
+                "email": None,
+                "password": "Password1!",
                 "phone": None,
-                "interests": [],
             },
             expected_status=400,
         ),
@@ -430,11 +438,11 @@ def _signup_cases() -> tuple[ApiSmokeCase, list[ApiSmokeCase]]:
             name="짧은 비밀번호 차단",
             path="/api/members/signup",
             request_json={
+                "loginId": f"short{str(unique)[-6:]}",
                 "name": "QA사용자",
-                "email": f"qa-short-password-{unique}@example.local",
+                "email": None,
                 "password": "123",
                 "phone": None,
-                "interests": [],
             },
             expected_status=400,
         ),
@@ -486,7 +494,16 @@ def _login_cases() -> tuple[ApiSmokeCase, list[ApiSmokeCase]]:
 
 def _is_login_api_target(title: str, body: str, repo_path: Path) -> bool:
     haystack = f"{title}\n{body}".lower()
-    return "/api/auth/login" in haystack or _repo_has_endpoint_mapping(repo_path, "/api/auth/login")
+    return "/api/auth/login" in haystack or "로그인 api" in haystack or "login api" in haystack
+
+
+def _is_reissue_api_target(title: str, body: str, repo_path: Path) -> bool:
+    haystack = f"{title}\n{body}".lower()
+    return (
+        "/api/auth/reissue" in haystack
+        or "refresh token" in haystack
+        or "리프레시 토큰" in haystack
+    )
 
 
 def _seed_login_member_for_qa() -> str:
@@ -536,6 +553,106 @@ def _run_api_case(case: ApiSmokeCase, timeout_seconds: int) -> ApiSmokeResult:
         curl_exit_code=exit_code,
         passed=exit_code == 0 and status_code == case.expected_status,
     )
+
+
+def _json_response_value(response_body: str, key: str) -> str:
+    try:
+        parsed = json.loads(response_body)
+    except json.JSONDecodeError:
+        return ""
+    value = parsed.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _run_reissue_api_scenario(timeout_seconds: int) -> tuple[ApiSmokeResult, list[ApiSmokeResult]]:
+    unique = str(int(time.time()))[-8:]
+    signup_case = ApiSmokeCase(
+        name="재발급 QA 회원가입 준비",
+        path="/api/members/signup",
+        request_json={
+            "loginId": f"reissue{unique}",
+            "email": None,
+            "password": "Password1!",
+            "name": "QA재발급사용자",
+            "phone": None,
+        },
+        expected_status=201,
+    )
+    signup_result = _run_api_case(signup_case, timeout_seconds)
+
+    login_case = ApiSmokeCase(
+        name="재발급 QA 로그인 준비",
+        path="/api/auth/login",
+        request_json={
+            "identifier": signup_case.request_json["loginId"],
+            "password": "Password1!",
+        },
+        expected_status=200,
+    )
+    login_result = _run_api_case(login_case, timeout_seconds)
+    refresh_token = _json_response_value(login_result.response_json, "refreshToken")
+    access_token = _json_response_value(login_result.response_json, "accessToken")
+
+    reissue_case = ApiSmokeCase(
+        name="Refresh Token 재발급 해피케이스",
+        path="/api/auth/reissue",
+        request_json={"refreshToken": refresh_token},
+        expected_status=200,
+    )
+    reissue_result = _run_api_case(reissue_case, timeout_seconds)
+
+    invalid_case = ApiSmokeCase(
+        name="잘못된 Refresh Token 차단",
+        path="/api/auth/reissue",
+        request_json={"refreshToken": "invalid.refresh.token"},
+        expected_status=401,
+    )
+    invalid_result = _run_api_case(invalid_case, timeout_seconds)
+
+    exit_code, response_body, stderr, status_code = _curl_json(
+        "GET",
+        _api_url("/api/members/me"),
+        None,
+        min(timeout_seconds, 30),
+        [f"Authorization: Bearer {refresh_token}"],
+    )
+    refresh_as_access_result = ApiSmokeResult(
+        name="Refresh Token을 Access Token처럼 사용하는 요청 차단",
+        path="/api/members/me",
+        request_json={"Authorization": "Bearer <refreshToken>"},
+        response_json=response_body or stderr or "(응답 없음)",
+        status_code=status_code,
+        curl_exit_code=exit_code,
+        passed=exit_code == 0 and status_code in {401, 403},
+    )
+
+    exit_code, response_body, stderr, status_code = _curl_json(
+        "GET",
+        _api_url("/api/members/me"),
+        None,
+        min(timeout_seconds, 30),
+        [f"Authorization: Bearer {access_token}"],
+    )
+    access_token_result = ApiSmokeResult(
+        name="Access Token으로 보호 API 접근",
+        path="/api/members/me",
+        request_json={"Authorization": "Bearer <accessToken>"},
+        response_json=response_body or stderr or "(응답 없음)",
+        status_code=status_code,
+        curl_exit_code=exit_code,
+        passed=exit_code == 0 and status_code == 200,
+    )
+
+    reissue_result = ApiSmokeResult(
+        name=reissue_result.name,
+        path=reissue_result.path,
+        request_json=reissue_result.request_json,
+        response_json=reissue_result.response_json,
+        status_code=reissue_result.status_code,
+        curl_exit_code=reissue_result.curl_exit_code,
+        passed=signup_result.passed and login_result.passed and reissue_result.passed,
+    )
+    return reissue_result, [invalid_result, refresh_as_access_result, access_token_result]
 
 
 def _format_json(value: dict[str, Any] | str) -> str:
@@ -887,14 +1004,18 @@ class QAAgent:
                 )
                 checks.append(("Target API server is reachable", _is_api_alive(), server_status))
                 if _is_api_alive():
-                    if _is_login_api_target(input_data.title, input_data.body, repo_path):
+                    if _is_reissue_api_target(input_data.title, input_data.body, repo_path):
+                        happy_result, edge_results = _run_reissue_api_scenario(input_data.timeout_seconds)
+                    elif _is_login_api_target(input_data.title, input_data.body, repo_path):
                         seed_status = _seed_login_member_for_qa()
                         checks.append(("login qa member seed", "완료" in seed_status, seed_status))
                         happy_case, edge_cases = _login_cases()
+                        happy_result = _run_api_case(happy_case, input_data.timeout_seconds)
+                        edge_results = [_run_api_case(case, input_data.timeout_seconds) for case in edge_cases]
                     else:
                         happy_case, edge_cases = _signup_cases()
-                    happy_result = _run_api_case(happy_case, input_data.timeout_seconds)
-                    edge_results = [_run_api_case(case, input_data.timeout_seconds) for case in edge_cases]
+                        happy_result = _run_api_case(happy_case, input_data.timeout_seconds)
+                        edge_results = [_run_api_case(case, input_data.timeout_seconds) for case in edge_cases]
                     checks.append(("backend happy smoke test passes", happy_result.passed, happy_result.name))
                     for result in edge_results:
                         checks.append((f"backend edge smoke test passes: {result.name}", result.passed, result.name))

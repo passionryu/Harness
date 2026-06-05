@@ -1,7 +1,9 @@
 from agents.base import AgentRunner
 from agents.dev_agent import DevAgent
+from agents.documentation_agent import DocumentationAgent
 from agents.plan_agent import PlanAgent
 from agents.qa_agent import QAAgent
+from agents.review_agent import ReviewAgent
 
 
 class AgentRegistry:
@@ -9,7 +11,9 @@ class AgentRegistry:
         self._agents: dict[str, AgentRunner] = {
             "plan": PlanAgent(),
             "dev": DevAgent(),
+            "review": ReviewAgent(),
             "qa": QAAgent(),
+            "documentation": DocumentationAgent(),
         }
 
     def get(self, name: str) -> AgentRunner:

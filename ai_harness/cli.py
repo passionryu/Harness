@@ -15,6 +15,7 @@ from orchestrator.db.session import SessionLocal, create_db
 from orchestrator.services.discord import DiscordNotifier
 from orchestrator.services.github_adapter import GitHubAdapter
 from orchestrator.services.orchestration import OrchestrationService
+from workflows.state_machine import KanbanState
 
 
 # 테스트 fake adapter와 실제 gh CLI adapter 생성 방식을 함께 지원한다.
@@ -173,12 +174,137 @@ def _run_issue_command(args: argparse.Namespace) -> EventResult | dict[str, Any]
                 qa_request=_resolve_note(args, "CLI에서 QA 재검증이 요청되었습니다."),
                 **context,
             )
+        if args.command == "document":
+            return service.run_documentation_for_github_issue(**context)
         if args.command == "cancel":
             return service.cancel_github_issue_task(
                 reason=_resolve_note(args, "CLI에서 작업 중지가 요청되었습니다."),
                 **context,
             )
     raise ValueError(f"지원하지 않는 CLI 명령입니다: {args.command}")
+
+
+# 여러 issue 입력 형식을 정수 목록으로 정리한다.
+def _resolve_auto_run_issues(args: argparse.Namespace) -> list[int]:
+    if getattr(args, "issue", None) is not None:
+        return [int(args.issue)]
+    return [
+        int(item.strip())
+        for item in str(args.issues).split(",")
+        if item.strip()
+    ]
+
+
+# 자동 진행 중 agent 실행 결과가 실패/중단 상태인지 검증한다.
+def _ensure_auto_step_succeeded(step_name: str, result: EventResult | dict[str, Any]) -> None:
+    normalized = _normalize_result(result)
+    status = str(normalized.get("status", "success"))
+    if status in {"failed", "needs_human", "deprecated"}:
+        raise ValueError(f"{step_name} 단계가 완료되지 않았습니다: {normalized}")
+
+
+# 현재 task 상태를 기준으로 필요한 approval gate만 자동 승인한다.
+def _approve_if_waiting(
+    service: OrchestrationService,
+    issue_number: int,
+    stage: str,
+    expected_state: KanbanState,
+    approved_by: str,
+    note: str,
+    issue_url: str,
+) -> dict[str, Any]:
+    task = service._find_github_issue_task(issue_number, issue_url)
+    if task is None:
+        raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
+    if task.state != expected_state.value:
+        return {"status": "skipped", "stage": stage, "reason": f"current_state={task.state}"}
+    result = service.approve_stage_for_github_issue(
+        issue_number,
+        stage,
+        HumanApproval(approved_by=approved_by, notes=note),
+        issue_url=issue_url,
+    )
+    return _normalize_result(result)
+
+
+# 공식 Plan/Dev/QA Agent 흐름을 승인 로그와 함께 Human QA 직전까지 실행한다.
+def _auto_run_single_issue(
+    service: OrchestrationService,
+    issue_number: int,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    context = _fetch_issue_context(issue_number)
+    steps: list[dict[str, Any]] = []
+
+    plan_result = service.run_plan_for_github_issue(force=args.force_plan, **context)
+    _ensure_auto_step_succeeded("plan", plan_result)
+    steps.append({"step": "plan", "result": _normalize_result(plan_result)})
+
+    plan_approval = _approve_if_waiting(
+        service,
+        issue_number,
+        "plan",
+        KanbanState.PLAN_REVIEW,
+        args.approved_by,
+        _resolve_note(args, "auto-run이 Plan 승인을 자동 기록했습니다."),
+        context["issue_url"],
+    )
+    steps.append({"step": "approve_plan", "result": plan_approval})
+
+    task = service._find_github_issue_task(issue_number, context["issue_url"])
+    if task is None:
+        raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
+    if task.state in {KanbanState.DEV_READY.value, KanbanState.DEV_REVIEW.value}:
+        dev_result = service.run_develop_for_github_issue(**context)
+        _ensure_auto_step_succeeded("develop", dev_result)
+        steps.append({"step": "develop", "result": _normalize_result(dev_result)})
+    else:
+        steps.append({"step": "develop", "result": {"status": "skipped", "reason": f"current_state={task.state}"}})
+
+    dev_approval = _approve_if_waiting(
+        service,
+        issue_number,
+        "dev",
+        KanbanState.DEV_REVIEW,
+        args.approved_by,
+        _resolve_note(args, "auto-run이 Dev 승인을 자동 기록했습니다."),
+        context["issue_url"],
+    )
+    steps.append({"step": "approve_dev", "result": dev_approval})
+
+    task = service._find_github_issue_task(issue_number, context["issue_url"])
+    if task is None:
+        raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
+    if args.until == "qa" and task.state == KanbanState.QA_READY.value:
+        qa_result = service.run_qa_for_github_issue(
+            qa_request=_resolve_note(args, "auto-run이 QA를 요청했습니다."),
+            **context,
+        )
+        _ensure_auto_step_succeeded("qa", qa_result)
+        steps.append({"step": "qa", "result": _normalize_result(qa_result)})
+    else:
+        steps.append({"step": "qa", "result": {"status": "skipped", "reason": f"current_state={task.state}"}})
+
+    task = service._find_github_issue_task(issue_number, context["issue_url"])
+    return {
+        "issue": issue_number,
+        "task_id": task.id if task else "",
+        "title": context["title"],
+        "state": task.state if task else "unknown",
+        "steps": steps,
+        "next": "사람이 Human QA를 직접 검증한 뒤 approve --stage qa를 실행하세요.",
+    }
+
+
+# 여러 이슈를 순서대로 자동 진행하고 중간 실패 시 해당 이슈에서 멈춘다.
+def _auto_run(args: argparse.Namespace) -> dict[str, Any]:
+    issues = _resolve_auto_run_issues(args)
+    results: list[dict[str, Any]] = []
+    with SessionLocal() as db:
+        service = OrchestrationService(db)
+        for issue_number in issues:
+            results.append(_auto_run_single_issue(service, issue_number, args))
+    return {"status": "ok", "mode": "auto-run", "until": args.until, "results": results}
 
 
 # GitHub 이슈를 생성하고 하네스 DB에 동기화한 뒤 Discord 알림을 보낸다.
@@ -452,6 +578,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ("refactor", "요청 메모 기준으로 구현 결과 리팩터링"),
         ("qa", "System QA Agent 실행"),
         ("re-qa", "System QA Agent 재실행"),
+        ("document", "Documentation Agent로 Notion 입력용 작업 기록 생성"),
         ("cancel", "작업을 중지 상태로 전환"),
     ]:
         command_parser = subparsers.add_parser(command, help=help_text)
@@ -468,6 +595,16 @@ def _build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status", help="로컬 DB 기준 작업 상태 조회")
     _add_issue_option(status)
     status.set_defaults(handler=_status)
+
+    auto_run = subparsers.add_parser("auto-run", help="Plan/Dev/QA Agent를 공식 흐름으로 Human QA 직전까지 자동 실행")
+    auto_run_target = auto_run.add_mutually_exclusive_group(required=True)
+    auto_run_target.add_argument("--issue", type=int, help="자동 진행할 GitHub issue number")
+    auto_run_target.add_argument("--issues", help="자동 진행할 GitHub issue number 목록. 예: 5,6,7")
+    auto_run.add_argument("--until", default="qa", choices=["qa"], help="자동 진행 종료 단계")
+    auto_run.add_argument("--approved-by", required=True, help="자동 approval gate 기록에 사용할 승인자 이름")
+    auto_run.add_argument("--force-plan", action="store_true", help="성공한 plan이 있어도 다시 설계")
+    _add_note_options(auto_run)
+    auto_run.set_defaults(handler=_auto_run)
 
     approve = subparsers.add_parser("approve", help="Plan/Dev/QA/Deploy 승인 gate를 기록")
     approve_target = approve.add_mutually_exclusive_group(required=True)

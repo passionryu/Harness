@@ -21,3 +21,6 @@ class DiscordNotifier:
             timeout=20,
         )
         response.raise_for_status()
+
+    def send(self, text: str) -> None:
+        self.send_text(text)

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from agents.base import AgentInput, AgentStatus
 from agents.organization import render_work_units
 from agents.plan_agent import (
+    _decision_questions,
     _extract_sql_blocks,
     _flow_chart_for_issue_type,
     _is_login_api_plan,
@@ -286,20 +287,30 @@ class OrchestrationService:
 
     # GitHub 이슈 task를 repo URL까지 포함해 찾는다.
     def _find_github_issue_task(self, issue_number: int, issue_url: str) -> Task | None:
-        if issue_url:
+        current_repo_issue_url = f"https://github.com/{settings.github_owner}/{settings.github_repo}/issues/{issue_number}"
+        candidate_urls = [url for url in [issue_url, current_repo_issue_url] if url]
+        for candidate_url in dict.fromkeys(candidate_urls):
             task = self.db.scalar(
                 select(Task)
                 .where(Task.github_issue_number == issue_number)
-                .where(Task.github_issue_url == issue_url)
+                .where(Task.github_issue_url == candidate_url)
             )
             if task is not None:
                 return task
-            return self.db.scalar(
-                select(Task)
-                .where(Task.github_issue_number == issue_number)
-                .where(Task.github_issue_url.is_(None))
-            )
-        return self.db.scalar(select(Task).where(Task.github_issue_number == issue_number))
+
+        legacy_tasks = self.db.scalars(
+            select(Task)
+            .where(Task.github_issue_number == issue_number)
+            .where(Task.github_issue_url.is_(None))
+        ).all()
+        if len(legacy_tasks) == 1:
+            return legacy_tasks[0]
+        matching_tasks = self.db.scalars(
+            select(Task).where(Task.github_issue_number == issue_number)
+        ).all()
+        if len(matching_tasks) == 1:
+            return matching_tasks[0]
+        return None
 
     def upsert_github_issue_task(
         self,
@@ -376,6 +387,23 @@ class OrchestrationService:
             body = self._append_replan_request(body, replan_request)
         task = self.upsert_github_issue_task(issue_number, title, body, issue_url)
         previous = task.state
+        template_errors = self._validate_issue_template(body, title)
+        if template_errors:
+            self._audit(
+                task.id,
+                None,
+                "plan.blocked_by_issue_template",
+                {
+                    "issue_number": issue_number,
+                    "issue_url": issue_url,
+                    "errors": template_errors,
+                },
+            )
+            self.db.commit()
+            raise ValueError(
+                "Plan Agent를 실행할 수 없습니다. 이슈 본문이 타입 템플릿을 만족하지 않습니다: "
+                + "; ".join(template_errors)
+            )
 
         if not force and self.has_successful_agent_run(task.id, "plan"):
             self._audit(
@@ -417,6 +445,7 @@ class OrchestrationService:
                 "has_replan_request": bool(replan_request),
             },
         )
+        self._move_github_project_status_best_effort(task, run_id)
 
         self._upsert_plan_comment_on_github_issue(task, run_id, issue_number, self._build_plan_comment(task))
 
@@ -446,6 +475,38 @@ class OrchestrationService:
             force=True,
             replan_request=replan_request,
             issue_labels=issue_labels,
+        )
+
+    # GitHub 이슈의 기존 산출물을 Documentation Agent로 정리한다.
+    def run_documentation_for_github_issue(
+        self,
+        issue_number: int,
+        title: str,
+        body: str,
+        issue_url: str,
+        issue_labels: list[str] | None = None,
+    ) -> EventResult:
+        task = self._find_github_issue_task(issue_number, issue_url)
+        if task is None:
+            raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
+        previous = task.state
+        task.title = title
+        task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
+        task.github_issue_url = issue_url
+
+        run_id = self._run_agent(task, "documentation")
+        self._audit(
+            task.id,
+            run_id,
+            "documentation.completed",
+            {"issue_number": issue_number, "issue_url": issue_url},
+        )
+        self.db.commit()
+        return EventResult(
+            task_id=task.id,
+            previous_state=previous,
+            current_state=task.state,
+            message="Documentation Agent가 이슈별 작업 기록을 생성했습니다.",
         )
 
     def run_develop_for_github_issue(
@@ -493,12 +554,34 @@ class OrchestrationService:
                 "agent",
             )
 
+        review_run_id: str | None = None
+        review_error: str | None = None
+        try:
+            review_run_id = self._run_agent(task, "review")
+        except ValueError as exc:
+            review_error = str(exc)
+
         self._audit(
             task.id,
             run_id,
             "dev.completed",
             {"issue_number": issue_number, "issue_url": issue_url},
         )
+        if review_run_id:
+            self._audit(
+                task.id,
+                review_run_id,
+                "review.completed",
+                {"issue_number": issue_number, "issue_url": issue_url},
+            )
+        if review_error:
+            self._audit(
+                task.id,
+                None,
+                "review.needs_human",
+                {"issue_number": issue_number, "issue_url": issue_url, "error": review_error},
+            )
+        self._move_github_project_status_best_effort(task, run_id)
 
         self._comment_on_github_issue(
             task,
@@ -508,6 +591,14 @@ class OrchestrationService:
             "github.develop_commented",
             "github.develop_comment_failed",
         )
+        self._comment_on_github_issue(
+            task,
+            review_run_id,
+            issue_number,
+            self._build_review_comment(task, review_error),
+            "github.review_commented",
+            "github.review_comment_failed",
+        )
 
         self._notify_after_dev(task, run_id)
         self.db.commit()
@@ -515,7 +606,11 @@ class OrchestrationService:
             task_id=task.id,
             previous_state=previous,
             current_state=task.state,
-            message="Dev Agent 실행이 완료되어 Dev Review에서 사람 승인을 기다립니다.",
+            message=(
+                "Dev Agent 실행이 완료되었지만 Review Agent가 확인 요청을 남겼습니다."
+                if review_error
+                else "Dev Agent와 Review Agent 실행이 완료되어 Dev Review에서 사람 승인을 기다립니다."
+            ),
         )
 
     # Deprecated된 fix-develop 명령을 실행하지 않고 새 Dev 중심 복구 흐름으로 안내한다.
@@ -691,6 +786,7 @@ class OrchestrationService:
             "qa.completed",
             {"issue_number": issue_number, "issue_url": issue_url},
         )
+        self._move_github_project_status_best_effort(task, run_id)
 
         qa_commented = self._comment_on_github_issue(
             task,
@@ -1010,6 +1106,7 @@ class OrchestrationService:
             f"human.approved_{stage}",
             {"approved_by": payload.approved_by, "notes": payload.notes, "stage": stage},
         )
+        self._move_github_project_status_best_effort(task, None)
         self.db.commit()
 
         return EventResult(
@@ -1031,6 +1128,71 @@ class OrchestrationService:
             return mapping[stage]
         except KeyError as exc:
             raise ValueError(f"지원하지 않는 승인 stage입니다: {stage}") from exc
+
+    # GitHub Project 칸반 상태를 하네스 task 상태와 맞춘다.
+    def _move_github_project_status_best_effort(self, task: Task, run_id: str | None) -> bool:
+        issue_number = task.github_issue_number
+        if not issue_number or not settings.github_project_number:
+            self._audit(
+                task.id,
+                run_id,
+                "github.project_status_skipped",
+                {
+                    "reason": "missing_issue_number_or_project_number",
+                    "issue_number": issue_number,
+                    "project_number": settings.github_project_number,
+                    "target_state": task.state,
+                },
+            )
+            return False
+
+        try:
+            GitHubAdapter(settings.github_token, use_gh_cli=settings.github_use_gh_cli).move_issue_project_status(
+                settings.github_owner,
+                settings.github_repo,
+                int(issue_number),
+                int(settings.github_project_number),
+                self._github_project_status_name(task.state),
+            )
+            self._audit(
+                task.id,
+                run_id,
+                "github.project_status_moved",
+                {
+                    "issue_number": issue_number,
+                    "project_number": settings.github_project_number,
+                    "target_state": task.state,
+                },
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - GitHub Project 이동 실패는 승인 자체를 막지 않는다.
+            self._audit(
+                task.id,
+                run_id,
+                "github.project_status_move_failed",
+                {
+                    "issue_number": issue_number,
+                    "project_number": settings.github_project_number,
+                    "target_state": task.state,
+                    "error": str(exc),
+                },
+            )
+            return False
+
+    # 하네스 내부 상태명을 GitHub Project의 실제 칸반 컬럼명으로 변환한다.
+    def _github_project_status_name(self, state: str) -> str:
+        mapping = {
+            KanbanState.BACKLOG.value: "Backlog",
+            KanbanState.PLAN_REVIEW.value: "Todo",
+            KanbanState.DEV_READY.value: "In progress",
+            KanbanState.DEV_REVIEW.value: "In progress",
+            KanbanState.QA_READY.value: "AI QA",
+            KanbanState.QA_REVIEW.value: "Human QA",
+            KanbanState.READY_TO_DEPLOY.value: "Stage",
+            KanbanState.DONE.value: "Done",
+            KanbanState.CANCELLED.value: "Done",
+        }
+        return mapping.get(state, state)
 
     def _run_agent(self, task: Task, agent_name: str) -> str:
         agent = self.agent_registry.get(agent_name)
@@ -1147,14 +1309,18 @@ class OrchestrationService:
         lines = markdown.splitlines()
         collected: list[str] = []
         in_section = False
+        section_level: int | None = None
         for line in lines:
             stripped = line.strip()
-            if stripped.startswith("## ") or stripped.startswith("### "):
-                marker = "## " if stripped.startswith("## ") else "### "
-                if in_section:
+            if stripped.startswith("#"):
+                level = len(stripped) - len(stripped.lstrip("#"))
+                title = stripped[level:].strip()
+                if in_section and section_level is not None and level <= section_level:
                     break
-                in_section = stripped.removeprefix(marker).strip() == heading
-                continue
+                if level in {2, 3} and title == heading:
+                    in_section = True
+                    section_level = level
+                    continue
             if in_section and stripped:
                 collected.append(stripped)
         return collected
@@ -1200,6 +1366,18 @@ class OrchestrationService:
                 qa_request.strip(),
             ]
         )
+
+    # 이슈 타입별 GitHub issue template의 필수 섹션이 채워졌는지 검증한다.
+    def _validate_issue_template(self, body: str, title: str = "") -> list[str]:
+        issue_type = self._extract_issue_type(body, title)
+        if issue_type == "unspecified":
+            return ["이슈 타입을 확인할 수 없습니다. 제목 prefix 또는 `type: ...` 라벨을 확인하세요."]
+        if not body.strip():
+            return ["이슈 본문이 비어 있습니다."]
+        user_body = body.split("## Harness Metadata", 1)[0]
+        if "##" in user_body and not (self._extract_section(user_body, "목표") or self._extract_section(user_body, "목적")):
+            return ["`## 목표` 또는 `## 목적` 섹션이 없거나 비어 있습니다."]
+        return []
 
     def _append_issue_metadata(
         self, body: str, issue_labels: list[str], issue_number: int | None = None
@@ -1466,16 +1644,18 @@ class OrchestrationService:
         self.db.commit()
         return {"status": "ignored", "reason": reason}
 
+    # Plan Agent 결과를 사람이 검토할 수 있는 GitHub 댓글 본문으로 만든다.
     def _build_plan_comment(self, task: Task) -> str:
         goal = self._extract_section(task.body, "목표")
         scope = self._extract_bullets(task.body, "작업 범위")
         acceptance = self._extract_bullets(task.body, "완료 기준")
         replan_request = self._extract_section(task.body, "Human Replan Request")
-        issue_type = self._extract_issue_type(task.body)
+        issue_type = self._extract_issue_type(task.body, task.title)
         profile = _profile_for_issue_type(issue_type)
         implementation_steps = list(profile["steps"])
         expected_files = list(profile["expected_files"])
         open_questions = list(profile["open_questions"])
+        open_questions = _decision_questions(issue_type, task.title, task.body, open_questions)
         sql_blocks = _extract_sql_blocks(task.body)
         if _is_login_api_plan(task.title, task.body):
             open_questions = [
@@ -1544,7 +1724,7 @@ class OrchestrationService:
                         *sequence_diagram,
                         "```",
                         "",
-                        f"### 플로우 차트 ({flow_title})",
+                        f"### 플로우 차트 ({flow_title}, 사용자/도메인 관점)",
                         "```mermaid",
                         *flow_chart,
                         "```",
@@ -1565,7 +1745,7 @@ class OrchestrationService:
                     acceptance_fallback,
                 ),
                 "",
-                "### 미결정 사항",
+                "### 결정 필요 질문",
                 *self._comment_bullets(open_questions, []),
                 "",
                 "### 상세 Artifacts",
@@ -1584,12 +1764,13 @@ class OrchestrationService:
                 f"- `artifacts/{task_id}/plans/edge-case-checklist.md`",
                 "",
                 "### 다음 추천 명령어",
+                f"- 위 질문에 답을 보강하려면 `{settings.replan_command}`",
                 f"- 계획이 충분하면 `{self._approval_command(task, 'plan')}`",
                 f"- 계획을 수정하고 싶으면 `{settings.replan_command}` 아래에 수정 요청을 적어 다시 논의하세요.",
             ]
         )
 
-    def _extract_issue_type(self, markdown: str) -> str:
+    def _extract_issue_type(self, markdown: str, title: str = "") -> str:
         metadata = self._extract_section(markdown, "Harness Metadata")
         for line in metadata:
             if not line.startswith("- labels:"):
@@ -1598,6 +1779,25 @@ class OrchestrationService:
             for label in labels:
                 if label.startswith("type: "):
                     return label.removeprefix("type: ").strip()
+        normalized = title.lower()
+        if "[fe]" in normalized:
+            return "feFeature"
+        if "[be]" in normalized:
+            return "beFeature"
+        if "[fs]" in normalized:
+            return "fullstackFeature"
+        if "[api]" in normalized:
+            return "apiConnect"
+        if "[config]" in normalized:
+            return "config"
+        if "[infra]" in normalized:
+            return "infra"
+        if "[docs]" in normalized:
+            return "docs"
+        if "[bugfix]" in normalized:
+            return "bugfix"
+        if "[hotfix]" in normalized:
+            return "hotfix"
         return "unspecified"
 
     # GitHub 댓글과 알림에 표시할 이슈 타입명을 사람이 읽기 좋게 변환한다.
@@ -1623,7 +1823,7 @@ class OrchestrationService:
 
     # 작업의 이슈 타입과 번호를 기준으로 표준 브랜치명을 만든다.
     def _branch_name_for_task(self, task: Task) -> str:
-        issue_type = self._extract_issue_type(task.body)
+        issue_type = self._extract_issue_type(task.body, task.title)
         issue_number = self._extract_issue_number(task.body)
         prefix = {
             "beFeature": "feature(BE)",
@@ -1717,6 +1917,44 @@ class OrchestrationService:
                 "```markdown",
                 self._approval_command(task, "dev"),
                 "```",
+            ]
+        )
+
+    # Review Agent 결과를 QA 전 품질 게이트 댓글 본문으로 만든다.
+    def _build_review_comment(self, task: Task, review_error: str | None = None) -> str:
+        result_line = (
+            "Review Agent가 QA 전 차단 또는 확인 필요 이슈를 발견했습니다."
+            if review_error
+            else "Review Agent가 QA 전 코드 품질 검토를 통과했습니다."
+        )
+        next_step = (
+            "- review-report.md를 확인하고 수정한 뒤 다시 develop 또는 Codex 수정을 진행하세요."
+            if review_error
+            else "- Review가 통과했으므로 Dev 승인을 계속 진행할 수 있습니다."
+        )
+        return "\n".join(
+            [
+                "<!-- ai-harness-generated -->",
+                "",
+                f"# 🧭 Review {'확인 필요' if review_error else '완료'}: {task.title}",
+                "",
+                f"Task ID: `{task.id}`",
+                "",
+                result_line,
+                *(["", f"- 오류: `{review_error}`"] if review_error else []),
+                "",
+                "### 검토 항목",
+                "- DDD/Hexagonal 경계 위반 가능성",
+                "- 컨트롤러 내부 DTO/data class 존재 여부",
+                "- 테스트명 한국어 표현 여부",
+                "- 사용자 메시지, 예외 메시지, 로깅 규칙",
+                "- 불필요한 scaffold/TODO/하네스 잔재",
+                "",
+                "### 상세 Artifacts",
+                f"- `artifacts/{task.id}/review/review-report.md`",
+                "",
+                "### 다음 단계",
+                next_step,
             ]
         )
 
@@ -2037,7 +2275,7 @@ class OrchestrationService:
         title_prefix = "♻️ 🧑‍💻 Human QA Re-QA 요청" if rerun else "🧑‍💻 Human QA 요청"
         title = f"{title_prefix}: {task.title}"
         title_line = f"# {title}" if github_comment else title
-        issue_type = self._extract_issue_type(task.body)
+        issue_type = self._extract_issue_type(task.body, task.title)
         branch_name = self._branch_name_for_task(task)
         human_qa_items = self._extract_human_qa_items(task.id)
         numbered_items = [
@@ -2091,7 +2329,7 @@ class OrchestrationService:
             [
                 title,
                 "",
-                f"작업 타입: {self._issue_type_label(self._extract_issue_type(task.body))}",
+                f"작업 타입: {self._issue_type_label(self._extract_issue_type(task.body, task.title))}",
                 f"현재 상태: {task.state}",
                 "",
                 "설계 산출물이 생성되었습니다.",
@@ -2113,7 +2351,7 @@ class OrchestrationService:
             [
                 f"🛠️ 개발 완료: {task.title}",
                 "",
-                f"작업 타입: {self._issue_type_label(self._extract_issue_type(task.body))}",
+                f"작업 타입: {self._issue_type_label(self._extract_issue_type(task.body, task.title))}",
                 f"브랜치 명: {self._branch_name_for_task(task)}",
                 f"현재 상태: {task.state}",
                 "",

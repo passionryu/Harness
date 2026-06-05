@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     github_repo: str = "target-app"
     github_token: str | None = None
     github_use_gh_cli: bool = False
+    github_project_number: int | None = None
     github_webhook_secret: str | None = None
     enable_github_comment_commands: bool = False
     development_base_branch: str = "stage"

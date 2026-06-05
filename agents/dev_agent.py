@@ -23,14 +23,18 @@ def _extract_section(markdown: str, heading: str) -> list[str]:
     lines = markdown.splitlines()
     collected: list[str] = []
     in_section = False
+    section_level: int | None = None
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("## ") or stripped.startswith("### "):
-            marker = "## " if stripped.startswith("## ") else "### "
-            if in_section:
+        if stripped.startswith("#"):
+            level = len(stripped) - len(stripped.lstrip("#"))
+            title = stripped[level:].strip()
+            if in_section and section_level is not None and level <= section_level:
                 break
-            in_section = stripped.removeprefix(marker).strip() == heading
-            continue
+            if level in {2, 3} and title == heading:
+                in_section = True
+                section_level = level
+                continue
         if in_section and stripped:
             collected.append(stripped)
     return collected
@@ -190,6 +194,24 @@ def _active_branch_name(repo: Repo) -> str:
         return "detached-head"
 
 
+# 하네스가 관리하는 이슈 전용 브랜치 이름인지 판단한다.
+def _is_managed_issue_branch(branch_name: str) -> bool:
+    return branch_name.startswith(
+        (
+            "feature(BE)-",
+            "feature(FE)-",
+            "feature(FS)-",
+            "api-connect-",
+            "bugfix-",
+            "hotfix-",
+            "infra-",
+            "config-",
+            "docs-",
+            "task-",
+        )
+    ) or bool(re.fullmatch(r".+-\d+", branch_name))
+
+
 # 새 개발 브랜치의 기준이 될 base branch 또는 remote ref를 찾는다.
 def _resolve_base_ref(repo: Repo, base_branch: str) -> str | None:
     if base_branch in {head.name for head in repo.heads}:
@@ -210,23 +232,35 @@ def _resolve_base_ref(repo: Repo, base_branch: str) -> str | None:
 # 개발 브랜치를 checkout하고, 새 브랜치는 항상 설정된 base branch에서 생성한다.
 def _checkout_branch(repo_path: Path, branch_name: str, base_branch: str) -> str:
     repo = Repo(repo_path)
-    dirty_note = ""
-    if repo.is_dirty(untracked_files=True):
-        dirty_note = " (기존 미커밋 변경사항 있음)"
+    current_branch = _active_branch_name(repo)
+    is_dirty = repo.is_dirty(untracked_files=True)
+
+    if is_dirty and current_branch != branch_name:
+        return (
+            "blocked: target repository has uncommitted changes on another branch "
+            f"(current={current_branch}, expected={branch_name}). 먼저 현재 변경사항을 커밋/정리하세요."
+        )
+
+    if current_branch not in {branch_name, base_branch} and _is_managed_issue_branch(current_branch):
+        return (
+            "blocked: target repository is on another managed issue branch "
+            f"(current={current_branch}, expected={branch_name}). 먼저 `{base_branch}` 또는 `{branch_name}`으로 이동하세요."
+        )
 
     existing = {head.name for head in repo.heads}
     if branch_name in existing:
         repo.git.checkout(branch_name)
-        return f"기존 브랜치 체크아웃{dirty_note}"
+        return "기존 브랜치 체크아웃"
 
     base_ref = _resolve_base_ref(repo, base_branch)
     if base_ref is None:
-        current_branch = _active_branch_name(repo)
-        repo.git.checkout("-b", branch_name)
-        return f"새 브랜치 생성{dirty_note} (base={current_branch}, requested_base={base_branch} 없음)"
+        return (
+            "blocked: development base branch not found "
+            f"(requested_base={base_branch}). 현재 브랜치에서 임의로 새 이슈 브랜치를 만들지 않습니다."
+        )
 
     repo.git.checkout("-b", branch_name, base_ref)
-    return f"새 브랜치 생성{dirty_note} (base={base_ref})"
+    return f"새 브랜치 생성 (base={base_ref})"
 
 
 # 구현 diff를 설정된 base branch 기준으로 생성한다.
@@ -258,6 +292,7 @@ class DevAgent:
         repo_path = settings.target_repo_path.expanduser().resolve()
 
         repo: Repo | None = None
+        branch_blocked = False
         commits: list[str] = []
         progress_override: list[str] | None = None
         verification: list[str] = []
@@ -269,10 +304,12 @@ class DevAgent:
         if repo_path.exists():
             repo = Repo(repo_path)
             branch_status = _checkout_branch(repo_path, branch_name, base_branch)
+            branch_blocked = branch_status.startswith("blocked:")
         else:
             branch_status = f"blocked: target repository does not exist: {repo_path}"
+            branch_blocked = True
 
-        if repo is not None:
+        if repo is not None and not branch_blocked:
             context = DevRunnerContext(
                 task_id=input_data.task_id,
                 title=input_data.title,
@@ -317,6 +354,15 @@ class DevAgent:
                 progress_override = progress_lines
                 verification = verification_lines
                 runner_error = "; ".join(errors) if errors else None
+        elif branch_blocked:
+            result_status = AgentStatus.NEEDS_HUMAN
+            runner_error = branch_status
+            verification = [
+                "## Branch Guard",
+                "",
+                "- status: needs_human",
+                f"- reason: {branch_status}",
+            ]
 
         if progress_override is None:
             progress_override = [

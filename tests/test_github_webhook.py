@@ -178,7 +178,7 @@ def test_plan_comment_contains_reviewable_summary(tmp_path, monkeypatch):
     assert "### 변경 대상" in captured["body"]
     assert "### 구현 순서" in captured["body"]
     assert "### 검증 기준" in captured["body"]
-    assert "### 미결정 사항" in captured["body"]
+    assert "### 결정 필요 질문" in captured["body"]
     assert "### 시퀀스 다이어그램" in captured["body"]
     assert "### 플로우 차트" in captured["body"]
     assert "### 다음 추천 명령어" in captured["body"]
@@ -241,7 +241,7 @@ def test_config_plan_omits_usecase_diagrams(tmp_path, monkeypatch):
     assert "### 플로우 차트" not in captured["body"]
     assert "sequence-diagram.md" not in captured["body"]
     assert "flow-chart.md" not in captured["body"]
-    assert "환경변수 또는 secret 관리 위치" in captured["body"]
+    assert "환경변수 또는 secret 관리 위치는 어디로 확정할 것인가?" in captured["body"]
 
 
 def test_github_comment_falls_back_to_gh_cli_when_api_forbidden(tmp_path, monkeypatch):
@@ -769,6 +769,7 @@ def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monk
     monkeypatch.setattr(routes.settings, "develop_command", "@ai-harness develop")
     monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
     monkeypatch.setattr(orchestration.settings, "github_token", None)
+    monkeypatch.setattr(orchestration.settings, "development_base_branch", "main")
     target_repo = tmp_path / "targetApp"
     target_repo.mkdir()
     repo = Repo.init(target_repo)
@@ -778,7 +779,7 @@ def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monk
         json.dumps({"name": "@app/web", "private": True, "scripts": {}}),
         encoding="utf-8",
     )
-    repo.index.add(["README.md"])
+    repo.index.add(["README.md", "apps/web/package.json"])
     repo.index.commit("Initial commit")
     monkeypatch.setattr(orchestration.settings, "target_repo_path", target_repo)
 
@@ -960,6 +961,7 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
     monkeypatch.setattr(routes.settings, "develop_command", "@ai-harness develop")
     monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
     monkeypatch.setattr(orchestration.settings, "github_token", None)
+    monkeypatch.setattr(orchestration.settings, "development_base_branch", "main")
     target_repo = tmp_path / "targetApp"
     (target_repo / "apps/server").mkdir(parents=True)
     repo = Repo.init(target_repo)
@@ -1065,6 +1067,7 @@ def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monk
     monkeypatch.setattr(routes.settings, "develop_command", "@ai-harness develop")
     monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
     monkeypatch.setattr(orchestration.settings, "github_token", None)
+    monkeypatch.setattr(orchestration.settings, "development_base_branch", "main")
     target_repo = tmp_path / "targetApp"
     target_repo.mkdir()
     repo = Repo.init(target_repo)
@@ -1074,7 +1077,7 @@ def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monk
         json.dumps({"name": "@app/web", "private": True, "scripts": {}}),
         encoding="utf-8",
     )
-    repo.index.add(["README.md"])
+    repo.index.add(["README.md", "apps/web/package.json"])
     repo.index.commit("Initial commit")
     monkeypatch.setattr(orchestration.settings, "target_repo_path", target_repo)
 
@@ -1169,7 +1172,7 @@ def test_issue_comment_develop_command_continues_from_in_progress(tmp_path, monk
     result = continue_response.json()
     assert result["previous_state"] == "Dev Review"
     assert result["current_state"] == "Dev Review"
-    assert result["message"] == "Dev Agent 실행이 완료되어 Dev Review에서 사람 승인을 기다립니다."
+    assert result["message"] == "Dev Agent와 Review Agent 실행이 완료되어 Dev Review에서 사람 승인을 기다립니다."
 
 
 def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypatch):
@@ -1180,6 +1183,7 @@ def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypa
     monkeypatch.setattr(routes.settings, "refactor_command", "@ai-harness refactor")
     monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
     monkeypatch.setattr(orchestration.settings, "github_token", None)
+    monkeypatch.setattr(orchestration.settings, "development_base_branch", "main")
     target_repo = tmp_path / "targetApp"
     target_repo.mkdir()
     repo = Repo.init(target_repo)
@@ -1189,7 +1193,7 @@ def test_issue_comment_refactor_command_applies_human_request(tmp_path, monkeypa
         json.dumps({"name": "@app/web", "private": True, "scripts": {}}),
         encoding="utf-8",
     )
-    repo.index.add(["README.md"])
+    repo.index.add(["README.md", "apps/web/package.json"])
     repo.index.commit("Initial commit")
     monkeypatch.setattr(orchestration.settings, "target_repo_path", target_repo)
 

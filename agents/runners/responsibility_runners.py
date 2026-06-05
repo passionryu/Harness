@@ -153,12 +153,6 @@ class DDDModelingRunner(ResponsibilityCapabilityRunner):
         if spec is None:
             return super().run(context)
 
-        changed_paths = _write_ddd_scaffold(context, spec)
-        commit_hash = _stage_and_commit(
-            context,
-            changed_paths,
-            f"[{context.feature_name}] : DDD service scaffold 추가",
-        )
         report = context.task_dir / f"{self.name}.md"
         snapshot = inspect_codebase(context)
         report.write_text(
@@ -172,8 +166,8 @@ class DDDModelingRunner(ResponsibilityCapabilityRunner):
                     f"- domain: `{spec.domain}`",
                     f"- usecase: `{spec.usecase_name}`",
                     f"- method: `{spec.method_name}`",
-                    f"- commit: `{commit_hash}`",
-                    f"- changed_paths: `{', '.join(changed_paths)}`",
+                    "- commit: 생성하지 않음",
+                    "- changed_paths: 없음",
                     "",
                     *render_codebase_snapshot(snapshot),
                     "## Applied Skill",
@@ -185,20 +179,20 @@ class DDDModelingRunner(ResponsibilityCapabilityRunner):
                     "",
                     "## Capability",
                     "",
-                    "- status: partial",
-                    "- DDD application layer의 Command, Result, Service, PolicyChecker scaffold를 생성합니다.",
-                    "- 실제 조회, 저장, 외부 연동, 상세 정책은 사람이 확정한 뒤 구현해야 합니다.",
+                    "- status: needs_human",
+                    "- DDD application layer 자동 구현 capability가 부족한 경우 저장소 scaffold를 생성하지 않습니다.",
+                    "- 불완전한 TODO 파일과 불필요한 커밋을 남기지 않기 위해 artifact 보고서만 생성합니다.",
                 ]
             ),
             encoding="utf-8",
         )
         return DevRunnerResult(
             status=AgentStatus.NEEDS_HUMAN,
-            summary=f"{self.name}가 {spec.usecase_name} service scaffold를 생성했습니다.",
-            commits=[f"1. {commit_hash} [{context.feature_name}] : DDD service scaffold 추가"],
+            summary=f"{self.name}가 {spec.usecase_name} 구현 필요성을 식별했지만 자동 구현 전 사람 검토가 필요합니다.",
+            commits=[],
             progress=[
                 "- [x] API 요구사항에서 도메인과 유스케이스 이름 추출",
-                "- [x] Command/Result/Service/PolicyChecker scaffold 생성",
+                "- [ ] DDD application 구현 capability 확보",
                 "- [ ] 상세 도메인 정책과 저장소 연결 구현",
             ],
             verification=[
@@ -207,10 +201,10 @@ class DDDModelingRunner(ResponsibilityCapabilityRunner):
                 "- status: needs_human",
                 f"- domain: `{spec.domain}`",
                 f"- usecase: `{spec.usecase_name}`",
-                "- reason: scaffold 이후 실제 도메인 정책과 저장소 연결은 사람 검토가 필요합니다.",
+                "- reason: 불완전한 scaffold를 남기지 않기 위해 자동 구현을 중단했습니다.",
             ],
             artifacts=[ArtifactSpec(self.name, report)],
-            error=f"{self.name}: scaffold 이후 실제 도메인 정책과 저장소 연결 capability가 부족합니다. {report.name}을 확인하세요.",
+            error=f"{self.name}: DDD application 자동 구현 capability가 부족합니다. {report.name}을 확인하세요.",
         )
 
 
@@ -343,14 +337,6 @@ class APIImplementationRunner(ResponsibilityCapabilityRunner):
                 artifacts=[ArtifactSpec(self.name, report)],
             )
 
-        contract_path = _api_contract_path(context, method, path)
-        _write_text(contract_path, _api_contract_content(context, method, path))
-        relative = _relative(context, contract_path)
-        commit_hash = _stage_and_commit(
-            context,
-            [relative],
-            f"[{context.feature_name}] : API contract 초안 추가",
-        )
         report = context.task_dir / f"{self.name}.md"
         snapshot = inspect_codebase(context)
         report.write_text(
@@ -362,26 +348,26 @@ class APIImplementationRunner(ResponsibilityCapabilityRunner):
                     f"- issue_type: `{context.issue_type}`",
                     f"- responsibility: {self.responsibility}",
                     f"- endpoint: `{method} {path}`",
-                    f"- contract: `{relative}`",
-                    f"- commit: `{commit_hash}`",
+                    "- contract: 저장소에 생성하지 않음",
+                    "- commit: 생성하지 않음",
                     "",
                     *render_codebase_snapshot(snapshot),
                     "## Capability",
                     "",
-                    "- status: partial",
-                    "- 명시된 endpoint를 기준으로 API contract 초안을 생성합니다.",
-                    "- Controller, DTO, InputPort, Service, Repository 구현은 아직 사람이 검토해야 합니다.",
+                    "- status: needs_human",
+                    "- API 자동 구현 capability가 부족한 경우 저장소 contract 초안을 생성하지 않습니다.",
+                    "- 불완전한 API 문서와 불필요한 커밋을 남기지 않기 위해 artifact 보고서만 생성합니다.",
                 ]
             ),
             encoding="utf-8",
         )
         return DevRunnerResult(
             status=AgentStatus.NEEDS_HUMAN,
-            summary=f"{self.name}가 {method} {path} API contract 초안을 생성했습니다.",
-            commits=[f"1. {commit_hash} [{context.feature_name}] : API contract 초안 추가"],
+            summary=f"{self.name}가 {method} {path} 구현 필요성을 식별했지만 자동 구현 전 사람 검토가 필요합니다.",
+            commits=[],
             progress=[
                 "- [x] API endpoint 추출",
-                "- [x] API contract 초안 생성",
+                "- [ ] API 구현 capability 확보",
                 "- [ ] Controller/DTO/InputPort/Service 구현",
             ],
             verification=[
@@ -389,10 +375,10 @@ class APIImplementationRunner(ResponsibilityCapabilityRunner):
                 "",
                 "- status: needs_human",
                 f"- endpoint: `{method} {path}`",
-                "- reason: contract 이후 실제 API 구현 capability가 부족합니다.",
+                "- reason: 불완전한 contract/scaffold를 남기지 않기 위해 자동 구현을 중단했습니다.",
             ],
             artifacts=[ArtifactSpec(self.name, report)],
-            error=f"{self.name}: contract 이후 실제 API 구현 capability가 부족합니다. {report.name}을 확인하세요.",
+            error=f"{self.name}: API 자동 구현 capability가 부족합니다. {report.name}을 확인하세요.",
         )
 
 
@@ -523,6 +509,58 @@ class APIConnectRunner(ResponsibilityCapabilityRunner):
 
     # 로그인 API 연동처럼 contract와 기존 화면이 명확한 경우 프론트엔드 API 연결을 수행한다.
     def run(self, context: DevRunnerContext) -> DevRunnerResult:
+        if _is_reissue_api_connect_request(context):
+            changed_paths = _connect_reissue_api(context)
+            commit_hash = _stage_and_commit(
+                context,
+                changed_paths,
+                f"[{context.feature_name}] : Access Token 자동 재발급 연동",
+            )
+            report = context.task_dir / f"{self.name}.md"
+            snapshot = inspect_codebase(context)
+            report.write_text(
+                "\n".join(
+                    [
+                        f"# {self.name}",
+                        "",
+                        f"- branch: `{context.branch_name}`",
+                        f"- issue_type: `{context.issue_type}`",
+                        "- status: success",
+                        "- api: `POST /api/auth/reissue`",
+                        f"- commit: `{commit_hash}`",
+                        f"- changed_paths: `{', '.join(changed_paths)}`",
+                        "",
+                        *render_codebase_snapshot(snapshot),
+                        "## Capability",
+                        "",
+                        "- 401 응답 시 Refresh Token으로 Access Token을 재발급합니다.",
+                        "- 재발급 성공 시 토큰을 갱신하고 원래 요청을 1회 재시도합니다.",
+                        "- 재발급 실패 시 토큰을 제거하고 한국어 안내 메시지를 표시합니다.",
+                        "- 무한 재시도를 방지합니다.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            return DevRunnerResult(
+                status=AgentStatus.SUCCESS,
+                summary="Access Token 만료 시 Refresh Token 자동 재발급 흐름을 연결했습니다.",
+                commits=[f"1. {commit_hash} [{context.feature_name}] : Access Token 자동 재발급 연동"],
+                progress=[
+                    "- [x] Refresh Token 재발급 API contract 확인",
+                    "- [x] 프론트엔드 인증 API client 재발급 흐름 확인",
+                    "- [x] 재발급 성공 시 토큰 갱신과 원래 요청 1회 재시도 확인",
+                    "- [x] 재발급 실패 시 안전한 로그아웃 처리 확인",
+                ],
+                verification=[
+                    f"## {self.name}",
+                    "",
+                    "- status: success",
+                    "- api: `POST /api/auth/reissue`",
+                    "- retry: `401 -> reissue -> retry once`",
+                ],
+                artifacts=[ArtifactSpec(self.name, report)],
+            )
+
         if not _is_login_api_connect_request(context):
             return super().run(context)
 
@@ -1908,6 +1946,16 @@ def _is_login_api_connect_request(context: DevRunnerContext) -> bool:
     return "/api/auth/login" in haystack or ("로그인" in haystack and "api" in haystack)
 
 
+def _is_reissue_api_connect_request(context: DevRunnerContext) -> bool:
+    haystack = f"{context.title}\n{context.body}".lower()
+    return (
+        "/api/auth/reissue" in haystack
+        or "refresh token" in haystack
+        or "리프레시 토큰" in haystack
+        or "자동 재발급" in haystack
+    )
+
+
 # 로그인 API client와 기존 로그인 모달 submit handler를 연결한다.
 def _connect_login_api(context: DevRunnerContext) -> list[str]:
     page_path = context.repo_path / "apps/web/app/page.tsx"
@@ -1929,6 +1977,38 @@ def _connect_login_api(context: DevRunnerContext) -> list[str]:
         smoke_text = smoke_path.read_text(encoding="utf-8")
         smoke_updated = _apply_login_api_to_smoke_test(smoke_text)
         smoke_path.write_text(smoke_updated, encoding="utf-8")
+        changed.append(_relative(context, smoke_path))
+    return changed
+
+
+# Access Token 만료 시 Refresh Token 재발급 연동이 구현되어 있는지 검증한다.
+def _connect_reissue_api(context: DevRunnerContext) -> list[str]:
+    auth_api_path = context.repo_path / "apps/web/lib/auth-api.ts"
+    smoke_path = context.repo_path / "apps/web/scripts/verify-main-auth-screen.mjs"
+    if not auth_api_path.exists():
+        raise RuntimeError("apps/web/lib/auth-api.ts 파일을 찾지 못해 토큰 재발급 연동을 확인할 수 없습니다.")
+
+    auth_api_text = auth_api_path.read_text(encoding="utf-8")
+    required_snippets = [
+        "/api/auth/reissue",
+        "reissueToken",
+        "requestWithAuth",
+        "response.status !== 401",
+        "storeLoginTokens(await reissueToken",
+        "clearLoginTokens()",
+        "retryOnUnauthorized",
+    ]
+    missing = [snippet for snippet in required_snippets if snippet not in auth_api_text]
+    if missing:
+        raise RuntimeError(f"토큰 재발급 연동 코드가 부족합니다. missing={', '.join(missing)}")
+
+    changed = [_relative(context, auth_api_path)]
+    if smoke_path.exists():
+        smoke_text = smoke_path.read_text(encoding="utf-8")
+        required_smoke = ["/api/auth/reissue", "reissueToken", "clearLoginTokens()"]
+        smoke_missing = [snippet for snippet in required_smoke if snippet not in smoke_text]
+        if smoke_missing:
+            raise RuntimeError(f"토큰 재발급 smoke test 기준이 부족합니다. missing={', '.join(smoke_missing)}")
         changed.append(_relative(context, smoke_path))
     return changed
 
