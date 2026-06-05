@@ -145,13 +145,14 @@ def publish_feature_record(
         "properties": {
             "이슈 제목 ": _title_property(title),
             "이슈 번호 ": _rich_text_property(issue_number or "기록 없음"),
-            "구현 타입": _multi_select_property([issue_type]),
-            "현재 staus": _multi_select_property([state]),
+            "구현 타입": _multi_select_property([_notion_issue_type(issue_type)]),
+            "현재 staus": _multi_select_property([_notion_state(state)]),
         },
         "children": _children_from_sections(
             [
-                ("정리", summary),
-                ("확인", "Human QA 승인 이후 Documentation Agent가 자동 기록했다."),
+                ("기능 설명", _feature_description(title, issue_type, summary)),
+                ("동작 원리", _feature_operation_principle(issue_type)),
+                ("이슈 티켓", _issue_ticket(issue_number)),
             ]
         ),
     }
@@ -183,12 +184,85 @@ def publish_harness_history_record(
         },
         "children": _children_from_sections(
             [
-                ("기능", feature),
+                ("기능 설명", feature),
+                ("동작 원리", _harness_operation_principle(category)),
                 ("사용 방법", usage),
             ]
         ),
     }
     return _post_notion_page(payload)
+
+
+# 하네스 내부 구현 타입을 Notion 구현 타입 옵션명으로 변환한다.
+def _notion_issue_type(issue_type: str) -> str:
+    mapping = {
+        "feFeature": "FE Feature",
+        "beFeature": "BE Feature",
+        "fullstackFeature": "Full Stack Feature",
+        "apiConnect": "API Connect",
+        "config": "Config",
+    }
+    return mapping.get(issue_type, issue_type or "unspecified")
+
+
+# 하네스 내부 상태명을 Notion 현재 상태 옵션명으로 변환한다.
+def _notion_state(state: str) -> str:
+    mapping = {
+        "Ready To Deploy": "Stage",
+        "Done": "Done",
+        "Human QA": "Human QA",
+        "System QA": "System QA",
+        "QA Review": "Human QA",
+    }
+    return mapping.get(state, state or "Stage")
+
+
+# 서비스 구현 기록의 기능 설명을 2~3줄로 생성한다.
+def _feature_description(title: str, issue_type: str, summary: str) -> str:
+    type_name = _notion_issue_type(issue_type)
+    compact_summary = _compact(summary, limit=420)
+    return "\n".join(
+        [
+            f"{title} 작업을 통해 MyMentalCare 서비스의 {type_name} 범위를 보강했다.",
+            "사용자가 서비스 흐름 안에서 더 자연스럽게 기능을 사용할 수 있도록 설계, 개발, 검증 결과를 정리했다.",
+            compact_summary,
+        ]
+    )
+
+
+# 구현 타입별로 서비스 기능의 동작 원리를 설명한다.
+def _feature_operation_principle(issue_type: str) -> str:
+    principles = {
+        "feFeature": "프론트엔드 화면과 상태가 사용자의 입력과 클릭에 반응한다. 사용자는 화면에서 기능을 발견하고, 필요한 정보를 입력한 뒤 결과 메시지를 확인한다.",
+        "beFeature": "백엔드는 사용자의 요청을 도메인 규칙에 따라 검증하고 처리한다. 성공하면 결과를 반환하고, 실패하면 사용자가 이해할 수 있는 한국어 메시지를 반환한다.",
+        "apiConnect": "프론트엔드가 사용자의 행동을 API 요청으로 변환하고, 백엔드 응답을 다시 화면 상태와 사용자 메시지로 바꾼다.",
+        "fullstackFeature": "화면, API, 데이터 처리가 하나의 사용자 흐름으로 연결된다. 사용자는 화면에서 기능을 수행하고, 서버는 도메인 규칙과 저장 결과를 기준으로 응답한다.",
+        "config": "서비스 실행과 인증/보안 정책에 필요한 설정을 추가한다. 설정은 로컬 실행, 테스트, 이후 기능 구현의 기반으로 사용된다.",
+    }
+    return principles.get(
+        issue_type,
+        "사용자 목표를 기준으로 화면, 서버, 데이터 흐름이 연결된다. 구현 결과는 Human QA 이후 서비스 기록으로 남긴다.",
+    )
+
+
+# 이슈 번호를 GitHub issue 링크 Markdown으로 변환한다.
+def _issue_ticket(issue_number: str) -> str:
+    if not issue_number:
+        return "GitHub 이슈 번호를 찾지 못했습니다."
+    return f"[#{issue_number} 이슈 보기](https://github.com/{settings.github_owner}/{settings.github_repo}/issues/{issue_number})"
+
+
+# 하네스 기록의 동작 원리를 카테고리별로 짧게 생성한다.
+def _harness_operation_principle(category: str) -> str:
+    principles = {
+        "스킬 생성": "반복되는 판단 기준을 Codex가 읽을 수 있는 skill 문서로 분리해 재사용한다.",
+        "스킬 강화": "기존 skill의 규칙을 더 구체화해 다음 구현과 리뷰에서 같은 기준을 적용한다.",
+        "에이전트 생성": "새 책임을 가진 Agent를 추가해 설계, 개발, 검증, 기록 흐름을 분리한다.",
+        "에이전트 보강": "기존 Agent의 질문, 실행, 검증, 기록 방식을 개선해 사람이 확인하기 쉬운 결과를 만든다.",
+        "하네스 강화": "GitHub, Notion, Discord, 로컬 저장소 흐름을 연결해 작업 기록과 실행 안정성을 높인다.",
+        "기획 변경": "서비스와 하네스의 운영 방향을 조정하고 다음 작업 기준으로 남긴다.",
+    }
+    return principles.get(category, "하네스가 사람이 통제하는 개발 흐름을 더 안정적으로 지원하도록 동작 방식을 보강한다.")
 
 
 # Notion Create Page API로 page를 생성하고 결과를 표준 dict로 반환한다.
