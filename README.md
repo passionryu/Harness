@@ -17,9 +17,9 @@ graph LR
     planning --> design[Design Agent]
     design --> planApproval{Human Approval}
     planApproval --> dev[Dev Agent]
-    dev --> devApproval{Human Approval}
-    devApproval --> review[Review Agent]
-    review --> qa[QA Agent]
+    dev --> review[Review Agent]
+    review --> devApproval{Human Approval}
+    devApproval --> qa[QA Agent]
     qa --> humanQa{Human QA}
     humanQa --> ready[Ready To Deploy]
     ready --> deployApproval{Deploy Approval}
@@ -29,18 +29,6 @@ graph LR
     humanQa -. optional .-> domain[Domain Knowledge Agent]
 ```
 
-## Kanban State Machine
-
-```mermaid
-graph LR
-    backlog[Backlog] --> planReview[Plan Review]
-    planReview --> devReady[Dev Ready]
-    devReady --> devReview[Dev Review]
-    devReview --> qaReady[QA Ready]
-    qaReady --> qaReview[QA Review]
-    qaReview --> readyToDeploy[Ready To Deploy]
-    readyToDeploy --> done[Done]
-```
 
 ## Agents
 
