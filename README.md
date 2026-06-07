@@ -5,16 +5,6 @@ Codex를 주 입력 인터페이스로 사용하고, GitHub Issue/Kanban, 로컬
 목표는 “AI가 알아서 다 하는 개발”이 아니라, 설계·개발·검증·문서화를 재현 가능한 단계로 나누고 사람이 중요한 지점마다 승인하는 것입니다.
 각 Agent는 결과를 산출물과 댓글/문서로 남기며, 자동화가 불확실한 작업은 성공한 척하지 않고 사람에게 넘깁니다.
 
-## Principles
-
-- Deterministic workflow over autonomous improvisation
-- Human approval before irreversible transitions
-- Artifact-first context management
-- Retry-safe state machine
-- Local-first development
-- Auditability and reproducibility
-- Small components that can be replaced later
-
 ## How It Works
 
 하네스는 GitHub Issue를 하나의 작업 단위로 보고, GitHub Kanban의 상태 흐름에 맞춰 Agent를 호출합니다.
@@ -52,62 +42,51 @@ graph LR
     readyToDeploy --> done[Done]
 ```
 
-| State | Meaning | Main Actor |
-| --- | --- | --- |
-| `Backlog` | 아이디어 또는 GitHub Issue가 등록된 상태 | Human / Codex |
-| `Plan Review` | Design Agent가 설계를 만들고 사람이 검토하는 상태 | Design Agent + Human |
-| `Dev Ready` | 설계가 승인되어 개발 가능한 상태 | Human |
-| `Dev Review` | Dev Agent 구현 결과를 사람이 검토하는 상태 | Dev Agent + Human |
-| `QA Ready` | 개발 결과가 승인되어 시스템 QA 가능한 상태 | Human |
-| `QA Review` | QA Agent 결과를 사람이 검토하는 상태 | QA Agent + Human |
-| `Ready To Deploy` | 사람 QA 승인 후 배포 가능한 상태 | Human |
-| `Done` | 최종 완료 | Human |
-
 ## Agents
 
-### Planning Assistant Agent
+### 🧭 Planning Assistant Agent
 
 기획 보조 Agent입니다.
 서비스 아이디어, 사용자 문제, 다음 기능 후보를 함께 정리합니다.
 Obsidian에 쌓인 기획 메모와 도메인 지식을 참고해 “무엇을 만들면 좋을지”를 제안합니다.
 이 Agent의 결과는 바로 구현 명령이 아니라, GitHub Issue로 만들기 전의 기획 대화 재료입니다.
 
-### Design Agent
+### 🏗️ Design Agent
 
 기획안을 개발 가능한 설계로 바꾸는 Agent입니다.
 요구사항을 읽고 변경 대상, 구현 단위, API/DB/화면 흐름, QA 기준을 정리합니다.
 시퀀스 다이어그램은 개발자가 이해할 수 있게 기술적으로 작성하고, 플로우 차트는 사용자와 도메인 관점에서 작성합니다.
 미결정 사항이 있으면 바로 구현으로 넘기지 않고 사람에게 질문해야 합니다.
 
-### Dev Agent
+### 🛠️ Dev Agent
 
 설계가 승인된 작업을 실제 코드 변경으로 옮기는 Agent입니다.
 브랜치를 만들고, 구현 단위를 나누고, 각 단위마다 커밋을 남깁니다.
 내부적으로 DDD Modeling, DB Migration, API Implementation, Frontend Implementation, API Connect, Test Implementation runner를 사용합니다.
 자동 구현 능력이 부족한 작업은 `needs_human`으로 멈추고, 어떤 runner capability가 부족한지 보고합니다.
 
-### Review Agent
+### 🧐 Review Agent
 
 Dev 완료 후 QA 전에 코드 품질을 검토하는 Agent입니다.
 DDD/hexagonal boundary, 테스트 이름, 에러 메시지, 로깅 규칙, 불필요한 scaffold, 이상한 커밋을 확인합니다.
 리뷰 결과가 수정 필요라면 Dev 단계로 되돌릴 근거를 남깁니다.
 이 Agent는 “테스트 통과 여부”보다 “코드가 장기적으로 유지보수 가능한가”를 보는 역할입니다.
 
-### QA Agent
+### 🔎 QA Agent
 
 시스템 검증을 담당하는 Agent입니다.
 단위/통합 테스트, curl 시나리오, 브라우저 화면 확인, DB 저장 상태, 인증/인가 경계, 회귀 여부를 확인합니다.
 자동으로 확인할 수 있는 것은 직접 검증하고, 사람이 봐야 하는 것은 Human QA 체크리스트로 넘깁니다.
 QA가 끝나면 GitHub Issue와 Discord에 사람이 확인할 URL, Swagger 주소, 검증 항목을 남깁니다.
 
-### Documentation Agent
+### 📝 Documentation Agent
 
 Human QA 이후 구현 이력을 Notion에 정리하는 Agent입니다.
 이슈별 설계, 개발, QA 요약을 서비스 구현 기록 표에 남깁니다.
 문서는 길게 쓰기보다 “무엇이 추가되었고, 어떻게 동작하며, 어느 이슈와 연결되는지”를 빠르게 회고할 수 있게 정리합니다.
 항상 자동 실행하지 않고, 사람이 필요하다고 판단할 때 호출합니다.
 
-### Domain Knowledge Agent
+### 🧠 Domain Knowledge Agent
 
 서비스 지식과 도메인 결정을 Obsidian에 정리하는 Agent입니다.
 구현된 기능의 정책, 사용자 흐름, 확정된 결정사항을 기획 보조 Agent가 나중에 참고할 수 있는 형태로 남깁니다.
