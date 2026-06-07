@@ -1,40 +1,125 @@
 # ai-harness
 
-AI-native software development harness for a human-controlled multi-agent development workflow.
-
-This repository is an MVP foundation, not a fully autonomous developer. It is designed as a deterministic, auditable, reproducible, human-in-the-loop local orchestration system around Codex, GitHub Kanban records, artifacts, and a local SQLite run history.
+`ai-harness`는 완전 자율 개발 AI가 아니라, 사람이 승인하고 통제하는 AI 개발 조직을 만들기 위한 로컬 우선 하네스입니다.
+Codex를 주 입력 인터페이스로 사용하고, GitHub Issue/Kanban, 로컬 artifact, SQLite 실행 이력, Notion, Obsidian을 연결해 작업 흐름을 기록합니다.
+목표는 “AI가 알아서 다 하는 개발”이 아니라, 설계·개발·검증·문서화를 재현 가능한 단계로 나누고 사람이 중요한 지점마다 승인하는 것입니다.
+각 Agent는 결과를 산출물과 댓글/문서로 남기며, 자동화가 불확실한 작업은 성공한 척하지 않고 사람에게 넘깁니다.
 
 ## Principles
 
 - Deterministic workflow over autonomous improvisation
 - Human approval before irreversible transitions
-- Isolated agent execution
 - Artifact-first context management
 - Retry-safe state machine
 - Local-first development
+- Auditability and reproducibility
 - Small components that can be replaced later
 
-## Kanban Flow
+## How It Works
 
-```text
-Backlog
--> Plan Review
--> Dev Ready
--> Dev Review
--> QA Ready
--> QA Review
--> Ready To Deploy
--> Done
+하네스는 GitHub Issue를 하나의 작업 단위로 보고, GitHub Kanban의 상태 흐름에 맞춰 Agent를 호출합니다.
+Agent는 직접 최종 결정을 내리지 않고 설계안, 구현 결과, 리뷰 결과, QA 리포트 같은 evidence를 남깁니다.
+사람은 각 gate에서 결과를 검토하고 승인하거나 수정 지시를 내립니다.
+
+```mermaid
+graph LR
+    issue[GitHub Issue] --> planning[Planning Assistant Agent]
+    planning --> design[Design Agent]
+    design --> planApproval{Human Approval}
+    planApproval --> dev[Dev Agent]
+    dev --> devApproval{Human Approval}
+    devApproval --> review[Review Agent]
+    review --> qa[QA Agent]
+    qa --> humanQa{Human QA}
+    humanQa --> ready[Ready To Deploy]
+    ready --> deployApproval{Deploy Approval}
+    deployApproval --> done[Done]
+
+    humanQa -. optional .-> docs[Documentation Agent]
+    humanQa -. optional .-> domain[Domain Knowledge Agent]
 ```
 
-Each agent run stops at a review gate. A human must approve Plan, Dev, QA, and Deploy before the next stage can proceed.
+## Kanban State Machine
+
+```mermaid
+graph LR
+    backlog[Backlog] --> planReview[Plan Review]
+    planReview --> devReady[Dev Ready]
+    devReady --> devReview[Dev Review]
+    devReview --> qaReady[QA Ready]
+    qaReady --> qaReview[QA Review]
+    qaReview --> readyToDeploy[Ready To Deploy]
+    readyToDeploy --> done[Done]
+```
+
+| State | Meaning | Main Actor |
+| --- | --- | --- |
+| `Backlog` | 아이디어 또는 GitHub Issue가 등록된 상태 | Human / Codex |
+| `Plan Review` | Design Agent가 설계를 만들고 사람이 검토하는 상태 | Design Agent + Human |
+| `Dev Ready` | 설계가 승인되어 개발 가능한 상태 | Human |
+| `Dev Review` | Dev Agent 구현 결과를 사람이 검토하는 상태 | Dev Agent + Human |
+| `QA Ready` | 개발 결과가 승인되어 시스템 QA 가능한 상태 | Human |
+| `QA Review` | QA Agent 결과를 사람이 검토하는 상태 | QA Agent + Human |
+| `Ready To Deploy` | 사람 QA 승인 후 배포 가능한 상태 | Human |
+| `Done` | 최종 완료 | Human |
+
+## Agents
+
+### Planning Assistant Agent
+
+기획 보조 Agent입니다.
+서비스 아이디어, 사용자 문제, 다음 기능 후보를 함께 정리합니다.
+Obsidian에 쌓인 기획 메모와 도메인 지식을 참고해 “무엇을 만들면 좋을지”를 제안합니다.
+이 Agent의 결과는 바로 구현 명령이 아니라, GitHub Issue로 만들기 전의 기획 대화 재료입니다.
+
+### Design Agent
+
+기획안을 개발 가능한 설계로 바꾸는 Agent입니다.
+요구사항을 읽고 변경 대상, 구현 단위, API/DB/화면 흐름, QA 기준을 정리합니다.
+시퀀스 다이어그램은 개발자가 이해할 수 있게 기술적으로 작성하고, 플로우 차트는 사용자와 도메인 관점에서 작성합니다.
+미결정 사항이 있으면 바로 구현으로 넘기지 않고 사람에게 질문해야 합니다.
+
+### Dev Agent
+
+설계가 승인된 작업을 실제 코드 변경으로 옮기는 Agent입니다.
+브랜치를 만들고, 구현 단위를 나누고, 각 단위마다 커밋을 남깁니다.
+내부적으로 DDD Modeling, DB Migration, API Implementation, Frontend Implementation, API Connect, Test Implementation runner를 사용합니다.
+자동 구현 능력이 부족한 작업은 `needs_human`으로 멈추고, 어떤 runner capability가 부족한지 보고합니다.
+
+### Review Agent
+
+Dev 완료 후 QA 전에 코드 품질을 검토하는 Agent입니다.
+DDD/hexagonal boundary, 테스트 이름, 에러 메시지, 로깅 규칙, 불필요한 scaffold, 이상한 커밋을 확인합니다.
+리뷰 결과가 수정 필요라면 Dev 단계로 되돌릴 근거를 남깁니다.
+이 Agent는 “테스트 통과 여부”보다 “코드가 장기적으로 유지보수 가능한가”를 보는 역할입니다.
+
+### QA Agent
+
+시스템 검증을 담당하는 Agent입니다.
+단위/통합 테스트, curl 시나리오, 브라우저 화면 확인, DB 저장 상태, 인증/인가 경계, 회귀 여부를 확인합니다.
+자동으로 확인할 수 있는 것은 직접 검증하고, 사람이 봐야 하는 것은 Human QA 체크리스트로 넘깁니다.
+QA가 끝나면 GitHub Issue와 Discord에 사람이 확인할 URL, Swagger 주소, 검증 항목을 남깁니다.
+
+### Documentation Agent
+
+Human QA 이후 구현 이력을 Notion에 정리하는 Agent입니다.
+이슈별 설계, 개발, QA 요약을 서비스 구현 기록 표에 남깁니다.
+문서는 길게 쓰기보다 “무엇이 추가되었고, 어떻게 동작하며, 어느 이슈와 연결되는지”를 빠르게 회고할 수 있게 정리합니다.
+항상 자동 실행하지 않고, 사람이 필요하다고 판단할 때 호출합니다.
+
+### Domain Knowledge Agent
+
+서비스 지식과 도메인 결정을 Obsidian에 정리하는 Agent입니다.
+구현된 기능의 정책, 사용자 흐름, 확정된 결정사항을 기획 보조 Agent가 나중에 참고할 수 있는 형태로 남깁니다.
+Notion이 작업 이력이라면, Obsidian은 서비스가 어떤 의미와 정책을 갖는지 보관하는 지식 저장소입니다.
+항상 정리할 필요는 없고, 서비스 방향에 영향을 주는 기능일 때 호출합니다.
 
 ## Repository Map
 
 ```text
 ai_harness/    CLI entrypoint used by Codex and local operators
 orchestrator/  DB models, orchestration services, legacy HTTP adapters
-agents/        Agent abstraction and Plan/Dev/QA runner implementations
+agents/        Agent abstraction and Design/Dev/Review/QA/Docs implementations
 prompts/       Prompt templates and model-facing instructions
 workflows/     State machine and event workflow definitions
 rules/         Project and safety rules
@@ -60,15 +145,17 @@ pytest
 Run harness commands without starting a server:
 
 ```bash
-harness sync --issue 8
-harness plan --issue 8
-harness approve --issue 8 --stage plan --approved-by rsy
-harness develop --issue 8
-harness approve --issue 8 --stage dev --approved-by rsy
-harness qa --issue 8
-harness approve --issue 8 --stage qa --approved-by rsy
-harness approve --issue 8 --stage deploy --approved-by rsy
-harness status --issue 8
+harness sync --issue 13
+harness design --issue 13
+harness approve --issue 13 --stage plan --approved-by rsy
+harness develop --issue 13
+harness approve --issue 13 --stage dev --approved-by rsy
+harness qa --issue 13
+harness approve --issue 13 --stage qa --approved-by rsy
+harness document --issue 13
+harness domain-knowledge --issue 13
+harness approve --issue 13 --stage deploy --approved-by rsy
+harness status --issue 13
 ```
 
 Detailed CLI usage is documented in [`docs/cli-usage-guide.md`](docs/cli-usage-guide.md).
@@ -76,109 +163,45 @@ Detailed CLI usage is documented in [`docs/cli-usage-guide.md`](docs/cli-usage-g
 If the console script is not installed yet, use the module form:
 
 ```bash
-python -m ai_harness.cli status --issue 8
+python -m ai_harness.cli status --issue 13
 ```
 
-Legacy FastAPI server mode is optional and no longer the primary input interface:
-
-```bash
-uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 3002
-```
-
-## CLI-first GitHub Issue Workflow
+## Configuration
 
 Configure `.env` with:
 
 ```env
 GITHUB_OWNER=passionryu
-GITHUB_REPO=targetApp
+GITHUB_REPO=myMentalCare
 GITHUB_TOKEN=...
-GITHUB_WEBHOOK_SECRET=...
+GITHUB_WEBHOOK_SECRET=
 ENABLE_GITHUB_COMMENT_COMMANDS=false
-PLAN_TRIGGER_LABEL=ai-plan-ready
 ALLOW_EXTERNAL_NOTIFICATIONS=false
-GOOGLE_CHAT_WEBHOOK_URL=
 DISCORD_WEBHOOK_URL=
+NOTION_API_TOKEN=
+NOTION_FEATURE_DATA_SOURCE_ID=
+NOTION_HARNESS_HISTORY_DATA_SOURCE_ID=
+OBSIDIAN_VAULT_PATH=/Users/rsy/Documents/myMentalCare Obsidian Vault
 ```
-
-Codex or a local operator should call the CLI:
-
-```bash
-harness create-issue --type config --title "[인증 기반 설정] Spring Security + JWT + Redis 인증 기반 설정" --body-file ./notes/config-issue.md
-harness sync --issue 1
-harness plan --issue 1
-harness replan --issue 1 --note "기존 설계에서 로그인 정책을 다시 반영한다."
-harness approve --issue 1 --stage plan --approved-by rsy --notes "설계를 확인했다."
-harness develop --issue 1
-harness refactor --issue 1 --note-file ./notes/refactor.md
-harness approve --issue 1 --stage dev --approved-by rsy --notes "구현 결과를 확인했다."
-harness qa --issue 1 --note "로그인 실패 케이스와 DB 저장 상태를 함께 확인한다."
-harness re-qa --issue 1
-harness approve --issue 1 --stage qa --approved-by rsy --notes "QA 결과를 확인했다."
-harness approve --issue 1 --stage deploy --approved-by rsy --notes "배포 가능 상태로 승인한다."
-harness status --issue 1
-```
-
-`harness fix-develop`은 deprecated된 호환 명령입니다. 개발 실패 복구는 Codex 대화형 수정 또는 Dev Agent 내부 runner 확장으로 처리합니다.
 
 GitHub issue comments are not used as human command input anymore:
 
-- GitHub issue comments are no longer used as a command input channel.
-- `ENABLE_GITHUB_COMMENT_COMMANDS=false` keeps `issue_comment` webhook events ignored even if GitHub sends them.
-- Use Codex as the primary human input interface; use GitHub issue comments as generated progress records only.
-- GitHub webhook support is legacy/optional and should not be required for local development.
+- Use Codex as the primary human input interface.
+- Use the CLI as the deterministic execution interface.
+- Use GitHub issue comments as generated progress records only.
+- Keep `ENABLE_GITHUB_COMMENT_COMMANDS=false` unless intentionally testing legacy webhook input.
 
-External notifications are blocked by default. Set `ALLOW_EXTERNAL_NOTIFICATIONS=true` only when you intentionally want real Google Chat or Discord messages to be sent. When enabled, `GOOGLE_CHAT_WEBHOOK_URL` or `DISCORD_WEBHOOK_URL` receives a notification after System QA or re-QA passes.
+External notifications are blocked by default.
+Set `ALLOW_EXTERNAL_NOTIFICATIONS=true` only when you intentionally want real Discord messages to be sent.
 
-For the current Target service frontend, run the web app locally from the target repository:
-
-```bash
-cd /Users/rsy/Desktop/myPlayGround/targetApp
-pnpm --dir apps/web dev
-```
-
-Then open the local Next.js URL shown by the command, usually `http://localhost:3000`.
-
-Manual Human QA should check:
-
-- 메인 화면에서 회원가입 진입 버튼 또는 링크가 보이는지
-- 회원가입 진입 후 `/signup` 화면으로 이동하는지
-- 이름, 이메일, 비밀번호, 전화번호, 관심 영역 입력 필드가 보이는지
-- 모바일/데스크톱에서 레이아웃이 깨지지 않는지
-- 필수값, 이메일 형식, 비밀번호 길이 검증이 사용자에게 자연스럽게 보이는지
-- 정상 입력 후 제출 시 현재 단계에 맞는 안내 또는 mock-safe 동작이 보이는지
-
-Development branch naming follows the issue type and issue number:
-
-```text
-type: beFeature   -> feature(BE)-1
-type: feFeature   -> feature(FE)-2
-type: bugfix      -> bugfix-3
-type: apiConnect  -> api-connect-4
-type: infra       -> infra-5
-type: config      -> config-6
-type: docs        -> docs-7
-type: hotfix      -> hotfix-8
-```
-
-Dev Agent creates a commit plan before implementation. Each implementation unit must be committed separately with this message format:
-
-```text
-[구현 기능(이슈 제목)] : 내용
-```
-
-Example:
-
-```text
-[회원 가입 기능 화면 구현] : 버튼 추가
-[회원 가입 기능 화면 구현] : validation 테스트 추가
-```
+## Issue Type Labels
 
 Issue templates in the target repository should attach one of these labels:
 
 ```text
 type: feFeature
 type: beFeature
+type: fullstackFeature
 type: apiConnect
 type: docs
 type: infra
@@ -187,23 +210,82 @@ type: bugfix
 type: hotfix
 ```
 
-The Plan Agent reads the `type:*` label from the GitHub issue payload and uses it to choose a planning profile. Replan, refactor, QA, and cancel requests should be passed through CLI `--note` or `--note-file`.
+The Design Agent reads the `type:*` label from the GitHub issue payload and uses it to choose a planning profile.
+Replan, refactor, QA, and cancel requests should be passed through CLI `--note` or `--note-file`.
+
+## Branch And Commit Rule
+
+Development branch naming follows the issue type and issue number:
+
+```text
+type: beFeature        -> feature(BE)-1
+type: feFeature        -> feature(FE)-2
+type: fullstackFeature -> feature(FS)-3
+type: bugfix           -> bugfix-4
+type: apiConnect       -> api-connect-5
+type: infra            -> infra-6
+type: config           -> config-7
+type: docs             -> docs-8
+type: hotfix           -> hotfix-9
+```
+
+Dev Agent creates a commit plan before implementation.
+Each implementation unit should be committed separately with this message format:
+
+```text
+[구현 기능(이슈 제목)] : 내용
+```
+
+Example:
+
+```text
+[AI 마음 대화 MVP 구현] : 채팅 도메인 모델 추가
+[AI 마음 대화 MVP 구현] : 채팅 화면과 API 연동 추가
+```
+
+## Local Target App
+
+For the current target service frontend:
+
+```bash
+cd /Users/rsy/Desktop/myPlayGround/myMentalCare
+pnpm --dir apps/web dev
+```
+
+For the current target service backend:
+
+```bash
+cd /Users/rsy/Desktop/myPlayGround/myMentalCare/apps/server
+./gradlew :modules:bootstrap:mymentalcare:bootRun
+```
+
+Typical local URLs:
+
+```text
+Frontend: http://localhost:3000
+Backend:  http://localhost:3001
+Swagger:  http://localhost:3001/swagger-ui/index.html
+```
 
 ## MVP Scope
 
 The current MVP provides:
 
 - CLI-first local harness entrypoint
-- optional legacy FastAPI server skeleton
-- PostgreSQL-ready SQLAlchemy models
 - deterministic Kanban state machine
-- Plan, Dev, QA agent abstractions with safe placeholder runners
-- artifact store
-- audit log model
-- retry and timeout policy model
-- Docker compose with Postgres for optional server deployments
+- Design, Dev, Review, QA, Documentation, Domain Knowledge agent abstractions
+- GitHub issue sync and generated progress comments
+- artifact store for plans, patches, reports, and documentation
+- SQLite run and state transition history
+- Notion service history publishing
+- Obsidian domain knowledge capture
+- Discord notification support
 - pytest coverage for workflow rules
-- GitHub issue sync through the CLI
-- GitHub issue comments as generated progress records only
 
-Live OpenAI, GitHub Projects mutation, server mode, and Docker execution are intentionally abstracted behind interfaces so they can be enabled safely after local validation.
+Legacy FastAPI server mode remains optional and is no longer the primary input interface:
+
+```bash
+uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 3002
+```
+
+Live OpenAI, GitHub Projects mutation, server mode, and Docker execution are intentionally kept behind interfaces so they can be enabled safely after local validation.
