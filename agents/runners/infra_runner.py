@@ -14,10 +14,10 @@ class InfraRunner:
     def run(self, context: DevRunnerContext) -> DevRunnerResult:
         if _is_security_jwt_redis_config(context):
             return _implement_security_jwt_redis_config(context)
-        if _is_backend_logging_policy(context):
-            return _implement_backend_logging_policy(context)
         if _is_grafana_error_dashboard_and_alerting(context):
             return _implement_grafana_error_dashboard_and_alerting(context)
+        if _is_backend_logging_policy(context):
+            return _implement_backend_logging_policy(context)
         if _is_loki_grafana_alloy_monitoring(context):
             return _implement_loki_grafana_alloy_monitoring(context)
 
