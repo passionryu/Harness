@@ -16,6 +16,8 @@ class InfraRunner:
             return _implement_security_jwt_redis_config(context)
         if _is_backend_logging_policy(context):
             return _implement_backend_logging_policy(context)
+        if _is_grafana_error_dashboard_and_alerting(context):
+            return _implement_grafana_error_dashboard_and_alerting(context)
         if _is_loki_grafana_alloy_monitoring(context):
             return _implement_loki_grafana_alloy_monitoring(context)
 
@@ -76,6 +78,7 @@ class InfraRunner:
                 "- Spring Security + JWT/토큰 + Redis 인증 기반 설정",
                 "- 백엔드 로그 파일 출력 및 민감정보 로깅 정책",
                 "- Loki-Grafana-Alloy 로컬 로그 모니터링 스택",
+                "- Grafana 에러 로그 대시보드 및 알림 provisioning",
                 "",
                 "## 다음 선택지",
                 "",
@@ -112,6 +115,15 @@ def _is_loki_grafana_alloy_monitoring(context: DevRunnerContext) -> bool:
         and "grafana" in haystack
         and "alloy" in haystack
     )
+
+
+# Grafana 에러 로그 대시보드와 알림 구성 작업인지 판단한다.
+def _is_grafana_error_dashboard_and_alerting(context: DevRunnerContext) -> bool:
+    haystack = f"{context.title}\n{context.body}".lower()
+    has_dashboard = "dashboard" in haystack or "대시보드" in haystack
+    has_alert = "alert" in haystack or "알림" in haystack
+    has_error_log = "error" in haystack or "exception" in haystack or "에러" in haystack
+    return context.issue_type == "infra" and "grafana" in haystack and has_dashboard and has_alert and has_error_log
 
 
 def _server_root(context: DevRunnerContext) -> Path:
@@ -460,6 +472,87 @@ def _implement_loki_grafana_alloy_monitoring(context: DevRunnerContext) -> DevRu
     )
 
 
+# Grafana 에러 로그 대시보드와 알림 provisioning 파일을 생성한다.
+def _implement_grafana_error_dashboard_and_alerting(context: DevRunnerContext) -> DevRunnerResult:
+    paths = _write_grafana_error_dashboard_and_alerting_files(context)
+    commit_hash = _stage_and_commit(
+        context,
+        paths,
+        f"[{context.feature_name}] : Grafana 에러 로그 대시보드와 알림 구성 추가",
+    )
+
+    exit_code, stdout, stderr = _run_command(
+        ["docker", "compose", "-f", "docker-compose.monitoring.yml", "config"],
+        _server_root(context),
+        context.timeout_seconds,
+    )
+
+    verification = [
+        "## docker compose -f docker-compose.monitoring.yml config",
+        "",
+        f"- exit_code: {exit_code}",
+        "",
+        "## Grafana provisioning",
+        "",
+        "- dashboards: `monitoring/grafana/provisioning/dashboards/mymentalcare-logs.yml`",
+        "- dashboard json: `monitoring/grafana/provisioning/dashboards/json/mymentalcare-error-logs.json`",
+        "- alerting: `monitoring/grafana/provisioning/alerting/mymentalcare-log-alerts.yml`",
+        "",
+        "## stdout",
+        "```text",
+        stdout.strip()[-3000:] or "(비어 있음)",
+        "```",
+        "",
+        "## stderr",
+        "```text",
+        stderr.strip()[-3000:] or "(비어 있음)",
+        "```",
+    ]
+
+    report = context.task_dir / "infra-runner.md"
+    report.write_text(
+        "\n".join(
+            [
+                "# Infra Runner",
+                "",
+                f"- runner: `{InfraRunner.name}`",
+                f"- branch: `{context.branch_name}`",
+                "- feature: Grafana 에러 로그 대시보드 및 알림 구성",
+                "",
+                "## Generated Scope",
+                "",
+                "- Grafana dashboard provider",
+                "- myMentalCare 에러 로그 dashboard JSON",
+                "- Grafana alerting provisioning",
+                "- Discord webhook 환경변수 연결 문서",
+                "- 운영자가 자주 쓰는 LogQL 쿼리 문서",
+                "",
+                "## Verification",
+                "",
+                "- command: `docker compose -f docker-compose.monitoring.yml config`",
+                f"- exit_code: `{exit_code}`",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    return DevRunnerResult(
+        status=AgentStatus.SUCCESS if exit_code == 0 else AgentStatus.FAILED,
+        summary=f"Grafana 에러 로그 대시보드와 알림 구성이 {context.branch_name}에서 완료되었습니다.",
+        commits=[f"1. {commit_hash} [{context.feature_name}] : Grafana 에러 로그 대시보드와 알림 구성 추가"],
+        progress=[
+            "- [x] step 1: Grafana dashboard provider 추가",
+            "- [x] step 2: 에러 로그 dashboard JSON 추가",
+            "- [x] step 3: Grafana alerting provisioning 추가",
+            "- [x] step 4: Discord webhook 연동 문서 추가",
+            "- [x] step 5: compose config 검증" if exit_code == 0 else "- [ ] step 5: compose config 검증",
+        ],
+        verification=verification,
+        artifacts=[ArtifactSpec("infra-runner-report", report)],
+        error=None if exit_code == 0 else "Grafana 대시보드/알림 provisioning compose 검증이 실패했습니다.",
+    )
+
+
 # Loki/Grafana/Alloy 모니터링 스택에 필요한 파일을 작성한다.
 def _write_loki_grafana_alloy_files(context: DevRunnerContext) -> list[str]:
     paths: list[str] = []
@@ -486,6 +579,381 @@ def _write_loki_grafana_alloy_files(context: DevRunnerContext) -> list[str]:
     return paths
 
 
+# Grafana 에러 로그 대시보드와 알림 구성 파일을 작성한다.
+def _write_grafana_error_dashboard_and_alerting_files(context: DevRunnerContext) -> list[str]:
+    paths: list[str] = []
+
+    datasource = _server_root(context) / "monitoring/grafana/provisioning/datasources/loki.yml"
+    _write_text(datasource, _grafana_loki_datasource_content())
+    paths.append(_relative(context, datasource))
+
+    provider = _server_root(context) / "monitoring/grafana/provisioning/dashboards/mymentalcare-logs.yml"
+    _write_text(provider, _grafana_dashboard_provider_content())
+    paths.append(_relative(context, provider))
+
+    dashboard = _server_root(context) / "monitoring/grafana/provisioning/dashboards/json/mymentalcare-error-logs.json"
+    _write_text(dashboard, _grafana_error_log_dashboard_content())
+    paths.append(_relative(context, dashboard))
+
+    alerting = _server_root(context) / "monitoring/grafana/provisioning/alerting/mymentalcare-log-alerts.yml"
+    _write_text(alerting, _grafana_log_alerting_content())
+    paths.append(_relative(context, alerting))
+
+    docs = context.repo_path / "docs/observability/grafana-error-dashboard-alerting.md"
+    _write_text(docs, _grafana_error_dashboard_docs_content())
+    paths.append(_relative(context, docs))
+    return paths
+
+
+# Grafana dashboard provider 내용을 반환한다.
+def _grafana_dashboard_provider_content() -> str:
+    return """apiVersion: 1
+
+providers:
+  - name: mymentalcare-log-dashboards
+    orgId: 1
+    folder: myMentalCare Observability
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json
+"""
+
+
+# myMentalCare 로그 대시보드 JSON 내용을 반환한다.
+def _grafana_error_log_dashboard_content() -> str:
+    return r"""{
+  "uid": "mymentalcare-error-logs",
+  "title": "myMentalCare 에러 로그 모니터링",
+  "tags": ["myMentalCare", "logs", "local"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "logs",
+      "title": "전체 백엔드 로그",
+      "datasource": {"type": "loki", "uid": "mymentalcare-loki"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=\"mymentalcare-api\"}",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 2,
+      "type": "logs",
+      "title": "ERROR / Exception 로그",
+      "datasource": {"type": "loki", "uid": "mymentalcare-loki"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=\"mymentalcare-api\"} |~ \"ERROR|Exception\"",
+          "queryType": "range"
+        }
+      ],
+      "options": {"showTime": true, "showLabels": false, "wrapLogMessage": true, "sortOrder": "Descending"}
+    },
+    {
+      "id": 3,
+      "type": "logs",
+      "title": "로그인 실패 로그",
+      "datasource": {"type": "loki", "uid": "mymentalcare-loki"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=\"mymentalcare-api\"} |= \"[로그인]\" |= \"실패\"",
+          "queryType": "range"
+        }
+      ],
+      "options": {"showTime": true, "showLabels": false, "wrapLogMessage": true, "sortOrder": "Descending"}
+    },
+    {
+      "id": 4,
+      "type": "logs",
+      "title": "OpenAI 호출 실패 로그",
+      "datasource": {"type": "loki", "uid": "mymentalcare-loki"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=\"mymentalcare-api\"} |~ \"OpenAI|AI 마음 대화\" |~ \"실패|ERROR|Exception\"",
+          "queryType": "range"
+        }
+      ],
+      "options": {"showTime": true, "showLabels": false, "wrapLogMessage": true, "sortOrder": "Descending"}
+    },
+    {
+      "id": 5,
+      "type": "logs",
+      "title": "Redis / DB 연결 실패 로그",
+      "datasource": {"type": "loki", "uid": "mymentalcare-loki"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=\"mymentalcare-api\"} |~ \"Redis|Hikari|MariaDB|JDBC|database|Connection\" |~ \"ERROR|Exception|failed|실패\"",
+          "queryType": "range"
+        }
+      ],
+      "options": {"showTime": true, "showLabels": false, "wrapLogMessage": true, "sortOrder": "Descending"}
+    },
+    {
+      "id": 6,
+      "type": "logs",
+      "title": "위기 감지 운영 로그",
+      "datasource": {"type": "loki", "uid": "mymentalcare-loki"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=\"mymentalcare-api\"} |~ \"위기|crisis|Crisis\"",
+          "queryType": "range"
+        }
+      ],
+      "options": {"showTime": true, "showLabels": false, "wrapLogMessage": true, "sortOrder": "Descending"}
+    }
+  ]
+}
+"""
+
+
+# Grafana alerting provisioning 내용을 반환한다.
+def _grafana_log_alerting_content() -> str:
+    return r"""apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: mymentalcare-discord
+    receivers:
+      - uid: mymentalcare-discord-webhook
+        type: discord
+        settings:
+          url: ${GRAFANA_DISCORD_WEBHOOK_URL}
+          title: "[myMentalCare 로그 알림] {{ template \"default.title\" . }}"
+          message: |
+            Grafana가 myMentalCare 백엔드 로그 이상 징후를 감지했습니다.
+            Grafana 대시보드에서 세부 로그를 확인하세요.
+
+policies:
+  - orgId: 1
+    receiver: mymentalcare-discord
+    group_by:
+      - grafana_folder
+      - alertname
+
+groups:
+  - orgId: 1
+    name: mymentalcare-log-alerts
+    folder: myMentalCare Observability
+    interval: 1m
+    rules:
+      - uid: mymentalcare-error-log-detected
+        title: myMentalCare ERROR 로그 감지
+        condition: C
+        for: 0m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: myMentalCare 백엔드 ERROR 로그가 감지되었습니다.
+          description: 최근 5분 동안 myMentalCare API 로그에서 ERROR 문자열이 감지되었습니다.
+        labels:
+          service: mymentalcare-api
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mymentalcare-loki
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              refId: A
+              expr: sum(count_over_time({service="mymentalcare-api"} |= "ERROR" [5m]))
+              queryType: instant
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    type: last
+                  type: query
+      - uid: mymentalcare-openai-failure-detected
+        title: myMentalCare OpenAI 호출 실패 감지
+        condition: C
+        for: 0m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: myMentalCare OpenAI 호출 실패 로그가 감지되었습니다.
+          description: 최근 5분 동안 AI 마음 대화 또는 OpenAI 실패 로그가 감지되었습니다.
+        labels:
+          service: mymentalcare-api
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mymentalcare-loki
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              refId: A
+              expr: sum(count_over_time({service="mymentalcare-api"} |~ "OpenAI|AI 마음 대화" |~ "실패|ERROR|Exception" [5m]))
+              queryType: instant
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    type: last
+                  type: query
+"""
+
+
+# Grafana 에러 대시보드와 알림 문서 내용을 반환한다.
+def _grafana_error_dashboard_docs_content() -> str:
+    return """# Grafana 에러 로그 대시보드 및 알림 구성
+
+## 목적
+
+myMentalCare 백엔드의 장애 징후를 Grafana에서 빠르게 확인한다.
+운영자는 전체 로그, ERROR/Exception, 로그인 실패, OpenAI 호출 실패, Redis/DB 연결 실패, 위기 감지 로그를 한 화면에서 확인한다.
+
+## 사전 조건
+
+- Loki/Grafana/Alloy 로컬 스택이 실행되어 있어야 한다.
+- API 서버는 `LOG_PATH=/Users/rsy/Desktop/myPlayGround/myMentalCare/apps/server/logs`로 실행되어야 한다.
+- Discord 알림을 쓰려면 로컬 환경변수 `GRAFANA_DISCORD_WEBHOOK_URL`을 설정한다.
+
+## 실행
+
+```bash
+cd /Users/rsy/Desktop/myPlayGround/myMentalCare/apps/server
+docker compose -f docker-compose.monitoring.yml up -d
+```
+
+## 접속
+
+- Grafana: http://localhost:3002
+- Dashboard: `myMentalCare Observability / myMentalCare 에러 로그 모니터링`
+
+## 주요 LogQL
+
+전체 백엔드 로그를 본다.
+
+```logql
+{service="mymentalcare-api"}
+```
+
+ERROR 로그를 본다.
+
+```logql
+{service="mymentalcare-api"} |= "ERROR"
+```
+
+예외 로그를 본다.
+
+```logql
+{service="mymentalcare-api"} |= "Exception"
+```
+
+로그인 실패 로그를 본다.
+
+```logql
+{service="mymentalcare-api"} |= "[로그인]" |= "실패"
+```
+
+OpenAI 호출 실패 로그를 본다.
+
+```logql
+{service="mymentalcare-api"} |~ "OpenAI|AI 마음 대화" |~ "실패|ERROR|Exception"
+```
+
+Redis/DB 연결 실패 로그를 본다.
+
+```logql
+{service="mymentalcare-api"} |~ "Redis|Hikari|MariaDB|JDBC|database|Connection" |~ "ERROR|Exception|failed|실패"
+```
+
+위기 감지 운영 로그를 본다.
+
+```logql
+{service="mymentalcare-api"} |~ "위기|crisis|Crisis"
+```
+
+## Discord 알림
+
+Grafana alerting provisioning은 `GRAFANA_DISCORD_WEBHOOK_URL`을 참조한다.
+이 값은 코드에 커밋하지 않는다.
+
+```bash
+export GRAFANA_DISCORD_WEBHOOK_URL="Discord Webhook URL"
+docker compose -f docker-compose.monitoring.yml up -d
+```
+
+## 민감정보 정책
+
+대시보드와 알림은 로그 원문을 기반으로 동작한다.
+따라서 애플리케이션 로그에는 사용자 채팅 원문, 감정 기록 원문, 토큰, 비밀번호, OpenAI API Key, Discord Webhook URL을 남기지 않는다.
+
+## 검증 방법
+
+1. API 서버를 실행한다.
+2. `GET /actuator/health`, 로그인 실패 요청 등 예시 요청을 만든다.
+3. Grafana 대시보드에서 로그가 조회되는지 확인한다.
+4. ERROR 테스트 로그를 남긴 뒤 alert rule이 평가되는지 확인한다.
+"""
+
+
 # 모니터링 docker compose 내용을 반환한다.
 def _monitoring_compose_content() -> str:
     return """services:
@@ -507,6 +975,7 @@ def _monitoring_compose_content() -> str:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GRAFANA_DISCORD_WEBHOOK_URL: ${GRAFANA_DISCORD_WEBHOOK_URL:-}
     volumes:
       - grafana-data:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -580,6 +1049,7 @@ def _grafana_loki_datasource_content() -> str:
 datasources:
   - name: Loki
     type: loki
+    uid: mymentalcare-loki
     access: proxy
     url: http://loki:3100
     isDefault: true
@@ -725,6 +1195,7 @@ def _logback_spring_content() -> str:
 
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
+            <charset>UTF-8</charset>
             <pattern>${LOG_PATTERN}</pattern>
         </encoder>
     </appender>
@@ -732,6 +1203,7 @@ def _logback_spring_content() -> str:
     <appender name="ROLLING_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>${LOG_PATH}/mymentalcare-api.log</file>
         <encoder>
+            <charset>UTF-8</charset>
             <pattern>${LOG_PATTERN}</pattern>
         </encoder>
         <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
