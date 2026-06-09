@@ -54,7 +54,7 @@ def test_frontend_bugfix_does_not_select_backend_ddd_runner(tmp_path):
         tmp_path,
         "bugfix",
         "[FE] 설정 색상 선택값이 메인 화면 테마에 반영되지 않는다",
-        "노을빛 / 크림빛 / 장밋빛 선택값을 localStorage에 저장하고 화면 색감에 반영한다.",
+        "노을빛 / 크림빛 / 우드빛 선택값을 localStorage에 저장하고 화면 색감에 반영한다.",
     )
 
     runner_names = [runner.name for runner in _select_runners(context)]
@@ -86,7 +86,7 @@ def test_frontend_bugfix_test_runner_runs_only_frontend_commands(tmp_path, monke
         tmp_path,
         "bugfix",
         "[FE] 설정 색상 선택값이 메인 화면 테마에 반영되지 않는다",
-        "노을빛 / 크림빛 / 장밋빛 선택값을 localStorage에 저장하고 화면 색감에 반영한다.",
+        "노을빛 / 크림빛 / 우드빛 선택값을 localStorage에 저장하고 화면 색감에 반영한다.",
     )
     commands: list[list[str]] = []
 

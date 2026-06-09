@@ -460,14 +460,14 @@ def _run_settings_theme_flow(
             )
         )
 
-        page.get_by_role("button", name=re.compile("장밋빛")).click(timeout=settings.qa_browser_timeout_ms)
-        rose_tone = page.locator(".page-shell").get_attribute("data-theme-tone")
-        rose_saved = page.evaluate("localStorage.getItem('myMentalCare.themeTone')")
+        page.get_by_role("button", name=re.compile("우드빛")).click(timeout=settings.qa_browser_timeout_ms)
+        wood_tone = page.locator(".page-shell").get_attribute("data-theme-tone")
+        wood_saved = page.evaluate("localStorage.getItem('myMentalCare.themeTone')")
         checks.append(
             BrowserQaCheck(
-                "장밋빛 테마 선택 저장",
-                rose_tone == "rose" and rose_saved == "rose",
-                f"data-theme-tone={rose_tone}, localStorage={rose_saved}",
+                "우드빛 테마 선택 저장",
+                wood_tone == "wood" and wood_saved == "wood",
+                f"data-theme-tone={wood_tone}, localStorage={wood_saved}",
             )
         )
 
@@ -477,13 +477,13 @@ def _run_settings_theme_flow(
             screenshots,
             "01-settings-theme-selected.png",
             "설정 색상 선택 반영",
-            "설정 모달에서 장밋빛 테마를 선택했고 실제 page-shell 테마 값과 저장값이 반영된 상태입니다.",
+            "설정 모달에서 우드빛 테마를 선택했고 실제 page-shell 테마 값과 저장값이 반영된 상태입니다.",
             "success",
         )
 
         page.reload(wait_until="domcontentloaded", timeout=settings.qa_browser_timeout_ms)
         page.wait_for_function(
-            "() => document.querySelector('.page-shell')?.getAttribute('data-theme-tone') === 'rose'",
+            "() => document.querySelector('.page-shell')?.getAttribute('data-theme-tone') === 'wood'",
             timeout=settings.qa_browser_timeout_ms,
         )
         persisted_tone = page.locator(".page-shell").get_attribute("data-theme-tone")
@@ -491,7 +491,7 @@ def _run_settings_theme_flow(
         checks.append(
             BrowserQaCheck(
                 "테마 선택 새로고침 유지",
-                persisted_tone == "rose" and persisted_saved == "rose",
+                persisted_tone == "wood" and persisted_saved == "wood",
                 f"data-theme-tone={persisted_tone}, localStorage={persisted_saved}",
             )
         )
