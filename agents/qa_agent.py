@@ -14,6 +14,7 @@ from agents.organization import HUMAN_QA_SUPPORT_RUNNERS, QA_RUNNERS, render_run
 from agents.runners.playwright_browser_runner import (
     format_playwright_report_section,
     run_playwright_browser_qa,
+    should_start_api_for_playwright_browser_qa,
     should_run_playwright_browser_qa,
 )
 from orchestrator.core.settings import settings
@@ -1245,17 +1246,20 @@ class QAAgent:
                 )
             )
 
-            api_process, api_status = _start_target_api_if_needed(
-                repo_path,
-                input_data.timeout_seconds,
-            )
-            checks.append(
-                (
-                    "playwright api server is reachable",
-                    _is_api_alive(),
-                    api_status,
+            if should_start_api_for_playwright_browser_qa(input_data.title, input_data.body):
+                api_process, api_status = _start_target_api_if_needed(
+                    repo_path,
+                    input_data.timeout_seconds,
                 )
-            )
+                checks.append(
+                    (
+                        "playwright api server is reachable",
+                        _is_api_alive(),
+                        api_status,
+                    )
+                )
+            else:
+                api_process = None
 
             browser_result = run_playwright_browser_qa(input_data, issue_type, task_dir)
             checks.append(

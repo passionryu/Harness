@@ -53,8 +53,12 @@ def should_run_playwright_browser_qa(issue_type: str, title: str, body: str) -> 
         "시각 검증",
         "visual qa",
         "ui/ux 검증",
+        "설정",
+        "색상",
+        "테마",
+        "화면 분위기",
     ]
-    return issue_type in {"feFeature", "apiConnect", "fullstackFeature", "beFeature"} and any(
+    return issue_type in {"feFeature", "apiConnect", "fullstackFeature", "beFeature", "bugfix"} and any(
         keyword in haystack for keyword in browser_keywords
     )
 
@@ -63,6 +67,17 @@ def should_run_playwright_browser_qa(issue_type: str, title: str, body: str) -> 
 def should_run_ai_chat_scenario(title: str, body: str) -> bool:
     haystack = f"{title}\n{body}"
     return any(keyword in haystack for keyword in ["채팅", "AI 마음", "OpenAI", "마음이"])
+
+
+# 설정 화면 색상 선택처럼 실제 테마 반영을 브라우저에서 검증해야 하는지 판단한다.
+def should_run_settings_theme_scenario(title: str, body: str) -> bool:
+    haystack = f"{title}\n{body}"
+    return "설정" in haystack and any(keyword in haystack for keyword in ["색상", "테마", "화면 분위기"])
+
+
+# Playwright QA 중 백엔드 API 서버가 필요한 시나리오인지 판단한다.
+def should_start_api_for_playwright_browser_qa(title: str, body: str) -> bool:
+    return should_run_ai_chat_scenario(title, body)
 
 
 # QA Agent가 Playwright 결과를 qa-report.md에 삽입할 Markdown으로 변환한다.
@@ -154,9 +169,12 @@ def run_playwright_browser_qa(input_data: AgentInput, issue_type: str, task_dir:
             page.on("response", lambda response: _collect_network_failure(network_failures, response))
 
             _open_home_page(page, screenshot_dir, checks)
-            _login_if_needed(page, screenshot_dir, checks)
+
+            if should_run_settings_theme_scenario(input_data.title, input_data.body):
+                _run_settings_theme_flow(page, screenshot_dir, checks, screenshots)
 
             if should_run_ai_chat_scenario(input_data.title, input_data.body):
+                _login_if_needed(page, screenshot_dir, checks)
                 _run_ai_chat_flow(page, screenshot_dir, checks, screenshots)
 
             context.close()
@@ -245,6 +263,7 @@ def _collect_network_failure(network_failures: list[str], response: Any) -> None
 # 프론트엔드 첫 화면을 열고 기본 렌더링을 확인한다.
 def _open_home_page(page: Any, screenshot_dir: Path, checks: list[BrowserQaCheck]) -> None:
     response = page.goto(settings.frontend_base_url, wait_until="domcontentloaded", timeout=settings.qa_browser_timeout_ms)
+    page.wait_for_load_state("networkidle", timeout=settings.qa_browser_timeout_ms)
     status = response.status if response else None
     checks.append(BrowserQaCheck("프론트엔드 첫 화면 접근", status is not None and status < 400, f"url={settings.frontend_base_url}, status={status}"))
 
@@ -405,3 +424,85 @@ def _safe_response_json(response: Any) -> dict[str, Any]:
             return json.loads(response.text())
         except Exception:  # noqa: BLE001 - QA 실패 원인은 status/check로 남긴다.
             return {}
+
+
+# 설정 모달에서 색상 선택이 실제 테마, 저장값, 새로고침 유지로 이어지는지 검증한다.
+def _run_settings_theme_flow(
+    page: Any,
+    screenshot_dir: Path,
+    checks: list[BrowserQaCheck],
+    screenshots: list[BrowserScreenshotEvidence],
+) -> None:
+    try:
+        page.evaluate("localStorage.removeItem('myMentalCare.themeTone')")
+        page.reload(wait_until="domcontentloaded", timeout=settings.qa_browser_timeout_ms)
+
+        settings_button = page.locator(".settings-button").first
+        settings_button.wait_for(state="visible", timeout=settings.qa_browser_timeout_ms)
+        page.wait_for_timeout(500)
+        settings_button.click(timeout=settings.qa_browser_timeout_ms)
+        page.get_by_text("화면 색상").wait_for(timeout=settings.qa_browser_timeout_ms)
+        checks.append(BrowserQaCheck("설정 모달 열기", True, "화면 색상 선택 영역 표시"))
+
+        old_notice_visible = _first_visible_text(page, "선택값은 아직 화면 색감에 반영하지 않습니다.")
+        checks.append(BrowserQaCheck("미구현 안내 문구 제거", not old_notice_visible, "미구현 안내 문구가 보이지 않아야 함"))
+
+        before_background = page.locator(".page-shell").evaluate("el => getComputedStyle(el).backgroundImage")
+        page.get_by_role("button", name=re.compile("크림빛")).click(timeout=settings.qa_browser_timeout_ms)
+        cream_tone = page.locator(".page-shell").get_attribute("data-theme-tone")
+        cream_saved = page.evaluate("localStorage.getItem('myMentalCare.themeTone')")
+        cream_background = page.locator(".page-shell").evaluate("el => getComputedStyle(el).backgroundImage")
+        checks.append(
+            BrowserQaCheck(
+                "크림빛 테마 선택 반영",
+                cream_tone == "cream" and cream_saved == "cream" and cream_background != before_background,
+                f"data-theme-tone={cream_tone}, localStorage={cream_saved}",
+            )
+        )
+
+        page.get_by_role("button", name=re.compile("장밋빛")).click(timeout=settings.qa_browser_timeout_ms)
+        rose_tone = page.locator(".page-shell").get_attribute("data-theme-tone")
+        rose_saved = page.evaluate("localStorage.getItem('myMentalCare.themeTone')")
+        checks.append(
+            BrowserQaCheck(
+                "장밋빛 테마 선택 저장",
+                rose_tone == "rose" and rose_saved == "rose",
+                f"data-theme-tone={rose_tone}, localStorage={rose_saved}",
+            )
+        )
+
+        _capture_evidence(
+            page,
+            screenshot_dir,
+            screenshots,
+            "01-settings-theme-selected.png",
+            "설정 색상 선택 반영",
+            "설정 모달에서 장밋빛 테마를 선택했고 실제 page-shell 테마 값과 저장값이 반영된 상태입니다.",
+            "success",
+        )
+
+        page.reload(wait_until="domcontentloaded", timeout=settings.qa_browser_timeout_ms)
+        page.wait_for_function(
+            "() => document.querySelector('.page-shell')?.getAttribute('data-theme-tone') === 'rose'",
+            timeout=settings.qa_browser_timeout_ms,
+        )
+        persisted_tone = page.locator(".page-shell").get_attribute("data-theme-tone")
+        persisted_saved = page.evaluate("localStorage.getItem('myMentalCare.themeTone')")
+        checks.append(
+            BrowserQaCheck(
+                "테마 선택 새로고침 유지",
+                persisted_tone == "rose" and persisted_saved == "rose",
+                f"data-theme-tone={persisted_tone}, localStorage={persisted_saved}",
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - 테마 QA 실패 원인을 보고서에 남긴다.
+        _capture_evidence(
+            page,
+            screenshot_dir,
+            screenshots,
+            "99-settings-theme-failed.png",
+            "설정 색상 선택 검증 실패",
+            f"색상 선택 플로우 검증 중 실패한 시점입니다. 실패 원인: {exc}",
+            "failure",
+        )
+        checks.append(BrowserQaCheck("설정 색상 선택 플로우", False, str(exc)))
