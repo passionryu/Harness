@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     qa_browser_timeout_ms: int = 45_000
     qa_browser_login_id: str = "test1"
     qa_browser_login_password: str = "Password1!"
+    qa_pdf_enabled: bool = True
 
 
 @lru_cache

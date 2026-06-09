@@ -27,6 +27,7 @@ from orchestrator.services.artifacts import ArtifactStore
 from orchestrator.services.discord import DiscordNotifier
 from orchestrator.services.github_adapter import GitHubAdapter
 from orchestrator.services.google_chat import GoogleChatNotifier
+from orchestrator.services.qa_pdf import build_qa_pdf_report
 from workflows.state_machine import KanbanState, StateMachine, WorkflowEvent
 
 logger = logging.getLogger(__name__)
@@ -2574,7 +2575,22 @@ class OrchestrationService:
             return
 
         try:
-            notifier.send_text(message)
+            pdf_path = build_qa_pdf_report(task)
+            if pdf_path:
+                pdf_message = "\n".join(
+                    [
+                        message,
+                        "",
+                        "QA PDF 보고서를 첨부했습니다.",
+                    ]
+                )
+                notifier.send_text_with_file(
+                    pdf_message,
+                    pdf_path,
+                    filename=f"qa-report-issue-{task.github_issue_number or 'unknown'}.pdf",
+                )
+            else:
+                notifier.send_text(message)
         except Exception as exc:  # noqa: BLE001 - notification failure must not fail QA
             logger.warning(
                 "Discord QA 알림 전송 실패",
