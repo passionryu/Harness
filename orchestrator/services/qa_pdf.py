@@ -214,7 +214,7 @@ def _markdown_to_html(markdown: str) -> str:
             if not list_open:
                 output.append("<ul>")
                 list_open = True
-            output.append(f"<li>{_inline_markdown(bullet.group(1))}</li>")
+            output.append(f"<li>{_inline_markdown(_normalize_check_marker(bullet.group(1)))}</li>")
             continue
 
         _close_list(output, list_open)
@@ -239,3 +239,8 @@ def _inline_markdown(text: str) -> str:
     escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
     escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
     return escaped
+
+
+# PDF에서는 완료 체크를 X가 아닌 V로 통일한다. 기존 artifact의 [x]도 렌더링 시 보정한다.
+def _normalize_check_marker(text: str) -> str:
+    return re.sub(r"^\[[xX]\]\s+", "[V] ", text)

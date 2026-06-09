@@ -1,4 +1,5 @@
 import json
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass
@@ -36,6 +37,15 @@ BE_HUMAN_QA_CHECKLIST = [
     "민감정보가 응답에 노출되지 않는가",
 ]
 
+AI_CHAT_HUMAN_QA_CHECKLIST = [
+    "AI 채팅 응답 생성 시 오늘 대화 요약과 최근 메시지만 컨텍스트로 사용되는가",
+    "Redis 최근 메시지 캐시 hit 시 RDB 전체 대화 조회 없이 응답 컨텍스트가 구성되는가",
+    "Redis 최근 메시지 캐시 miss 시 RDB 최근 메시지로 캐시가 복구되는가",
+    "사용자 메시지와 AI 응답이 다음 응답용 최근 메시지 캐시에 반영되는가",
+    "캐시/요약 최적화 후에도 기존 AI 채팅 API 응답 형식과 위기 감지 흐름이 깨지지 않는가",
+    "Redis 장애 또는 캐시 누락 상황에서 사용자 응답과 운영 로그가 안전하게 처리되는가",
+]
+
 CONFIG_HUMAN_QA_CHECKLIST = [
     "Spring Security 설정 테스트가 실제로 통과했는가",
     "백엔드 health가 UP으로 반환되는가",
@@ -57,6 +67,8 @@ CHECK_NAME_KO = {
     "test:signup script exists": "test:signup 스크립트 존재",
     "test:signup passes": "test:signup 통과",
     "Target API server is reachable": "대상 API 서버 응답",
+    "backend dev test command passes": "백엔드 Dev 테스트 명령 재실행 통과",
+    "backend qa target is supported": "백엔드 System QA 지원 대상",
     "backend happy smoke test passes": "백엔드 해피케이스 smoke test 통과",
     "config security test passes": "Config Security 설정 테스트 통과",
     "config backend health is UP": "Config 백엔드 health UP",
@@ -104,6 +116,8 @@ def _translate_check_name(name: str) -> str:
         return f"회원가입 파일 존재: {name.removeprefix('signup file exists: ')}"
     if name.startswith("backend edge smoke test passes: "):
         return f"백엔드 엣지케이스 smoke test 통과: {name.removeprefix('backend edge smoke test passes: ')}"
+    if name.startswith("backend dev test command passes: "):
+        return f"백엔드 Dev 테스트 명령 재실행 통과: {name.removeprefix('backend dev test command passes: ')}"
     return CHECK_NAME_KO.get(name, name)
 
 
@@ -497,6 +511,18 @@ def _login_cases() -> tuple[ApiSmokeCase, list[ApiSmokeCase]]:
     return happy, edges
 
 
+def _is_signup_api_target(title: str, body: str, repo_path: Path) -> bool:
+    haystack = f"{title}\n{body}".lower()
+    mentions_signup = (
+        "/api/members/signup" in haystack
+        or "signup api" in haystack
+        or "sign up api" in haystack
+        or "회원가입 api" in haystack
+        or ("회원" in haystack and "가입" in haystack)
+    )
+    return mentions_signup and _repo_has_endpoint_mapping(repo_path, "/api/members/signup")
+
+
 def _is_login_api_target(title: str, body: str, repo_path: Path) -> bool:
     haystack = f"{title}\n{body}".lower()
     return "/api/auth/login" in haystack or "로그인 api" in haystack or "login api" in haystack
@@ -509,6 +535,84 @@ def _is_reissue_api_target(title: str, body: str, repo_path: Path) -> bool:
         or "refresh token" in haystack
         or "리프레시 토큰" in haystack
     )
+
+
+def _is_ai_chat_context_target(title: str, body: str) -> bool:
+    haystack = f"{title}\n{body}".lower()
+    has_ai_chat = (
+        "ai chat" in haystack
+        or "aichat" in haystack
+        or "ai 채팅" in haystack
+        or "ai 대화" in haystack
+        or "마음 대화" in haystack
+    )
+    has_context_optimization = (
+        "context" in haystack
+        or "컨텍스트" in haystack
+        or "요약" in haystack
+        or "summary" in haystack
+        or "redis" in haystack
+        or "최근 메시지" in haystack
+        or "캐시" in haystack
+    )
+    return has_ai_chat and has_context_optimization
+
+
+def _extract_bash_commands(markdown: str) -> list[str]:
+    commands: list[str] = []
+    in_shell_fence = False
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            fence_name = stripped.removeprefix("```").strip().lower()
+            if in_shell_fence:
+                in_shell_fence = False
+            else:
+                in_shell_fence = fence_name in {"bash", "sh", "shell", "zsh"}
+            continue
+        if in_shell_fence and stripped and not stripped.startswith("#"):
+            commands.append(stripped)
+    return commands
+
+
+def _dev_test_report_commands(input_data: AgentInput) -> list[str]:
+    report_path = input_data.artifacts_root / input_data.task_id / "dev" / "test-report.md"
+    if not report_path.exists():
+        return []
+    return _extract_bash_commands(report_path.read_text(encoding="utf-8"))
+
+
+def _cwd_for_report_command(repo_path: Path, argv: list[str]) -> Path:
+    if argv and argv[0] == "./gradlew" and not (repo_path / "gradlew").exists():
+        server_root = repo_path / "apps/server"
+        if (server_root / "gradlew").exists():
+            return server_root
+    return repo_path
+
+
+def _run_dev_test_report_commands(input_data: AgentInput, repo_path: Path) -> tuple[list[tuple[str, bool, str]], list[str]]:
+    checks: list[tuple[str, bool, str]] = []
+    command_sections: list[str] = []
+    for command in _dev_test_report_commands(input_data)[:5]:
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            checks.append((f"backend dev test command passes: {command}", False, f"명령 파싱 실패: {exc}"))
+            continue
+        if not argv:
+            continue
+        cwd = _cwd_for_report_command(repo_path, argv)
+        exit_code, stdout, stderr = _run_command(argv, cwd, input_data.timeout_seconds)
+        checks.append((f"backend dev test command passes: {command}", exit_code == 0, f"exit_code={exit_code}"))
+        command_sections.extend(
+            _format_qa_command_section(
+                command,
+                exit_code,
+                stdout,
+                stderr,
+            )
+        )
+    return checks, command_sections
 
 
 def _seed_login_member_for_qa() -> str:
@@ -987,52 +1091,86 @@ class QAAgent:
                 )
 
         if issue_type in {"beFeature", "apiConnect", "fullstackFeature"}:
-            process: subprocess.Popen[str] | None = None
-            try:
-                process, server_status = _start_target_api_if_needed(
-                    repo_path,
-                    input_data.timeout_seconds,
-                )
-                checks.append(("Target API server is reachable", _is_api_alive(), server_status))
-                if _is_api_alive():
-                    if _is_reissue_api_target(input_data.title, input_data.body, repo_path):
-                        happy_result, edge_results = _run_reissue_api_scenario(input_data.timeout_seconds)
-                    elif _is_login_api_target(input_data.title, input_data.body, repo_path):
-                        seed_status = _seed_login_member_for_qa()
-                        checks.append(("login qa member seed", "완료" in seed_status, seed_status))
-                        happy_case, edge_cases = _login_cases()
-                        happy_result = _run_api_case(happy_case, input_data.timeout_seconds)
-                        edge_results = [_run_api_case(case, input_data.timeout_seconds) for case in edge_cases]
-                    else:
-                        happy_case, edge_cases = _signup_cases()
-                        happy_result = _run_api_case(happy_case, input_data.timeout_seconds)
-                        edge_results = [_run_api_case(case, input_data.timeout_seconds) for case in edge_cases]
-                    checks.append(("backend happy smoke test passes", happy_result.passed, happy_result.name))
-                    for result in edge_results:
-                        checks.append((f"backend edge smoke test passes: {result.name}", result.passed, result.name))
+            dev_test_checks, dev_test_sections = _run_dev_test_report_commands(input_data, repo_path)
+            checks.extend(dev_test_checks)
+            command_sections.extend(dev_test_sections)
 
-                    api_result_sections.extend(
-                        [
-                            "## API Smoke Test 결과",
-                            "",
-                            "### 해피 케이스",
-                            *_format_api_result(happy_result),
-                            "### 최소 엣지 케이스",
-                        ]
+            api_smoke_target = (
+                _is_reissue_api_target(input_data.title, input_data.body, repo_path)
+                or _is_login_api_target(input_data.title, input_data.body, repo_path)
+                or _is_signup_api_target(input_data.title, input_data.body, repo_path)
+            )
+            if api_smoke_target:
+                process: subprocess.Popen[str] | None = None
+                try:
+                    process, server_status = _start_target_api_if_needed(
+                        repo_path,
+                        input_data.timeout_seconds,
                     )
-                    for result in edge_results:
-                        api_result_sections.extend(_format_api_result(result))
-                else:
-                    api_result_sections.extend(
-                        [
-                            "## API Smoke Test 결과",
-                            "",
-                            "- 대상 API 서버가 응답하지 않아 curl smoke test를 실행하지 못했습니다.",
-                            f"- server_status: {server_status}",
-                        ]
+                    checks.append(("Target API server is reachable", _is_api_alive(), server_status))
+                    if _is_api_alive():
+                        if _is_reissue_api_target(input_data.title, input_data.body, repo_path):
+                            happy_result, edge_results = _run_reissue_api_scenario(input_data.timeout_seconds)
+                        elif _is_login_api_target(input_data.title, input_data.body, repo_path):
+                            seed_status = _seed_login_member_for_qa()
+                            checks.append(("login qa member seed", "완료" in seed_status, seed_status))
+                            happy_case, edge_cases = _login_cases()
+                            happy_result = _run_api_case(happy_case, input_data.timeout_seconds)
+                            edge_results = [_run_api_case(case, input_data.timeout_seconds) for case in edge_cases]
+                        else:
+                            happy_case, edge_cases = _signup_cases()
+                            happy_result = _run_api_case(happy_case, input_data.timeout_seconds)
+                            edge_results = [_run_api_case(case, input_data.timeout_seconds) for case in edge_cases]
+                        checks.append(("backend happy smoke test passes", happy_result.passed, happy_result.name))
+                        for result in edge_results:
+                            checks.append((f"backend edge smoke test passes: {result.name}", result.passed, result.name))
+
+                        api_result_sections.extend(
+                            [
+                                "## API Smoke Test 결과",
+                                "",
+                                "### 해피 케이스",
+                                *_format_api_result(happy_result),
+                                "### 최소 엣지 케이스",
+                            ]
+                        )
+                        for result in edge_results:
+                            api_result_sections.extend(_format_api_result(result))
+                    else:
+                        api_result_sections.extend(
+                            [
+                                "## API Smoke Test 결과",
+                                "",
+                                "- 대상 API 서버가 응답하지 않아 curl smoke test를 실행하지 못했습니다.",
+                                f"- server_status: {server_status}",
+                            ]
+                        )
+                finally:
+                    _stop_process(process)
+            elif dev_test_checks:
+                api_result_sections.extend(
+                    [
+                        "## API Smoke Test 결과",
+                        "",
+                        "- 이 BE 기능은 자동 curl smoke 대상이 아니어서 Dev test-report 명령 재실행으로 검증했습니다.",
+                    ]
+                )
+            else:
+                checks.append(
+                    (
+                        "backend qa target is supported",
+                        False,
+                        "지원되는 자동 QA 시나리오가 없습니다. Dev test-report 명령 또는 기능별 QA Runner가 필요합니다.",
                     )
-            finally:
-                _stop_process(process)
+                )
+                api_result_sections.extend(
+                    [
+                        "## API Smoke Test 결과",
+                        "",
+                        "- 지원되는 자동 curl smoke 대상이 아니며 Dev test-report 명령도 없습니다.",
+                        "- 회원가입/login/reissue처럼 명시적으로 지원되는 API가 아니면 기능별 QA Runner를 추가해야 합니다.",
+                    ]
+                )
 
         if issue_type == "config":
             config_results: list[ConfigQaCheckResult] = []
@@ -1137,11 +1275,16 @@ class QAAgent:
 
         passed = all(passed for _, passed, _ in checks)
         checklist_lines = [
-            f"- [{'x' if passed else ' '}] {_translate_check_name(name)} ({detail})"
+            f"- [{'V' if passed else ' '}] {_translate_check_name(name)} ({detail})"
             for name, passed, detail in checks
         ]
         if issue_type == "config":
             checklist_source = CONFIG_HUMAN_QA_CHECKLIST
+        elif issue_type in {"beFeature", "apiConnect", "fullstackFeature"} and _is_ai_chat_context_target(
+            input_data.title,
+            input_data.body,
+        ):
+            checklist_source = AI_CHAT_HUMAN_QA_CHECKLIST
         elif issue_type in {"beFeature", "apiConnect", "fullstackFeature"}:
             checklist_source = BE_HUMAN_QA_CHECKLIST
         else:

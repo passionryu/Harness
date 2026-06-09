@@ -30,15 +30,24 @@ class PlaywrightBrowserQaResult:
     error: str | None = None
 
 
-# 이슈 내용상 브라우저 QA가 필요한 작업인지 판단한다.
+# 이슈 내용상 Playwright 브라우저 QA가 명시적으로 필요한 작업인지 판단한다.
 def should_run_playwright_browser_qa(issue_type: str, title: str, body: str) -> bool:
     if not settings.qa_browser_enabled:
         return False
-    if issue_type in {"feFeature", "apiConnect", "fullstackFeature"}:
-        return True
-    haystack = f"{title}\n{body}"
-    browser_keywords = ["화면", "프론트", "모달", "채팅", "AI 마음", "OpenAI", "로그인", "회원가입"]
-    return issue_type == "beFeature" and any(keyword in haystack for keyword in browser_keywords)
+    haystack = f"{title}\n{body}".lower()
+    browser_keywords = [
+        "playwright",
+        "e2e",
+        "브라우저 qa",
+        "브라우저 검증",
+        "실제 브라우저",
+        "시각 검증",
+        "visual qa",
+        "ui/ux 검증",
+    ]
+    return issue_type in {"feFeature", "apiConnect", "fullstackFeature", "beFeature"} and any(
+        keyword in haystack for keyword in browser_keywords
+    )
 
 
 # 이슈 내용상 AI 채팅 화면 시나리오까지 검증해야 하는지 판단한다.
@@ -63,7 +72,7 @@ def format_playwright_report_section(result: PlaywrightBrowserQaResult) -> list[
     lines.extend(["### 검증 항목"])
     lines.extend(
         [
-            f"- [{'x' if check.passed else ' '}] {check.name} ({check.detail})"
+            f"- [{'V' if check.passed else ' '}] {check.name} ({check.detail})"
             for check in result.checks
         ]
         or ["- 실행된 검증 항목이 없습니다."]
@@ -242,7 +251,7 @@ def _run_ai_chat_flow(page: Any, screenshot_dir: Path, checks: list[BrowserQaChe
         )
         page.wait_for_function(
             "count => document.querySelectorAll('.chat-bubble.is-assistant').length > count",
-            assistant_count,
+            arg=assistant_count,
             timeout=settings.qa_browser_timeout_ms,
         )
         page.screenshot(path=str(screenshot_dir / "03-ai-chat.png"), full_page=True)
