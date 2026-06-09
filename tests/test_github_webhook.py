@@ -1608,7 +1608,11 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     assert f"* 브랜치 명: feature(FE)-{issue_number}" in human_qa_comment
     assert "* QA 요청 시각:" in human_qa_comment
     assert "1. 브라우저에서 메인 화면에 접속했을 때 회원가입 진입 버튼 또는 링크가 보이는가" in human_qa_comment
-    qa_approval_command = f"harness approve --issue {issue_number} --stage qa --approved-by <name>"
+    harness_root = Path(__file__).resolve().parents[1]
+    qa_approval_command = (
+        f"cd {harness_root}\n"
+        f".venv/bin/python -m ai_harness.cli approve --issue {issue_number} --stage qa --approved-by passionryu"
+    )
     assert "사람 QA 승인 명령:" in human_qa_comment
     assert qa_approval_command in human_qa_comment
     assert duplicate_qa_response.status_code == 200
@@ -1635,8 +1639,8 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     assert "화면 확인 URL:\nhttp://localhost:3000" in captured_chat_messages[1]
     assert f"GitHub Issue:\n{issue['html_url']}" in captured_chat_messages[1]
     assert "정리 Agent를 호출할까요?" in captured_chat_messages[1]
-    assert "`document` 명령" in captured_chat_messages[1]
-    assert "`domain-knowledge` 명령" in captured_chat_messages[1]
+    assert f".venv/bin/python -m ai_harness.cli document --issue {issue_number}" in captured_chat_messages[1]
+    assert f".venv/bin/python -m ai_harness.cli domain-knowledge --issue {issue_number}" in captured_chat_messages[1]
     assert len(captured_discord_messages) == 2
     assert captured_discord_messages == captured_chat_messages
     assert qa_approval_command in captured_discord_messages[0]

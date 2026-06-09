@@ -1926,7 +1926,30 @@ class OrchestrationService:
         number = issue_number if issue_number and issue_number != "unknown" else "no-issue"
         return f"{prefix}-{number}"
 
-    # task의 GitHub 이슈 번호를 포함한 승인 CLI 명령을 만든다.
+    # 사용자가 터미널에 그대로 복사할 수 있는 하네스 CLI 명령 prefix를 만든다.
+    def _harness_cli_command(self, command: str, task: Task) -> str:
+        issue_number = task.github_issue_number or self._extract_issue_number(task.body)
+        issue_option = f" --issue {issue_number}" if issue_number and str(issue_number) != "unknown" else ""
+        return "\n".join(
+            [
+                f"cd {Path(__file__).resolve().parents[2]}",
+                f".venv/bin/python -m ai_harness.cli {command}{issue_option}",
+            ]
+        )
+
+    # 사용자가 터미널에 그대로 복사할 수 있는 승인 CLI 명령을 만든다.
+    def _approval_cli_command(self, task: Task, stage: str) -> str:
+        issue_number = task.github_issue_number or self._extract_issue_number(task.body)
+        issue_option = f" --issue {issue_number}" if issue_number and str(issue_number) != "unknown" else ""
+        approver = settings.github_owner or "<name>"
+        return "\n".join(
+            [
+                f"cd {Path(__file__).resolve().parents[2]}",
+                f".venv/bin/python -m ai_harness.cli approve{issue_option} --stage {stage} --approved-by {approver}",
+            ]
+        )
+
+    # task의 GitHub 이슈 번호를 포함한 짧은 승인 CLI 명령을 만든다.
     def _approval_command(self, task: Task, stage: str) -> str:
         issue_number = task.github_issue_number or self._extract_issue_number(task.body)
         issue_option = f" --issue {issue_number}" if issue_number and str(issue_number) != "unknown" else ""
@@ -2413,12 +2436,20 @@ class OrchestrationService:
                 "",
                 "사람 QA 승인 명령:",
                 "```bash",
-                self._approval_command(task, "qa"),
+                self._approval_cli_command(task, "qa"),
                 "```",
                 "",
                 "정리 Agent를 호출할까요?",
-                "- Notion 작업 기록이 필요하면 `document` 명령을 실행하세요.",
-                "- Obsidian 서비스 지식 정리가 필요하면 `domain-knowledge` 명령을 실행하세요.",
+                "",
+                "Notion 작업 기록이 필요하면 아래 명령을 실행하세요.",
+                "```bash",
+                self._harness_cli_command("document", task),
+                "```",
+                "",
+                "Obsidian 서비스 지식 정리가 필요하면 아래 명령을 실행하세요.",
+                "```bash",
+                self._harness_cli_command("domain-knowledge", task),
+                "```",
             ]
         )
 
