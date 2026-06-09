@@ -47,7 +47,6 @@ CONFIG_HUMAN_QA_CHECKLIST = [
 
 
 CHECK_NAME_KO = {
-    "target repository exists": "대상 저장소 존재",
     "expected branch is checked out": "예상 브랜치 체크아웃 상태",
     "main page exists": "메인 페이지 파일 존재",
     "frontend smoke script exists": "프론트엔드 smoke 테스트 스크립트 존재",
@@ -101,8 +100,6 @@ class ConfigQaCheckResult:
 
 
 def _translate_check_name(name: str) -> str:
-    if name.startswith("artifact exists: "):
-        return f"산출물 존재: {name.removeprefix('artifact exists: ')}"
     if name.startswith("signup file exists: "):
         return f"회원가입 파일 존재: {name.removeprefix('signup file exists: ')}"
     if name.startswith("backend edge smoke test passes: "):
@@ -888,11 +885,8 @@ class QAAgent:
         browser_result_sections: list[str] = []
         extra_artifacts: list[ArtifactSpec] = []
 
-        repo_exists = repo_path.exists()
-        checks.append(("target repository exists", repo_exists, str(repo_path)))
-
         current_branch = "알 수 없음"
-        if repo_exists:
+        if repo_path.exists():
             repo = Repo(repo_path)
             if branch_name in {head.name for head in repo.heads}:
                 repo.git.checkout(branch_name)
@@ -904,19 +898,6 @@ class QAAgent:
                     f"expected={branch_name}, actual={current_branch}",
                 )
             )
-
-        plan_dir = input_data.artifacts_root / input_data.task_id / "plans"
-        dev_dir = input_data.artifacts_root / input_data.task_id / "dev"
-        required_artifacts = [
-            plan_dir / "architecture.md",
-            plan_dir / "edge-case-checklist.md",
-            dev_dir / "commit-plan.md",
-            dev_dir / "dev-status.md",
-            dev_dir / "implementation.patch",
-            dev_dir / "test-report.md",
-        ]
-        for artifact in required_artifacts:
-            checks.append((f"artifact exists: {artifact.name}", artifact.exists(), str(artifact)))
 
         if issue_type == "feFeature":
             _frontend_process, frontend_status = _start_frontend_if_needed(
