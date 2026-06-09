@@ -11,23 +11,7 @@ Codex를 주 입력 인터페이스로 사용하고, GitHub Issue/Kanban, 로컬
 Agent는 직접 최종 결정을 내리지 않고 설계안, 구현 결과, 리뷰 결과, QA 리포트 같은 evidence를 남깁니다.
 사람은 각 gate에서 결과를 검토하고 승인하거나 수정 지시를 내립니다.
 
-```mermaid
-graph LR
-    issue[GitHub Issue] --> planning[Planning Assistant Agent]
-    planning --> design[Design Agent]
-    design --> planApproval{Human Approval}
-    planApproval --> dev[Dev Agent]
-    dev --> review[Review Agent]
-    review --> devApproval{Human Approval}
-    devApproval --> qa[QA Agent]
-    qa --> humanQa{Human QA}
-    humanQa --> ready[Ready To Deploy]
-    ready --> deployApproval{Deploy Approval}
-    deployApproval --> done[Done]
-
-    humanQa -. optional .-> docs[Documentation Agent]
-    humanQa -. optional .-> domain[Domain Knowledge Agent]
-```
+<img width="1672" height="941" alt="image" src="https://github.com/user-attachments/assets/b0427a96-7915-45d5-b75c-56748e7ff3ee" />
 
 
 ## Agents
