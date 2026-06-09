@@ -2368,10 +2368,10 @@ class OrchestrationService:
         numbered_items = [
             f"{index}. {item}" for index, item in enumerate(human_qa_items[:7], start=1)
         ]
-        check_target_lines = (
-            [
+        if issue_type in {"apiConnect", "fullstackFeature"}:
+            check_target_lines = [
                 "화면 확인 URL:",
-                "http://localhost:3000/signup",
+                settings.frontend_base_url,
                 "",
                 "Swagger 주소:",
                 settings.target_swagger_url,
@@ -2379,12 +2379,19 @@ class OrchestrationService:
                 "API 확인 URL:",
                 settings.target_api_base_url,
             ]
-            if issue_type in {"beFeature", "apiConnect", "fullstackFeature"}
-            else [
+        elif issue_type in {"beFeature", "config", "infra"}:
+            check_target_lines = [
+                "Swagger 주소:",
+                settings.target_swagger_url,
+                "",
+                "API 확인 URL:",
+                settings.target_api_base_url,
+            ]
+        else:
+            check_target_lines = [
                 "화면 확인 URL:",
                 settings.frontend_base_url,
             ]
-        )
         return "\n".join(
             [
                 title_line,

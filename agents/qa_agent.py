@@ -1296,7 +1296,8 @@ class QAAgent:
         human_qa_lines = [f"- [ ] {item}" for item in checklist_source]
         qa_request = _extract_section(input_data.body, "Human QA Request")
         swagger_url = settings.target_swagger_url if issue_type in {"beFeature", "apiConnect", "fullstackFeature", "config"} else "N/A"
-        check_url = settings.frontend_base_url if issue_type == "feFeature" else settings.target_api_base_url
+        frontend_check_types = {"feFeature", "bugfix", "apiConnect", "fullstackFeature"}
+        check_url = settings.frontend_base_url if issue_type in frontend_check_types else settings.target_api_base_url
 
         report = task_dir / "qa-report.md"
         report.write_text(
