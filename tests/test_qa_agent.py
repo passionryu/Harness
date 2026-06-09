@@ -5,10 +5,11 @@ import orchestrator.services.orchestration as orchestration
 from agents.base import AgentInput, AgentStatus
 from agents.runners.playwright_browser_runner import (
     BrowserQaCheck,
+    BrowserScreenshotEvidence,
     PlaywrightBrowserQaResult,
     format_playwright_report_section,
 )
-from orchestrator.services.qa_pdf import _markdown_to_html
+from orchestrator.services.qa_pdf import _markdown_to_html, _render_screenshots
 
 
 def test_fe_qa_agent_requires_frontend_runtime_before_human_qa(tmp_path, monkeypatch):
@@ -533,12 +534,22 @@ def test_playwright_report_uses_v_marker_for_passed_checks(tmp_path):
             BrowserQaCheck("홈 화면 스크린샷 저장", True, "01-home.png"),
             BrowserQaCheck("AI 채팅 화면 검증", False, "timeout"),
         ],
+        screenshots=[
+            BrowserScreenshotEvidence(
+                file_name="03-ai-chat-response.png",
+                title="AI 응답 표시",
+                description="메시지 전송 후 AI 응답 말풍선이 추가된 상태입니다.",
+                kind="success",
+            )
+        ],
     )
 
     rendered = "\n".join(format_playwright_report_section(result))
 
     assert "- [V] 홈 화면 스크린샷 저장" in rendered
     assert "- [x]" not in rendered
+    assert "### 브라우저 증거 캡처" in rendered
+    assert "success: AI 응답 표시 (`03-ai-chat-response.png`)" in rendered
 
 
 def test_qa_pdf_markdown_normalizes_legacy_x_marker_to_v():
@@ -546,3 +557,32 @@ def test_qa_pdf_markdown_normalizes_legacy_x_marker_to_v():
 
     assert "[V] 프론트엔드 첫 화면 접근" in html
     assert "[x]" not in html
+
+
+def test_qa_pdf_renders_screenshot_evidence_titles_and_descriptions(tmp_path):
+    screenshot_dir = tmp_path / "screenshots"
+    screenshot_dir.mkdir()
+    (screenshot_dir / "01-ai-chat-entry.png").write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc```\x00\x00\x00\x04\x00\x01"
+        b"\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    (screenshot_dir / "evidence.json").write_text(
+        """
+[
+  {
+    "file_name": "01-ai-chat-entry.png",
+    "title": "AI 채팅 기능 시작 화면",
+    "description": "로그인 준비 단계를 제외하고 실제 검증 대상 화면부터 기록합니다.",
+    "kind": "success"
+  }
+]
+""",
+        encoding="utf-8",
+    )
+
+    rendered = _render_screenshots(screenshot_dir)
+
+    assert "브라우저 기능 검증 캡처" in rendered
+    assert "AI 채팅 기능 시작 화면" in rendered
+    assert "로그인 준비 단계를 제외하고 실제 검증 대상 화면부터 기록합니다." in rendered

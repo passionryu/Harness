@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
@@ -19,12 +19,21 @@ class BrowserQaCheck:
 
 
 @dataclass(frozen=True)
+class BrowserScreenshotEvidence:
+    file_name: str
+    title: str
+    description: str
+    kind: str
+
+
+@dataclass(frozen=True)
 class PlaywrightBrowserQaResult:
     should_run: bool
     passed: bool
     report_path: Path
     screenshot_dir: Path
     checks: list[BrowserQaCheck] = field(default_factory=list)
+    screenshots: list[BrowserScreenshotEvidence] = field(default_factory=list)
     console_errors: list[str] = field(default_factory=list)
     network_failures: list[str] = field(default_factory=list)
     error: str | None = None
@@ -84,6 +93,15 @@ def format_playwright_report_section(result: PlaywrightBrowserQaResult) -> list[
     lines.extend(["### 네트워크 실패"])
     lines.extend([f"- {failure}" for failure in result.network_failures] or ["- 없음"])
     lines.append("")
+    lines.extend(["### 브라우저 증거 캡처"])
+    lines.extend(
+        [
+            f"- {evidence.kind}: {evidence.title} (`{evidence.file_name}`) - {evidence.description}"
+            for evidence in result.screenshots
+        ]
+        or ["- 기능 플로우 증거 캡처가 없습니다."]
+    )
+    lines.append("")
     return lines
 
 
@@ -91,7 +109,7 @@ def format_playwright_report_section(result: PlaywrightBrowserQaResult) -> list[
 def run_playwright_browser_qa(input_data: AgentInput, issue_type: str, task_dir: Path) -> PlaywrightBrowserQaResult:
     report_path = task_dir / "playwright-report.md"
     screenshot_dir = task_dir / "screenshots"
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    _reset_screenshot_dir(screenshot_dir)
 
     if not should_run_playwright_browser_qa(issue_type, input_data.title, input_data.body):
         result = PlaywrightBrowserQaResult(
@@ -118,6 +136,7 @@ def run_playwright_browser_qa(input_data: AgentInput, issue_type: str, task_dir:
         return result
 
     checks: list[BrowserQaCheck] = []
+    screenshots: list[BrowserScreenshotEvidence] = []
     console_errors: list[str] = []
     network_failures: list[str] = []
     try:
@@ -138,7 +157,7 @@ def run_playwright_browser_qa(input_data: AgentInput, issue_type: str, task_dir:
             _login_if_needed(page, screenshot_dir, checks)
 
             if should_run_ai_chat_scenario(input_data.title, input_data.body):
-                _run_ai_chat_flow(page, screenshot_dir, checks)
+                _run_ai_chat_flow(page, screenshot_dir, checks, screenshots)
 
             context.close()
             browser.close()
@@ -152,6 +171,7 @@ def run_playwright_browser_qa(input_data: AgentInput, issue_type: str, task_dir:
         report_path=report_path,
         screenshot_dir=screenshot_dir,
         checks=checks,
+        screenshots=screenshots,
         console_errors=console_errors,
         network_failures=network_failures,
     )
@@ -161,6 +181,11 @@ def run_playwright_browser_qa(input_data: AgentInput, issue_type: str, task_dir:
 
 # 브라우저 QA 상세 보고서를 별도 Markdown 파일로 저장한다.
 def _write_playwright_report(result: PlaywrightBrowserQaResult) -> None:
+    if result.screenshots:
+        (result.screenshot_dir / "evidence.json").write_text(
+            json.dumps([asdict(screenshot) for screenshot in result.screenshots], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     result.report_path.write_text(
         "\n".join(
             [
@@ -170,6 +195,34 @@ def _write_playwright_report(result: PlaywrightBrowserQaResult) -> None:
             ]
         ),
         encoding="utf-8",
+    )
+
+
+def _reset_screenshot_dir(screenshot_dir: Path) -> None:
+    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    for image_path in screenshot_dir.glob("*.png"):
+        image_path.unlink(missing_ok=True)
+    (screenshot_dir / "evidence.json").unlink(missing_ok=True)
+
+
+def _capture_evidence(
+    page: Any,
+    screenshot_dir: Path,
+    screenshots: list[BrowserScreenshotEvidence],
+    file_name: str,
+    title: str,
+    description: str,
+    kind: str,
+) -> None:
+    image_path = screenshot_dir / file_name
+    page.screenshot(path=str(image_path), full_page=True)
+    screenshots.append(
+        BrowserScreenshotEvidence(
+            file_name=file_name,
+            title=title,
+            description=description,
+            kind=kind,
+        )
     )
 
 
@@ -194,8 +247,6 @@ def _open_home_page(page: Any, screenshot_dir: Path, checks: list[BrowserQaCheck
     response = page.goto(settings.frontend_base_url, wait_until="domcontentloaded", timeout=settings.qa_browser_timeout_ms)
     status = response.status if response else None
     checks.append(BrowserQaCheck("프론트엔드 첫 화면 접근", status is not None and status < 400, f"url={settings.frontend_base_url}, status={status}"))
-    page.screenshot(path=str(screenshot_dir / "01-home.png"), full_page=True)
-    checks.append(BrowserQaCheck("홈 화면 스크린샷 저장", (screenshot_dir / "01-home.png").exists(), "01-home.png"))
 
 
 # 로그인 상태가 아니면 테스트 계정으로 로그인한다.
@@ -211,15 +262,21 @@ def _login_if_needed(page: Any, screenshot_dir: Path, checks: list[BrowserQaChec
         page.locator('input[name="password"]').last.fill(settings.qa_browser_login_password)
         page.locator("form").last.get_by_role("button", name=re.compile("^로그인$")).click()
         page.get_by_role("button", name=re.compile("로그아웃|프로필")).first.wait_for(timeout=settings.qa_browser_timeout_ms)
-        page.screenshot(path=str(screenshot_dir / "02-after-login.png"), full_page=True)
         checks.append(BrowserQaCheck("테스트 계정 로그인", True, f"loginId={settings.qa_browser_login_id}"))
     except Exception as exc:  # noqa: BLE001 - 로그인 실패를 QA 항목으로 기록한다.
-        page.screenshot(path=str(screenshot_dir / "02-login-failed.png"), full_page=True)
+        setup_dir = screenshot_dir / "_setup"
+        setup_dir.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(setup_dir / "login-failed.png"), full_page=True)
         checks.append(BrowserQaCheck("테스트 계정 로그인", False, str(exc)))
 
 
 # AI 마음 대화 화면에서 메시지 전송과 응답 표시를 검증한다.
-def _run_ai_chat_flow(page: Any, screenshot_dir: Path, checks: list[BrowserQaCheck]) -> None:
+def _run_ai_chat_flow(
+    page: Any,
+    screenshot_dir: Path,
+    checks: list[BrowserQaCheck],
+    screenshots: list[BrowserScreenshotEvidence],
+) -> None:
     try:
         if _first_visible_text(page, "오늘의 대화 시작"):
             page.get_by_role("button", name=re.compile("오늘의 대화 시작")).click(timeout=settings.qa_browser_timeout_ms)
@@ -228,10 +285,30 @@ def _run_ai_chat_flow(page: Any, screenshot_dir: Path, checks: list[BrowserQaChe
 
         page.get_by_text("마음이와 오늘의 대화").wait_for(timeout=settings.qa_browser_timeout_ms)
         checks.append(BrowserQaCheck("AI 채팅 화면 진입", True, _frontend_path("/chat")))
+        _capture_evidence(
+            page,
+            screenshot_dir,
+            screenshots,
+            "01-ai-chat-entry.png",
+            "AI 채팅 기능 시작 화면",
+            "로그인 등 준비 단계를 제외하고 실제 검증 대상인 AI 채팅 화면에 진입한 상태입니다.",
+            "success",
+        )
+
+        _capture_empty_message_edge(page, screenshot_dir, checks, screenshots)
 
         assistant_count = page.locator(".chat-bubble.is-assistant").count()
         message = "Playwright QA 확인이야. 오늘 대화 흐름을 차분히 이어갈 수 있는지 봐줘."
         page.locator("#ai-chat-message").fill(message)
+        _capture_evidence(
+            page,
+            screenshot_dir,
+            screenshots,
+            "02-ai-chat-message-ready.png",
+            "AI 채팅 메시지 입력",
+            "사용자가 검증 메시지를 입력했고, 전송 직전 화면 상태를 기록했습니다.",
+            "success",
+        )
         with page.expect_response(
             lambda response: "/api/ai-chat/rooms/today/messages" in response.url
             and response.request.method == "POST",
@@ -254,11 +331,54 @@ def _run_ai_chat_flow(page: Any, screenshot_dir: Path, checks: list[BrowserQaChe
             arg=assistant_count,
             timeout=settings.qa_browser_timeout_ms,
         )
-        page.screenshot(path=str(screenshot_dir / "03-ai-chat.png"), full_page=True)
-        checks.append(BrowserQaCheck("AI 응답 화면 표시", True, "03-ai-chat.png"))
+        _capture_evidence(
+            page,
+            screenshot_dir,
+            screenshots,
+            "03-ai-chat-response.png",
+            "AI 응답 표시",
+            "메시지 전송 후 AI 응답 말풍선이 추가되어 사용자의 대화 플로우가 끝까지 완료된 상태입니다.",
+            "success",
+        )
+        checks.append(BrowserQaCheck("AI 응답 화면 표시", True, "03-ai-chat-response.png"))
     except Exception as exc:  # noqa: BLE001 - 채팅 실패를 QA 항목으로 기록한다.
-        page.screenshot(path=str(screenshot_dir / "03-ai-chat-failed.png"), full_page=True)
+        _capture_evidence(
+            page,
+            screenshot_dir,
+            screenshots,
+            "99-ai-chat-failed.png",
+            "AI 채팅 실패 화면",
+            f"AI 채팅 플로우 검증 중 실패한 시점의 화면입니다. 실패 원인: {exc}",
+            "failure",
+        )
         checks.append(BrowserQaCheck("AI 채팅 화면 검증", False, str(exc)))
+
+
+def _capture_empty_message_edge(
+    page: Any,
+    screenshot_dir: Path,
+    checks: list[BrowserQaCheck],
+    screenshots: list[BrowserScreenshotEvidence],
+) -> None:
+    input_box = page.locator("#ai-chat-message")
+    send_button = page.get_by_role("button", name=re.compile("보내기")).first
+    input_box.fill("")
+    try:
+        blocked = send_button.is_disabled(timeout=1_000)
+        detail = "빈 메시지 상태에서 전송 버튼이 비활성화되었습니다." if blocked else "빈 메시지 상태에서 전송 버튼이 활성 상태입니다."
+    except Exception as exc:  # noqa: BLE001 - 버튼 상태 확인 실패도 엣지 케이스 증거로 남긴다.
+        blocked = False
+        detail = f"빈 메시지 전송 버튼 상태 확인 실패: {exc}"
+    _capture_evidence(
+        page,
+        screenshot_dir,
+        screenshots,
+        "02-ai-chat-empty-message-edge.png",
+        "엣지 케이스: 빈 메시지 전송 방지",
+        detail,
+        "edge",
+    )
+    checks.append(BrowserQaCheck("빈 AI 채팅 메시지 전송 방지", blocked, detail))
 
 
 # 특정 문구가 화면에 보이는지 짧게 확인한다.

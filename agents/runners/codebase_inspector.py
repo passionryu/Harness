@@ -87,7 +87,7 @@ def next_page_path(repo_path: Path, route: str) -> Path:
 
 # 테스트 실행에 사용할 프론트엔드 스크립트 후보를 우선순위대로 고른다.
 def frontend_test_commands(snapshot: CodebaseSnapshot) -> list[list[str]]:
-    preferred = ["test", "test:signup-api-connect", "test:signup", "build"]
+    preferred = ["test:main-auth", "test", "test:signup-api-connect", "test:signup", "build"]
     return [["pnpm", "--dir", "apps/web", script] for script in preferred if script in snapshot.package_scripts]
 
 

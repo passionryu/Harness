@@ -87,10 +87,81 @@ class ResponsibilityCapabilityRunner:
         )
 
 
+FRONTEND_ISSUE_KEYWORDS = [
+    "[fe]",
+    "frontend",
+    "front-end",
+    "next.js",
+    "nextjs",
+    "react",
+    "프론트",
+    "화면",
+    "ui",
+    "ux",
+    "css",
+    "색상",
+    "테마",
+    "설정",
+    "버튼",
+    "모달",
+    "localstorage",
+]
+
+BACKEND_ISSUE_KEYWORDS = [
+    "[be]",
+    "backend",
+    "back-end",
+    "api",
+    "/api/",
+    "server",
+    "spring",
+    "kotlin",
+    "jpa",
+    "db",
+    "database",
+    "redis",
+    "백엔드",
+    "서버",
+    "도메인",
+    "유스케이스",
+    "컨트롤러",
+    "데이터베이스",
+]
+
+
+def is_frontend_change_context(context: DevRunnerContext) -> bool:
+    if context.issue_type in {"feFeature", "apiConnect"}:
+        return True
+    if context.issue_type == "fullstackFeature":
+        return False
+    if context.issue_type not in {"bugfix", "hotfix"}:
+        return False
+    haystack = f"{context.title}\n{context.body}".lower()
+    return any(keyword in haystack for keyword in FRONTEND_ISSUE_KEYWORDS) or (
+        extract_frontend_route(haystack) is not None
+    )
+
+
+def is_backend_change_context(context: DevRunnerContext) -> bool:
+    if context.issue_type in {"beFeature", "fullstackFeature"}:
+        return True
+    if context.issue_type not in {"bugfix", "hotfix"}:
+        return False
+    haystack = f"{context.title}\n{context.body}".lower()
+    if is_frontend_change_context(context) and "[be]" not in haystack and "백엔드" not in haystack:
+        return False
+    if any(keyword in haystack for keyword in BACKEND_ISSUE_KEYWORDS):
+        return True
+    return extract_api_endpoint(haystack) is not None and not is_frontend_change_context(context)
+
+
 class DDDModelingRunner(ResponsibilityCapabilityRunner):
     name = "ddd_modeling_runner"
     responsibility = "도메인 모델, 정책, 유스케이스 흐름 구현"
     supported_issue_types = {"beFeature", "fullstackFeature", "bugfix", "hotfix"}
+
+    def can_handle(self, context: DevRunnerContext) -> bool:
+        return super().can_handle(context) and is_backend_change_context(context)
 
     # 명시된 API 요구사항을 기준으로 DDD application 유스케이스 scaffold를 생성한다.
     def run(self, context: DevRunnerContext) -> DevRunnerResult:
@@ -385,7 +456,12 @@ class APIImplementationRunner(ResponsibilityCapabilityRunner):
 class FrontendImplementationRunner(ResponsibilityCapabilityRunner):
     name = "frontend_implementation_runner"
     responsibility = "화면, 상태, 폼, 사용자 메시지 구현"
-    supported_issue_types = {"feFeature", "fullstackFeature"}
+    supported_issue_types = {"feFeature", "fullstackFeature", "bugfix", "hotfix"}
+
+    def can_handle(self, context: DevRunnerContext) -> bool:
+        return super().can_handle(context) and (
+            context.issue_type in {"feFeature", "fullstackFeature"} or is_frontend_change_context(context)
+        )
 
     # route가 명확한 프론트엔드 작업은 안전한 page scaffold까지 생성한다.
     def run(self, context: DevRunnerContext) -> DevRunnerResult:
@@ -2128,13 +2204,17 @@ def _apply_login_api_to_smoke_test(smoke_text: str) -> str:
 
 # 이슈 타입에 맞는 테스트 명령 목록을 결정한다.
 def _test_commands_for_context(context: DevRunnerContext, snapshot) -> list[list[str]]:
-    if context.issue_type == "feFeature":
+    if context.issue_type == "feFeature" or (
+        context.issue_type in {"bugfix", "hotfix"} and is_frontend_change_context(context)
+    ):
         return frontend_test_commands(snapshot)
     if context.issue_type == "beFeature":
         return backend_test_commands(snapshot)
     if context.issue_type in {"fullstackFeature", "apiConnect"}:
         return backend_test_commands(snapshot) + frontend_test_commands(snapshot)
-    if context.issue_type in {"config", "infra", "bugfix", "hotfix"}:
+    if context.issue_type in {"bugfix", "hotfix"} and is_backend_change_context(context):
+        return backend_test_commands(snapshot)
+    if context.issue_type in {"config", "infra"}:
         return backend_test_commands(snapshot) + frontend_test_commands(snapshot)
     return []
 

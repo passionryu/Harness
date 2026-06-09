@@ -14,6 +14,7 @@ from agents.runners.responsibility_runners import (
     FrontendImplementationRunner,
     RefactoringRunner,
     TestImplementationRunner,
+    is_backend_change_context,
 )
 from agents.runners.infra_runner import InfraRunner
 from orchestrator.core.settings import settings
@@ -134,16 +135,16 @@ def _commit_units(issue_type: str) -> list[tuple[str, str]]:
 
 
 # 백엔드 구현 규칙을 반드시 적용해야 하는 이슈 타입인지 판단한다.
-def _requires_backend_style(issue_type: str) -> bool:
-    return issue_type in {"beFeature", "apiConnect", "fullstackFeature", "bugfix", "hotfix"}
+def _requires_backend_style(context: DevRunnerContext) -> bool:
+    return context.issue_type in {"beFeature", "apiConnect", "fullstackFeature"} or is_backend_change_context(context)
 
 
 def _backend_style_skill_path() -> Path:
     return Path.home() / ".codex/skills/usecase-orchestration-style/SKILL.md"
 
 
-def _backend_style_lines(issue_type: str) -> list[str]:
-    if not _requires_backend_style(issue_type):
+def _backend_style_lines(context: DevRunnerContext) -> list[str]:
+    if not _requires_backend_style(context):
         return ["- backend orchestration style skill: 이 이슈 타입에는 필수가 아닙니다."]
 
     skill_path = _backend_style_skill_path()
@@ -286,7 +287,7 @@ class DevAgent:
         base_branch = settings.development_base_branch
         feature_name = _feature_name(input_data.title)
         commit_units = _commit_units(issue_type)
-        backend_style_lines = _backend_style_lines(issue_type)
+        backend_style_lines = ["- backend orchestration style skill: repository context not initialized"]
         refactor_request = _extract_refactor_request(input_data.body)
         is_refactor_mode = _is_refactor_mode(input_data.body)
         repo_path = settings.target_repo_path.expanduser().resolve()
@@ -323,6 +324,7 @@ class DevAgent:
                 task_dir=task_dir,
                 timeout_seconds=input_data.timeout_seconds,
             )
+            backend_style_lines = _backend_style_lines(context)
             runners = _select_runners(context)
             if not runners:
                 result_status = AgentStatus.NEEDS_HUMAN

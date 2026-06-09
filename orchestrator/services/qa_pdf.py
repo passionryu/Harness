@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import html
+import json
 import re
 from pathlib import Path
 
@@ -126,16 +127,27 @@ def _build_html_document(
       padding: 14px;
       white-space: pre-wrap;
     }}
-    .screenshot {{
-      break-inside: avoid;
-      margin: 18px 0 28px;
-    }}
-    .screenshot img {{
-      border: 1px solid #d8d0c2;
-      border-radius: 12px;
-      max-width: 100%;
-    }}
-  </style>
+	    .screenshot {{
+	      break-inside: avoid;
+	      margin: 18px 0 28px;
+	    }}
+	    .screenshot-kind {{
+	      color: #8a5b3f;
+	      font-size: 11px;
+	      font-weight: 800;
+	      margin: 0 0 4px;
+	    }}
+	    .screenshot img {{
+	      border: 1px solid #d8d0c2;
+	      border-radius: 12px;
+	      max-width: 100%;
+	    }}
+	    figcaption {{
+	      color: #3b463b;
+	      font-size: 12px;
+	      margin-top: 8px;
+	    }}
+	  </style>
 </head>
 <body>
   <section class="cover">
@@ -158,17 +170,53 @@ def _render_screenshots(screenshot_dir: Path) -> str:
     if not screenshot_dir.exists():
         return ""
 
-    blocks: list[str] = ["<section><h1>브라우저 스크린샷</h1>"]
-    for image_path in sorted(screenshot_dir.glob("*.png")):
+    evidence_items = _load_screenshot_evidence(screenshot_dir)
+    if not evidence_items:
+        evidence_items = [
+            {
+                "file_name": image_path.name,
+                "title": image_path.name,
+                "description": "이전 형식의 브라우저 캡처입니다. 기능 단계 설명 메타데이터가 없어 파일명 기준으로 표시합니다.",
+                "kind": "legacy",
+            }
+            for image_path in sorted(screenshot_dir.glob("*.png"))
+        ]
+    if not evidence_items:
+        return ""
+
+    blocks: list[str] = ["<section><h1>브라우저 기능 검증 캡처</h1>"]
+    for item in evidence_items:
+        file_name = str(item.get("file_name", ""))
+        image_path = screenshot_dir / file_name
+        if not file_name or not image_path.exists():
+            continue
         data = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        title = str(item.get("title") or image_path.name)
+        description = str(item.get("description") or "설명이 없는 브라우저 검증 캡처입니다.")
+        kind = str(item.get("kind") or "evidence")
         blocks.append(
-            "<div class=\"screenshot\">"
-            f"<h2>{html.escape(image_path.name)}</h2>"
-            f"<img src=\"data:image/png;base64,{data}\" alt=\"{html.escape(image_path.name)}\" />"
-            "</div>"
+            "<figure class=\"screenshot\">"
+            f"<p class=\"screenshot-kind\">{html.escape(kind)}</p>"
+            f"<h2>{html.escape(title)}</h2>"
+            f"<img src=\"data:image/png;base64,{data}\" alt=\"{html.escape(title)}\" />"
+            f"<figcaption>{html.escape(description)}</figcaption>"
+            "</figure>"
         )
     blocks.append("</section>")
     return "\n".join(blocks)
+
+
+def _load_screenshot_evidence(screenshot_dir: Path) -> list[dict[str, str]]:
+    evidence_path = screenshot_dir / "evidence.json"
+    if not evidence_path.exists():
+        return []
+    try:
+        parsed = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
 
 
 # QA Markdown의 주요 표현을 PDF용 HTML로 변환한다.

@@ -3,13 +3,14 @@ from pathlib import Path
 
 from agents.base import AgentStatus, ArtifactSpec
 from agents.runners.base import DevRunnerContext, DevRunnerResult
+from agents.runners.responsibility_runners import is_backend_change_context
 
 
 class KotlinSpringRunner:
     name = "kotlin_spring_runner"
 
     def can_handle(self, context: DevRunnerContext) -> bool:
-        return context.issue_type in {"beFeature", "bugfix", "hotfix"} and (
+        return context.issue_type in {"beFeature", "bugfix", "hotfix"} and is_backend_change_context(context) and (
             context.repo_path / "apps/server/build.gradle.kts"
         ).exists()
 
