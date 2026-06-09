@@ -16,6 +16,8 @@ class InfraRunner:
             return _implement_security_jwt_redis_config(context)
         if _is_backend_logging_policy(context):
             return _implement_backend_logging_policy(context)
+        if _is_loki_grafana_alloy_monitoring(context):
+            return _implement_loki_grafana_alloy_monitoring(context)
 
         report = context.task_dir / "infra-runner.md"
         report.write_text(
@@ -73,6 +75,7 @@ class InfraRunner:
                 "",
                 "- Spring Security + JWT/토큰 + Redis 인증 기반 설정",
                 "- 백엔드 로그 파일 출력 및 민감정보 로깅 정책",
+                "- Loki-Grafana-Alloy 로컬 로그 모니터링 스택",
                 "",
                 "## 다음 선택지",
                 "",
@@ -98,6 +101,17 @@ def _is_backend_logging_policy(context: DevRunnerContext) -> bool:
     has_logging = "로그" in haystack or "logging" in haystack or "logback" in haystack
     has_policy = "민감정보" in haystack or "request-id" in haystack or "request id" in haystack or "traceid" in haystack
     return context.issue_type == "infra" and has_logging and has_policy
+
+
+# Loki/Grafana/Alloy 로컬 모니터링 스택 작업인지 판단한다.
+def _is_loki_grafana_alloy_monitoring(context: DevRunnerContext) -> bool:
+    haystack = f"{context.title}\n{context.body}".lower()
+    return (
+        context.issue_type == "infra"
+        and "loki" in haystack
+        and "grafana" in haystack
+        and "alloy" in haystack
+    )
 
 
 def _server_root(context: DevRunnerContext) -> Path:
@@ -369,6 +383,312 @@ def _implement_backend_logging_policy(context: DevRunnerContext) -> DevRunnerRes
         artifacts=[ArtifactSpec("infra-runner-report", report)],
         error=None if exit_code == 0 else "백엔드 로그 파일 출력 설정 테스트가 실패했습니다.",
     )
+
+
+# Loki, Grafana, Alloy 로컬 로그 모니터링 스택 파일을 생성한다.
+def _implement_loki_grafana_alloy_monitoring(context: DevRunnerContext) -> DevRunnerResult:
+    paths = _write_loki_grafana_alloy_files(context)
+    commit_hash = _stage_and_commit(
+        context,
+        paths,
+        f"[{context.feature_name}] : 모니터링 compose와 provisioning 추가",
+    )
+
+    exit_code, stdout, stderr = _run_command(
+        ["docker", "compose", "-f", "docker-compose.monitoring.yml", "config"],
+        _server_root(context),
+        context.timeout_seconds,
+    )
+
+    verification = [
+        "## docker compose -f docker-compose.monitoring.yml config",
+        "",
+        f"- exit_code: {exit_code}",
+        "",
+        "### stdout",
+        "```text",
+        stdout.strip()[-3000:] or "(비어 있음)",
+        "```",
+        "",
+        "### stderr",
+        "```text",
+        stderr.strip()[-3000:] or "(비어 있음)",
+        "```",
+    ]
+
+    report = context.task_dir / "infra-runner.md"
+    report.write_text(
+        "\n".join(
+            [
+                "# Infra Runner",
+                "",
+                f"- runner: `{InfraRunner.name}`",
+                f"- branch: `{context.branch_name}`",
+                "- feature: Loki-Grafana-Alloy 로컬 로그 모니터링 스택",
+                "",
+                "## Generated Scope",
+                "",
+                "- Loki container",
+                "- Grafana container",
+                "- Grafana Loki datasource provisioning",
+                "- Alloy file log collection",
+                "- LogQL 예시와 실행 문서",
+                "",
+                "## Verification",
+                "",
+                "- command: `docker compose -f docker-compose.monitoring.yml config`",
+                f"- exit_code: `{exit_code}`",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    return DevRunnerResult(
+        status=AgentStatus.SUCCESS if exit_code == 0 else AgentStatus.FAILED,
+        summary=f"Loki/Grafana/Alloy 로컬 모니터링 스택이 {context.branch_name}에서 완료되었습니다.",
+        commits=[f"1. {commit_hash} [{context.feature_name}] : 모니터링 compose와 provisioning 추가"],
+        progress=[
+            "- [x] step 1: Loki/Grafana/Alloy compose 추가",
+            "- [x] step 2: Grafana Loki datasource provisioning 추가",
+            "- [x] step 3: Alloy 로그 파일 수집 설정 추가",
+            "- [x] step 4: 모니터링 실행 문서 추가",
+            "- [x] step 5: compose config 검증" if exit_code == 0 else "- [ ] step 5: compose config 검증",
+        ],
+        verification=verification,
+        artifacts=[ArtifactSpec("infra-runner-report", report)],
+        error=None if exit_code == 0 else "Loki/Grafana/Alloy compose 설정 검증이 실패했습니다.",
+    )
+
+
+# Loki/Grafana/Alloy 모니터링 스택에 필요한 파일을 작성한다.
+def _write_loki_grafana_alloy_files(context: DevRunnerContext) -> list[str]:
+    paths: list[str] = []
+
+    compose = _server_root(context) / "docker-compose.monitoring.yml"
+    _write_text(compose, _monitoring_compose_content())
+    paths.append(_relative(context, compose))
+
+    loki_config = _server_root(context) / "monitoring/loki/loki-config.yml"
+    _write_text(loki_config, _loki_config_content())
+    paths.append(_relative(context, loki_config))
+
+    datasource = _server_root(context) / "monitoring/grafana/provisioning/datasources/loki.yml"
+    _write_text(datasource, _grafana_loki_datasource_content())
+    paths.append(_relative(context, datasource))
+
+    alloy_config = _server_root(context) / "monitoring/alloy/config.alloy"
+    _write_text(alloy_config, _alloy_config_content())
+    paths.append(_relative(context, alloy_config))
+
+    docs = context.repo_path / "docs/observability/loki-grafana-alloy-local.md"
+    _write_text(docs, _monitoring_docs_content())
+    paths.append(_relative(context, docs))
+    return paths
+
+
+# 모니터링 docker compose 내용을 반환한다.
+def _monitoring_compose_content() -> str:
+    return """services:
+  loki:
+    image: grafana/loki:3.4.2
+    command: -config.file=/etc/loki/local-config.yml
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/local-config.yml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    ports:
+      - "3002:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.6.1
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - /etc/alloy/config.alloy
+    ports:
+      - "12345:12345"
+    volumes:
+      - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - ./logs:/var/log/mymentalcare:ro
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+volumes:
+  loki-data:
+  grafana-data:
+"""
+
+
+# Loki 로컬 설정 내용을 반환한다.
+def _loki_config_content() -> str:
+    return """auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+common:
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  retention_period: 336h
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+"""
+
+
+# Grafana Loki datasource provisioning 내용을 반환한다.
+def _grafana_loki_datasource_content() -> str:
+    return """apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: true
+    editable: true
+    jsonData:
+      maxLines: 1000
+"""
+
+
+# Alloy 로그 파일 수집 설정 내용을 반환한다.
+def _alloy_config_content() -> str:
+    return """local.file_match "mymentalcare_api" {
+  path_targets = [
+    {
+      "__path__" = "/var/log/mymentalcare/mymentalcare-api.log",
+      "service"  = "mymentalcare-api",
+      "env"      = "local",
+    },
+  ]
+}
+
+loki.source.file "mymentalcare_api" {
+  targets    = local.file_match.mymentalcare_api.targets
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+"""
+
+
+# Loki/Grafana/Alloy 로컬 실행 문서를 반환한다.
+def _monitoring_docs_content() -> str:
+    return """# Loki-Grafana-Alloy 로컬 로그 모니터링
+
+## 목적
+
+로컬 개발 중 myMentalCare API 서버 로그를 파일로 남기고, Alloy가 해당 파일을 읽어 Loki로 전송한다.
+개발자는 Grafana Explore에서 로그를 검색해 장애 원인과 요청 흐름을 확인한다.
+
+## 실행
+
+```bash
+cd /Users/rsy/Desktop/myPlayGround/myMentalCare/apps/server
+mkdir -p logs
+docker compose -f docker-compose.monitoring.yml up -d
+```
+
+## 종료
+
+```bash
+cd /Users/rsy/Desktop/myPlayGround/myMentalCare/apps/server
+docker compose -f docker-compose.monitoring.yml down
+```
+
+## 접속 정보
+
+- Grafana: http://localhost:3002
+- ID: `admin`
+- Password: `admin`
+- Loki API: http://localhost:3100
+- Alloy UI: http://localhost:12345
+
+## 로그 흐름
+
+```text
+myMentalCare API
+-> logs/mymentalcare-api.log
+-> Alloy
+-> Loki
+-> Grafana Explore
+```
+
+## LogQL 예시
+
+전체 API 로그를 확인한다.
+
+```logql
+{service="mymentalcare-api"}
+```
+
+에러 로그를 확인한다.
+
+```logql
+{service="mymentalcare-api"} |= "ERROR"
+```
+
+예외 로그를 확인한다.
+
+```logql
+{service="mymentalcare-api"} |= "Exception"
+```
+
+특정 요청 ID를 확인한다.
+
+```logql
+{service="mymentalcare-api"} |= "requestId="
+```
+
+## 주의
+
+- 모니터링 스택은 API/Web/MariaDB/Redis 실행과 분리된다.
+- 모니터링 스택이 실패해도 애플리케이션 실행을 막지 않는다.
+- `logs/*.log`는 Git에 올리지 않는다.
+- 비밀번호, 토큰, OpenAI API Key, Discord Webhook URL, 사용자 채팅 원문은 로그에 남기지 않는다.
+"""
 
 
 # 백엔드 로그 파일 출력과 민감정보 로깅 정책에 필요한 파일을 작성한다.
