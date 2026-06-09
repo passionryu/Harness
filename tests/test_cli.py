@@ -1,4 +1,5 @@
 import json
+import subprocess
 from uuid import uuid4
 
 import ai_harness.cli as cli
@@ -61,6 +62,7 @@ def test_cli_create_issue_syncs_task_and_notifies_discord(tmp_path, monkeypatch,
     body_file = tmp_path / "issue.md"
     body_file.write_text("## 목표\n\n인증 기반 설정을 추가한다.\n", encoding="utf-8")
     captured_messages: list[str] = []
+    captured_project_moves: list[tuple[int, str]] = []
 
     class FakeGitHubAdapter:
         def __init__(self, token: str):
@@ -75,6 +77,16 @@ def test_cli_create_issue_syncs_task_and_notifies_discord(tmp_path, monkeypatch,
                 "labels": [],
             }
 
+        def move_issue_project_status(
+            self,
+            owner: str,
+            repo: str,
+            issue_number: int,
+            project_number: int,
+            status_name: str,
+        ) -> None:
+            captured_project_moves.append((issue_number, status_name))
+
     class FakeDiscordNotifier:
         def __init__(self, webhook_url: str | None):
             self.webhook_url = webhook_url
@@ -88,6 +100,7 @@ def test_cli_create_issue_syncs_task_and_notifies_discord(tmp_path, monkeypatch,
     monkeypatch.setattr(cli.settings, "github_token", "token")
     monkeypatch.setattr(cli.settings, "github_owner", "passionryu")
     monkeypatch.setattr(cli.settings, "github_repo", "myMentalCare")
+    monkeypatch.setattr(cli.settings, "github_project_number", 4)
     monkeypatch.setattr(cli.settings, "allow_external_notifications", True)
     monkeypatch.setattr(cli.settings, "discord_webhook_url", "https://discord.example/webhook")
     monkeypatch.setattr(cli, "GitHubAdapter", FakeGitHubAdapter)
@@ -112,8 +125,10 @@ def test_cli_create_issue_syncs_task_and_notifies_discord(tmp_path, monkeypatch,
     assert payload["status"] == "created"
     assert payload["issue_number"] == issue_number
     assert payload["title"].startswith("[Config]")
+    assert payload["project_status"] == "Backlog"
     assert payload["notification"] == "sent"
     assert payload["next"] == f"harness design --issue {issue_number}"
+    assert captured_project_moves == [(issue_number, "Backlog")]
     assert captured_messages
     assert "이슈 생성 완료" in captured_messages[0]
     assert f"harness design --issue {issue_number}" in captured_messages[0]
@@ -123,6 +138,64 @@ def test_cli_create_issue_syncs_task_and_notifies_discord(tmp_path, monkeypatch,
         assert task.title.startswith("[Config]")
         assert task.state == "Backlog"
         assert "type: config" in task.body
+
+
+# CLI publish-ui-evidence 명령이 이미지 증거를 커밋하고 stage 브랜치에 병합하는지 검증한다.
+def test_cli_publish_ui_evidence_merges_images_to_stage(tmp_path, monkeypatch, capsys):
+    repo_path = tmp_path / "target"
+    repo_path.mkdir()
+    _git(repo_path, "init")
+    _git(repo_path, "config", "user.email", "test@example.local")
+    _git(repo_path, "config", "user.name", "Harness Test")
+    (repo_path / "README.md").write_text("# target\n", encoding="utf-8")
+    _git(repo_path, "add", "README.md")
+    _git(repo_path, "commit", "-m", "Initial commit")
+    _git(repo_path, "checkout", "-b", "stage")
+
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"fake image")
+
+    monkeypatch.setattr(cli.settings, "target_repo_path", repo_path)
+    monkeypatch.setattr(cli.settings, "development_base_branch", "stage")
+
+    exit_code = cli.main(
+        [
+            "--json",
+            "publish-ui-evidence",
+            "--image",
+            str(image_path),
+            "--issue",
+            "20",
+            "--slug",
+            "issue-20-ui-evidence-test",
+            "--no-push",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 0
+    assert payload["status"] == "published"
+    assert payload["target_branch"] == "stage"
+    assert payload["evidence_branch"] == "qa-assets/issue-20-ui-evidence-test"
+    assert payload["pushed"] is False
+    assert "docs/qa-screenshots/issue-20-ui-evidence-test/screen.png" in payload["files"]
+    assert (repo_path / "docs/qa-screenshots/issue-20-ui-evidence-test/screen.png").exists()
+    assert _git_output(repo_path, "branch", "--show-current") == "stage"
+
+
+def _git(repo_path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo_path, check=True, capture_output=True, text=True)
+
+
+def _git_output(repo_path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 # CLI design 명령이 FastAPI 없이 Design Agent를 실행하는지 검증한다.

@@ -19,6 +19,7 @@ from orchestrator.db.session import SessionLocal, create_db
 from orchestrator.services.discord import DiscordNotifier
 from orchestrator.services.github_adapter import GitHubAdapter
 from orchestrator.services.orchestration import OrchestrationService
+from orchestrator.services.ui_evidence import publish_ui_evidence_to_stage
 from workflows.state_machine import KanbanState
 
 
@@ -331,6 +332,7 @@ def _create_issue(args: argparse.Namespace) -> dict[str, Any]:
         task_id = task.id
         db.commit()
 
+    project_status = _move_created_issue_to_backlog(int(issue["number"]))
     notification = _notify_issue_created(issue, task_id)
     return {
         "status": "created",
@@ -338,9 +340,27 @@ def _create_issue(args: argparse.Namespace) -> dict[str, Any]:
         "title": issue.get("title") or title,
         "url": issue.get("html_url") or "",
         "task_id": task_id,
+        "project_status": project_status,
         "notification": notification,
         "next": f"harness design --issue {int(issue['number'])}",
     }
+
+
+# 새 이슈는 Design Agent 실행 전 상태이므로 GitHub Project에서도 Backlog로 고정한다.
+def _move_created_issue_to_backlog(issue_number: int) -> str:
+    if not settings.github_project_number:
+        return "skipped: GITHUB_PROJECT_NUMBER is not configured"
+    try:
+        _github_adapter().move_issue_project_status(
+            settings.github_owner,
+            settings.github_repo,
+            issue_number,
+            int(settings.github_project_number),
+            "Backlog",
+        )
+        return "Backlog"
+    except Exception as exc:
+        return f"failed: {exc}"
 
 
 # 이슈 생성 완료 사실을 Discord에 알린다.
@@ -387,6 +407,19 @@ def _sync_issues(args: argparse.Namespace) -> dict[str, Any]:
             synced.append(task.github_issue_number or int(issue["number"]))
         db.commit()
     return {"status": "ok", "synced_count": len(synced), "issues": synced}
+
+
+# UI/UX 이슈 첨부용 이미지를 target repo에 커밋하고 stage 브랜치에 병합한다.
+def _publish_ui_evidence(args: argparse.Namespace) -> dict[str, Any]:
+    result = publish_ui_evidence_to_stage(
+        source_paths=[Path(path) for path in args.image],
+        repo_path=settings.target_repo_path,
+        target_branch=args.target_branch or settings.development_base_branch,
+        slug=args.slug,
+        issue_number=args.issue,
+        push=not args.no_push,
+    )
+    return result.to_dict()
 
 
 # GitHub 이슈 하나를 상태 전이 없이 로컬 task로 동기화한다.
@@ -625,6 +658,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="제목 prefix 보강에 사용할 구현 타입",
     )
     create_issue.set_defaults(handler=_create_issue)
+
+    publish_ui_evidence = subparsers.add_parser(
+        "publish-ui-evidence",
+        help="UI/UX 이슈 첨부용 화면 이미지를 커밋하고 stage 브랜치에 병합",
+    )
+    publish_ui_evidence.add_argument(
+        "--image",
+        action="append",
+        required=True,
+        help="첨부할 화면 이미지 경로. 여러 번 지정 가능",
+    )
+    publish_ui_evidence.add_argument("--issue", type=int, help="이미지 증거가 연결될 GitHub issue 번호")
+    publish_ui_evidence.add_argument("--slug", help="docs/qa-screenshots 하위 디렉토리명")
+    publish_ui_evidence.add_argument(
+        "--target-branch",
+        default="",
+        help="이미지를 병합할 브랜치. 기본값은 DEVELOPMENT_BASE_BRANCH(stage)",
+    )
+    publish_ui_evidence.add_argument(
+        "--no-push",
+        action="store_true",
+        help="로컬 stage 병합까지만 수행하고 원격 push는 생략",
+    )
+    publish_ui_evidence.set_defaults(handler=_publish_ui_evidence)
 
     for command, help_text in [
         ("develop", "Design 승인 후 Dev Agent 실행"),

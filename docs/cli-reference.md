@@ -1,8 +1,9 @@
-# AI Harness CLI 사용 설명서
+# AI Harness CLI Reference
 
 ## 목적
 
-이 문서는 FastAPI 서버, GitHub 댓글 명령, ngrok 없이 `ai-harness`를 로컬 CLI로 사용하는 방법을 설명한다.
+이 문서는 `ai-harness` CLI의 상세 옵션, 레거시 GitHub 댓글 명령, 예외 케이스를 보관한다.
+권장 운영 흐름만 빠르게 보려면 [`cli-usage-guide.md`](cli-usage-guide.md)를 본다.
 
 현재 하네스의 기본 방향은 다음과 같다.
 
@@ -82,6 +83,7 @@ ALLOW_EXTERNAL_NOTIFICATIONS=false
 - `ENABLE_GITHUB_COMMENT_COMMANDS=false`가 기본이다.
 - GitHub issue 댓글에 명령을 적어도 하네스는 실행하지 않는다.
 - Discord/Google Chat 알림은 `ALLOW_EXTERNAL_NOTIFICATIONS=true`일 때만 실제로 전송된다.
+- Discord 알림은 채널 노이즈를 줄이기 위해 QA/Re-QA 완료 시점에만 전송한다.
 
 ## 전체 작업 흐름
 
@@ -248,6 +250,34 @@ artifacts/{task_id}/plans/edge-case-checklist.md
 
 - 새 작업의 설계를 처음 만들 때
 - GitHub issue의 요구사항을 Agent가 읽게 하고 싶을 때
+
+### `harness uiux`
+
+UI/UX Designer Agent를 실행해 이슈 생성 전 화면 방향성과 Planning handoff를 만든다.
+
+```bash
+harness uiux --topic "메인 화면 온보딩 개선" --target-user "신규 사용자" --route / --note "첫 화면에서 다음 행동을 명확히 한다."
+```
+
+동작:
+
+- target app의 frontend 구조를 좁게 확인한다.
+- 로컬 프론트엔드가 떠 있으면 Playwright로 route별 모바일/데스크톱 화면 근거를 수집한다.
+- 사용자와 대화할 질문을 만든다.
+- Planning Agent가 읽을 수 있는 `planning-handoff.md`를 생성한다.
+
+주요 산출물:
+
+```text
+artifacts/{task_id}/uiux-designer/uiux-design-brief.md
+artifacts/{task_id}/uiux-designer/conversation-guide.md
+artifacts/{task_id}/uiux-designer/planning-handoff.md
+```
+
+언제 쓰는가:
+
+- 화면 목적, 사용자 흐름, 디자인 방향을 먼저 잡아야 할 때
+- 기존 Planning Assistant보다 UI/UX 관점의 질문과 기준이 필요한 때
 
 ### `harness replan`
 

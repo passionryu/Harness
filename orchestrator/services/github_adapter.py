@@ -410,7 +410,7 @@ class GitHubAdapter:
         project = self._get_user_project_status_field(owner, project_number)
         status_field = project["status_field"]
         option_id = self._status_option_id(status_field, status_name)
-        item_id = self._get_project_item_id(owner, repo, issue_number, project["id"])
+        item_id = self._ensure_project_item_id(owner, repo, issue_number, project["id"])
         self._update_project_status(project["id"], item_id, status_field["id"], option_id)
 
     # 사용자 GitHub Project에서 Status single select 필드를 찾는다.
@@ -446,12 +446,20 @@ class GitHubAdapter:
         options = ", ".join(option.get("name", "") for option in status_field.get("options") or [])
         raise RuntimeError(f"GitHub Project Status 옵션을 찾을 수 없습니다: target={status_name}, options={options}")
 
-    # 이슈가 프로젝트 안에서 가진 item id를 찾는다.
-    def _get_project_item_id(self, owner: str, repo: str, issue_number: int, project_id: str) -> str:
+    # 이슈가 프로젝트 안에 없으면 추가한 뒤 item id를 반환한다.
+    def _ensure_project_item_id(self, owner: str, repo: str, issue_number: int, project_id: str) -> str:
+        issue_id, item_id = self._get_issue_project_item(owner, repo, issue_number, project_id)
+        if item_id:
+            return item_id
+        return self._add_issue_to_project(project_id, issue_id)
+
+    # 이슈 node id와 프로젝트 item id를 함께 조회한다.
+    def _get_issue_project_item(self, owner: str, repo: str, issue_number: int, project_id: str) -> tuple[str, str | None]:
         query = """
         query($owner:String!, $repo:String!, $issueNumber:Int!) {
           repository(owner:$owner, name:$repo) {
             issue(number:$issueNumber) {
+              id
               projectItems(first:50) {
                 nodes {
                   id
@@ -463,11 +471,25 @@ class GitHubAdapter:
         }
         """
         payload = self._graphql(query, {"owner": owner, "repo": repo, "issueNumber": issue_number})
-        items = payload["data"]["repository"]["issue"]["projectItems"]["nodes"]
+        issue = payload["data"]["repository"]["issue"]
+        issue_id = issue["id"]
+        items = issue["projectItems"]["nodes"]
         for item in items:
             if item and item.get("project", {}).get("id") == project_id:
-                return item["id"]
-        raise RuntimeError(f"이슈 #{issue_number}의 GitHub Project item을 찾을 수 없습니다.")
+                return issue_id, item["id"]
+        return issue_id, None
+
+    # 이슈를 GitHub Project에 추가하고 새 item id를 반환한다.
+    def _add_issue_to_project(self, project_id: str, issue_id: str) -> str:
+        query = """
+        mutation($projectId:ID!, $contentId:ID!) {
+          addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}) {
+            item { id }
+          }
+        }
+        """
+        payload = self._graphql(query, {"projectId": project_id, "contentId": issue_id})
+        return payload["data"]["addProjectV2ItemById"]["item"]["id"]
 
     # Project item의 Status 값을 업데이트한다.
     def _update_project_status(self, project_id: str, item_id: str, field_id: str, option_id: str) -> None:
