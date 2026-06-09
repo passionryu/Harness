@@ -73,7 +73,7 @@ class DomainKnowledgeAgent:
                 [
                     "# Domain Knowledge Agent 결과",
                     "",
-                    f"- status: success",
+                    "- status: success",
                     f"- vault: `{vault_path}`",
                     f"- implemented_features: `{implemented_features}`",
                     f"- domain_decisions: `{domain_decisions}`",

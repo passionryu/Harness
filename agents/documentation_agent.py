@@ -104,7 +104,7 @@ class DocumentationAgent:
                     "# Notion 발행 결과",
                     "",
                     f"- status: `{publish_result['status']}`",
-                    f"- target: `feature`",
+                    "- target: `feature`",
                     f"- url: {publish_result.get('url') or '없음'}",
                     f"- reason: {publish_result.get('reason') or '없음'}",
                 ]

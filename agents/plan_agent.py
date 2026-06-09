@@ -122,7 +122,7 @@ def _frontend_design_v2_sections(title: str, body: str, snapshot: dict[str, obje
     icon_library = str(snapshot["icon_library"])
 
     target_lines = [
-        f"- `apps/web/app/page.tsx`: 메인 화면 CTA/문구 제거, 카드 hover 상태, 우측 상단 설정 진입점 추가",
+        "- `apps/web/app/page.tsx`: 메인 화면 CTA/문구 제거, 카드 hover 상태, 우측 상단 설정 진입점 추가",
         f"- `{settings_component}`: 설정 메뉴 MVP를 분리 구현",
         "- 설정 메뉴 항목: 알림 설정, 화면 분위기, 계정, 서비스 안내",
     ]

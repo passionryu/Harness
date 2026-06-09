@@ -85,7 +85,7 @@ def _build_planning_report(topic: str, request_body: str, context: dict[str, str
 
     return "\n".join(
         [
-            f"# Planning Assistant Report",
+            "# Planning Assistant Report",
             "",
             f"- 주제: {focus}",
             f"- 작성 시각: {now}",
