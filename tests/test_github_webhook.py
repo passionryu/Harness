@@ -1429,6 +1429,9 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
         def send_text(self, text: str) -> None:
             captured_discord_messages.append(text)
 
+        def send_text_with_file(self, text: str, file_path: Path, filename: str | None = None) -> None:
+            captured_discord_messages.append(text)
+
     monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
     monkeypatch.setattr(orchestration, "GoogleChatNotifier", FakeGoogleChatNotifier)
     monkeypatch.setattr(orchestration, "DiscordNotifier", FakeDiscordNotifier)
@@ -1598,13 +1601,16 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     assert "- result: `pass`" in qa_comment
     assert "- command:" in qa_comment
     assert "### 검증 항목" in qa_comment
-    assert "- [x] test:signup 통과" in qa_comment
+    assert "- [V] test:signup 통과" in qa_comment
     assert "### Human QA 권장 체크" not in qa_comment
     assert "* 작업 내용: [FE] 회원 가입 기능 구현" in human_qa_comment
     assert "* 작업 타입: FE feature" in human_qa_comment
     assert f"* 브랜치 명: feature(FE)-{issue_number}" in human_qa_comment
     assert "* QA 요청 시각:" in human_qa_comment
     assert "1. 브라우저에서 메인 화면에 접속했을 때 회원가입 진입 버튼 또는 링크가 보이는가" in human_qa_comment
+    qa_approval_command = f"harness approve --issue {issue_number} --stage qa --approved-by <name>"
+    assert "사람 QA 승인 명령:" in human_qa_comment
+    assert qa_approval_command in human_qa_comment
     assert duplicate_qa_response.status_code == 200
     assert duplicate_qa_response.json() == {
         "status": "ignored",
@@ -1631,10 +1637,10 @@ def test_issue_comment_qa_command_runs_system_qa(tmp_path, monkeypatch):
     assert "정리 Agent를 호출할까요?" in captured_chat_messages[1]
     assert "`document` 명령" in captured_chat_messages[1]
     assert "`domain-knowledge` 명령" in captured_chat_messages[1]
-    assert len(captured_discord_messages) == 4
-    assert "🏗️ Design 완료" in captured_discord_messages[0]
-    assert "🛠️ 개발 완료" in captured_discord_messages[1]
-    assert captured_discord_messages[2:] == captured_chat_messages
+    assert len(captured_discord_messages) == 2
+    assert captured_discord_messages == captured_chat_messages
+    assert qa_approval_command in captured_discord_messages[0]
+    assert qa_approval_command in captured_discord_messages[1]
 
 
 def test_issue_comment_qa_command_without_development_is_ignored(monkeypatch):

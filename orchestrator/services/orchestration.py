@@ -2404,6 +2404,11 @@ class OrchestrationService:
                 "GitHub Issue:",
                 task.github_issue_url or "",
                 "",
+                "사람 QA 승인 명령:",
+                "```bash",
+                self._approval_command(task, "qa"),
+                "```",
+                "",
                 "정리 Agent를 호출할까요?",
                 "- Notion 작업 기록이 필요하면 `document` 명령을 실행하세요.",
                 "- Obsidian 서비스 지식 정리가 필요하면 `domain-knowledge` 명령을 실행하세요.",
@@ -2459,29 +2464,23 @@ class OrchestrationService:
             ]
         )
 
-    # Design 완료 알림을 외부 채널로 전송한다.
+    # Discord 채널 노이즈를 줄이기 위해 Design 완료는 알림 없이 audit만 남긴다.
     def _notify_after_plan(self, task: Task, run_id: str | None, force: bool) -> None:
-        if not settings.allow_external_notifications:
-            self._audit(
-                task.id,
-                run_id,
-                "external_notifications.skipped",
-                {"reason": "ALLOW_EXTERNAL_NOTIFICATIONS가 false입니다.", "agent": "plan"},
-            )
-            return
-        self._notify_discord_for_stage(task, run_id, "design", self._build_plan_notification_message(task, force))
+        self._audit(
+            task.id,
+            run_id,
+            "discord.design_notification_skipped",
+            {"reason": "Discord 알림은 QA 완료 시점에만 전송합니다.", "force": force},
+        )
 
-    # Dev 완료 알림을 외부 채널로 전송한다.
+    # Discord 채널 노이즈를 줄이기 위해 Dev 완료는 알림 없이 audit만 남긴다.
     def _notify_after_dev(self, task: Task, run_id: str | None) -> None:
-        if not settings.allow_external_notifications:
-            self._audit(
-                task.id,
-                run_id,
-                "external_notifications.skipped",
-                {"reason": "ALLOW_EXTERNAL_NOTIFICATIONS가 false입니다.", "agent": "dev"},
-            )
-            return
-        self._notify_discord_for_stage(task, run_id, "dev", self._build_dev_notification_message(task))
+        self._audit(
+            task.id,
+            run_id,
+            "discord.dev_notification_skipped",
+            {"reason": "Discord 알림은 QA 완료 시점에만 전송합니다."},
+        )
 
     # 특정 단계 완료 메시지를 Discord로 보내고 실패해도 workflow를 중단하지 않는다.
     def _notify_discord_for_stage(self, task: Task, run_id: str | None, stage: str, message: str) -> None:
@@ -2576,6 +2575,20 @@ class OrchestrationService:
 
         try:
             pdf_path = build_qa_pdf_report(task)
+        except Exception as exc:  # noqa: BLE001 - PDF 생성 실패는 텍스트 알림을 막지 않는다.
+            logger.warning(
+                "Discord QA PDF 보고서 생성 실패",
+                extra={"task_id": task.id, "run_id": run_id, "error": str(exc)},
+            )
+            self._audit(
+                task.id,
+                run_id,
+                "discord.qa_pdf_failed",
+                {"error": str(exc)},
+            )
+            pdf_path = None
+
+        try:
             if pdf_path:
                 pdf_message = "\n".join(
                     [

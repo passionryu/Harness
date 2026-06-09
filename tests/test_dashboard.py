@@ -148,7 +148,7 @@ def test_dashboard_task_detail_renders_command_panel(tmp_path, monkeypatch):
     assert "명령 실행" in response.text
     assert "Develop" in response.text
     assert "Refactor" in response.text
-    assert "사람이 Plan을 승인하고 개발 에이전트를 실행합니다." in response.text
+    assert "사람이 Design을 승인하고 개발 에이전트를 실행합니다." in response.text
     assert "설계 요약" in response.text
     assert "작업 메모" in response.text
     assert "Agent 호출 이력" in response.text
