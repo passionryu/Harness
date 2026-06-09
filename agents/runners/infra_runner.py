@@ -14,6 +14,8 @@ class InfraRunner:
     def run(self, context: DevRunnerContext) -> DevRunnerResult:
         if _is_security_jwt_redis_config(context):
             return _implement_security_jwt_redis_config(context)
+        if _is_backend_logging_policy(context):
+            return _implement_backend_logging_policy(context)
 
         report = context.task_dir / "infra-runner.md"
         report.write_text(
@@ -70,6 +72,7 @@ class InfraRunner:
                 "## 현재 지원 범위",
                 "",
                 "- Spring Security + JWT/토큰 + Redis 인증 기반 설정",
+                "- 백엔드 로그 파일 출력 및 민감정보 로깅 정책",
                 "",
                 "## 다음 선택지",
                 "",
@@ -87,6 +90,14 @@ def _is_security_jwt_redis_config(context: DevRunnerContext) -> bool:
     has_security = "security" in haystack or "시큐리티" in haystack or "인증" in haystack
     has_token = "jwt" in haystack or "토큰" in haystack or "token" in haystack
     return context.issue_type == "config" and has_security and "redis" in haystack and has_token
+
+
+# 백엔드 로그 파일 출력과 민감정보 로깅 정책 작업인지 판단한다.
+def _is_backend_logging_policy(context: DevRunnerContext) -> bool:
+    haystack = f"{context.title}\n{context.body}".lower()
+    has_logging = "로그" in haystack or "logging" in haystack or "logback" in haystack
+    has_policy = "민감정보" in haystack or "request-id" in haystack or "request id" in haystack or "traceid" in haystack
+    return context.issue_type == "infra" and has_logging and has_policy
 
 
 def _server_root(context: DevRunnerContext) -> Path:
@@ -283,6 +294,292 @@ def _implement_security_jwt_redis_config(context: DevRunnerContext) -> DevRunner
         artifacts=[ArtifactSpec("infra-runner-report", report)],
         error=None if exit_code == 0 else "Spring Security/JWT/Redis 설정 테스트가 실패했습니다.",
     )
+
+
+# 백엔드 로그 파일 출력과 요청 ID 기반 추적 설정을 생성한다.
+def _implement_backend_logging_policy(context: DevRunnerContext) -> DevRunnerResult:
+    paths = _write_backend_logging_policy_files(context)
+    commit_hash = _stage_and_commit(
+        context,
+        paths,
+        f"[{context.feature_name}] : 로그 파일 출력과 요청 ID 로깅 추가",
+    )
+
+    gradle_module = _bootstrap_gradle_path(context)
+    exit_code, stdout, stderr = _run_command(
+        ["./gradlew", f"{gradle_module}:test", "--tests", "*RequestIdLoggingFilterTest"],
+        _server_root(context),
+        context.timeout_seconds,
+    )
+
+    verification = [
+        f"## {gradle_module}:test --tests *RequestIdLoggingFilterTest",
+        "",
+        f"- exit_code: {exit_code}",
+        "",
+        "### stdout",
+        "```text",
+        stdout.strip() or "(비어 있음)",
+        "```",
+        "",
+        "### stderr",
+        "```text",
+        stderr.strip() or "(비어 있음)",
+        "```",
+    ]
+
+    report = context.task_dir / "infra-runner.md"
+    report.write_text(
+        "\n".join(
+            [
+                "# Infra Runner",
+                "",
+                f"- runner: `{InfraRunner.name}`",
+                f"- branch: `{context.branch_name}`",
+                "- feature: 백엔드 로그 파일 출력 및 민감정보 로깅 정책",
+                "",
+                "## Generated Scope",
+                "",
+                "- `logs/mymentalcare-api.log` 파일 로그 출력",
+                "- 일 단위 + 크기 단위 rolling 정책",
+                "- `X-Request-Id` 기반 requestId/traceId MDC 기록",
+                "- 민감정보 로깅 금지 정책 문서",
+                "- 요청 ID 필터 단위 테스트",
+                "",
+                "## Verification",
+                "",
+                f"- command: `./gradlew {gradle_module}:test --tests '*RequestIdLoggingFilterTest'`",
+                f"- exit_code: `{exit_code}`",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    return DevRunnerResult(
+        status=AgentStatus.SUCCESS if exit_code == 0 else AgentStatus.FAILED,
+        summary=f"백엔드 로그 파일 출력 및 민감정보 로깅 정책이 {context.branch_name}에서 완료되었습니다.",
+        commits=[f"1. {commit_hash} [{context.feature_name}] : 로그 파일 출력과 요청 ID 로깅 추가"],
+        progress=[
+            "- [x] step 1: 로그 파일 출력 설정",
+            "- [x] step 2: 요청 ID 로깅 필터 추가",
+            "- [x] step 3: 민감정보 로깅 정책 문서화",
+            "- [x] step 4: 요청 ID 필터 테스트 실행" if exit_code == 0 else "- [ ] step 4: 요청 ID 필터 테스트 실행",
+        ],
+        verification=verification,
+        artifacts=[ArtifactSpec("infra-runner-report", report)],
+        error=None if exit_code == 0 else "백엔드 로그 파일 출력 설정 테스트가 실패했습니다.",
+    )
+
+
+# 백엔드 로그 파일 출력과 민감정보 로깅 정책에 필요한 파일을 작성한다.
+def _write_backend_logging_policy_files(context: DevRunnerContext) -> list[str]:
+    paths: list[str] = []
+    module_root = _bootstrap_module_root(context)
+    package_name = _bootstrap_package(context)
+
+    logback = module_root / "src/main/resources/logback-spring.xml"
+    _write_text(logback, _logback_spring_content())
+    paths.append(_relative(context, logback))
+
+    filter_file = module_root / "src/main/kotlin" / Path(*package_name.split(".")) / "config" / "RequestIdLoggingFilter.kt"
+    _write_text(filter_file, _request_id_logging_filter_content(package_name))
+    paths.append(_relative(context, filter_file))
+
+    test_file = module_root / "src/test/kotlin" / Path(*package_name.split(".")) / "config" / "RequestIdLoggingFilterTest.kt"
+    _write_text(test_file, _request_id_logging_filter_test_content(package_name))
+    paths.append(_relative(context, test_file))
+
+    policy = context.repo_path / "docs/observability/logging-policy.md"
+    _write_text(policy, _logging_policy_content())
+    paths.append(_relative(context, policy))
+    return paths
+
+
+# Spring Boot logback 파일 로그 설정 내용을 반환한다.
+def _logback_spring_content() -> str:
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <springProperty scope="context" name="applicationName" source="spring.application.name" defaultValue="my-mental-care"/>
+    <property name="LOG_PATH" value="${LOG_PATH:-logs}"/>
+    <property name="LOG_PATTERN" value="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] traceId=%X{traceId:-none} requestId=%X{requestId:-none} %logger{36} - %msg%n"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="ROLLING_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/mymentalcare-api.log</file>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/mymentalcare-api.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize>
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <logger name="org.springframework.web" level="INFO"/>
+    <logger name="org.hibernate.SQL" level="WARN"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="ROLLING_FILE"/>
+    </root>
+</configuration>
+"""
+
+
+# 요청 ID를 MDC에 넣는 Kotlin 필터 코드를 반환한다.
+def _request_id_logging_filter_content(package_name: str) -> str:
+    return f"""package {package_name}.config
+
+import jakarta.servlet.FilterChain
+import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.HttpServletResponse
+import org.slf4j.LoggerFactory
+import org.slf4j.MDC
+import org.springframework.stereotype.Component
+import org.springframework.web.filter.OncePerRequestFilter
+import java.util.UUID
+
+private const val REQUEST_ID_HEADER = "X-Request-Id"
+private const val TRACE_ID_MDC_KEY = "traceId"
+private const val REQUEST_ID_MDC_KEY = "requestId"
+
+@Component
+class RequestIdLoggingFilter : OncePerRequestFilter() {{
+    private val requestLogger = LoggerFactory.getLogger(javaClass)
+
+    // 요청 단위 식별자를 로그 MDC와 응답 헤더에 남긴다.
+    override fun doFilterInternal(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        filterChain: FilterChain,
+    ) {{
+        val requestId = request.getHeader(REQUEST_ID_HEADER)?.takeIf {{ it.isNotBlank() }} ?: UUID.randomUUID().toString()
+        val startedAt = System.currentTimeMillis()
+
+        MDC.put(TRACE_ID_MDC_KEY, requestId)
+        MDC.put(REQUEST_ID_MDC_KEY, requestId)
+        response.setHeader(REQUEST_ID_HEADER, requestId)
+
+        try {{
+            filterChain.doFilter(request, response)
+        }} finally {{
+            val elapsedMs = System.currentTimeMillis() - startedAt
+            requestLogger.info(
+                "[HTTP 요청] API 요청 처리 완료. who=anonymous, what={{}} {{}}, requestData=requestId:{{}}, reason=status:{{}},elapsedMs:{{}}",
+                request.method,
+                request.requestURI,
+                requestId,
+                response.status,
+                elapsedMs,
+            )
+            MDC.remove(TRACE_ID_MDC_KEY)
+            MDC.remove(REQUEST_ID_MDC_KEY)
+        }}
+    }}
+}}
+"""
+
+
+# 요청 ID 필터의 한국어 테스트 코드를 반환한다.
+def _request_id_logging_filter_test_content(package_name: str) -> str:
+    return f"""package {package_name}.config
+
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Test
+import org.springframework.mock.web.MockFilterChain
+import org.springframework.mock.web.MockHttpServletRequest
+import org.springframework.mock.web.MockHttpServletResponse
+
+class RequestIdLoggingFilterTest {{
+
+    @Test
+    fun `요청 ID가 없으면 응답 헤더에 새 요청 ID를 남긴다`() {{
+        val request = MockHttpServletRequest("GET", "/actuator/health")
+        val response = MockHttpServletResponse()
+
+        RequestIdLoggingFilter().doFilter(request, response, MockFilterChain())
+
+        assertNotNull(response.getHeader("X-Request-Id"))
+    }}
+
+    @Test
+    fun `요청 ID 헤더가 있으면 같은 값을 응답 헤더에 남긴다`() {{
+        val request = MockHttpServletRequest("GET", "/actuator/health")
+        request.addHeader("X-Request-Id", "request-123")
+        val response = MockHttpServletResponse()
+
+        RequestIdLoggingFilter().doFilter(request, response, MockFilterChain())
+
+        assertEquals("request-123", response.getHeader("X-Request-Id"))
+    }}
+}}
+"""
+
+
+# 민감정보 로깅 정책 문서 내용을 반환한다.
+def _logging_policy_content() -> str:
+    return """# 백엔드 로그 출력 및 민감정보 로깅 정책
+
+## 목적
+
+myMentalCare API 서버의 장애 원인을 로컬에서 빠르게 확인할 수 있도록 파일 로그를 남긴다.
+로그는 운영자와 개발자가 문제를 추적하기 위한 기록이며, 사용자의 민감한 대화나 인증 정보를 노출하지 않는다.
+
+## 로그 파일
+
+- 기본 위치: `logs/mymentalcare-api.log`
+- 롤링 정책: 일 단위 + 20MB 단위 압축
+- 보관 기간: 14일
+- 총 보관 용량: 1GB
+
+## 로그 식별자
+
+모든 HTTP 요청은 `X-Request-Id`를 가진다.
+요청자가 헤더를 보내지 않으면 서버가 새 ID를 만들고 응답 헤더에도 같은 값을 반환한다.
+
+로그 패턴에는 다음 값이 포함된다.
+
+- `traceId`
+- `requestId`
+- logger
+- message
+
+## 허용하는 로그 정보
+
+- API path
+- HTTP method
+- HTTP status
+- 처리 시간
+- 회원 ID처럼 CS 확인에 필요한 식별자
+- 실패 사유를 설명하는 안전한 코드성 메시지
+
+## 금지하는 로그 정보
+
+- 비밀번호 원문
+- Access Token / Refresh Token 원문
+- OpenAI API Key / Discord Webhook URL
+- 사용자의 전체 채팅 원문
+- 민감한 감정 기록 전문
+
+## 실패 로그 작성 규칙
+
+실패 로그는 가능하면 아래 key를 유지한다.
+
+- `who`: 행위 주체
+- `what`: 수행한 API 또는 메서드
+- `requestData`: 요청 정보. 민감정보는 마스킹하거나 생략한다.
+- `reason`: 실패 원인
+
+예상 가능한 검증 실패는 `warn`, 시스템 장애나 추적이 필요한 예외는 `error`로 남긴다.
+"""
 
 
 def _write_security_dependency_files(context: DevRunnerContext) -> list[str]:
