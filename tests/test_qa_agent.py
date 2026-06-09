@@ -9,6 +9,7 @@ from agents.runners.playwright_browser_runner import (
     PlaywrightBrowserQaResult,
     format_playwright_report_section,
 )
+from orchestrator.db.models import Task
 from orchestrator.services.qa_pdf import _markdown_to_html, _render_screenshots
 
 
@@ -467,6 +468,125 @@ def test_config_qa_agent_runs_security_runtime_checks(tmp_path, monkeypatch):
     assert "Redis 컨테이너" in content
     assert "Spring Security 설정 테스트가 실제로 통과했는가" in content
     assert "이 이슈 타입에는 실행된 명령이 없습니다." not in content
+
+
+def test_infra_qa_agent_uses_monitoring_stack_human_checklist(tmp_path, monkeypatch):
+    target_repo = tmp_path / "myMentalCare"
+    target_repo.mkdir()
+    repo = Repo.init(target_repo)
+    (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
+    (target_repo / "apps/server").mkdir(parents=True)
+    repo.index.add(["README.md"])
+    repo.index.commit("Initial commit")
+    repo.git.checkout("-b", "infra-24")
+
+    artifact_root = tmp_path / "artifacts"
+    task_id = "task-infra"
+    for path in [
+        artifact_root / task_id / "plans" / "architecture.md",
+        artifact_root / task_id / "plans" / "edge-case-checklist.md",
+        artifact_root / task_id / "dev" / "commit-plan.md",
+        artifact_root / task_id / "dev" / "dev-status.md",
+        artifact_root / task_id / "dev" / "implementation.patch",
+        artifact_root / task_id / "dev" / "test-report.md",
+    ]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("ok\n", encoding="utf-8")
+
+    monkeypatch.setattr(qa_agent.settings, "target_repo_path", target_repo)
+
+    result = qa_agent.QAAgent().run(
+        AgentInput(
+            task_id=task_id,
+            title="[Infra] Loki-Grafana-Alloy 로컬 스택 구성",
+            body="\n".join(
+                [
+                    "백엔드 서버 로그를 Loki에 저장하고 Grafana에서 검색할 수 있게 한다.",
+                    "Alloy가 백엔드 로그 파일을 읽어 Loki로 전송한다.",
+                    "",
+                    "## Harness Metadata",
+                    "- issue_number: 24",
+                    "- labels: type: infra",
+                ]
+            ),
+            state="In Progress",
+            artifacts_root=artifact_root,
+            timeout_seconds=30,
+            retry_count=0,
+            retry_limit=2,
+        )
+    )
+
+    assert result.status == AgentStatus.SUCCESS
+    content = (artifact_root / task_id / "qa" / "qa-report.md").read_text(encoding="utf-8")
+    assert "확인 URL: `infra artifacts / local compose`" in content
+    assert "`docker compose -f docker-compose.monitoring.yml config`가 성공하는가" in content
+    assert "Loki, Grafana, Alloy 컨테이너가 로컬에서 정상 기동되는가" in content
+    assert "회원가입 버튼을 클릭하면 페이지 이동 없이 회원가입 모달이 열리는가" not in content
+
+
+def test_infra_human_qa_checklist_matches_logging_and_grafana_alerting_scope():
+    logging_items = qa_agent._infra_human_qa_checklist(
+        "[Infra] 백엔드 로그 파일 출력 및 민감정보 로깅 정책 정리",
+        "ERROR 로그, request-id, traceId, 민감정보 로깅 금지 정책을 정리한다.",
+    )
+    alert_items = qa_agent._infra_human_qa_checklist(
+        "[Infra] Grafana 에러 로그 대시보드 및 알림 구성",
+        "Grafana dashboard와 alert rule, Discord webhook 알림을 구성한다.",
+    )
+
+    assert "백엔드 API 서버 실행 후 `logs/mymentalcare-api.log` 파일이 생성되는가" in logging_items
+    assert "password, access token, refresh token, 사용자 채팅 원문이 로그에 남지 않는가" in logging_items
+    assert "Grafana 대시보드가 provisioning으로 자동 등록되는가" in alert_items
+    assert "ERROR/OpenAI/Redis/DB 실패 로그가 발생했을 때 알림 조건이 평가되는가" in alert_items
+    assert not any("회원가입" in item for item in [*logging_items, *alert_items])
+
+
+def test_infra_human_qa_message_uses_infra_targets(tmp_path, monkeypatch):
+    artifact_root = tmp_path / "artifacts"
+    task_id = "task-infra-message"
+    report = artifact_root / task_id / "qa" / "qa-report.md"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        "\n".join(
+            [
+                "# System QA Report",
+                "",
+                "## Human QA 체크리스트",
+                "- [ ] Grafana 대시보드가 provisioning으로 자동 등록되는가",
+                "- [ ] ERROR/OpenAI/Redis/DB 실패 로그가 발생했을 때 알림 조건이 평가되는가",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(orchestration.settings, "artifact_root", artifact_root)
+
+    task = Task(
+        id=task_id,
+        github_issue_url="https://github.com/passionryu/myMentalCare/issues/25",
+        github_issue_number=25,
+        title="[Infra] Grafana 에러 로그 대시보드 및 알림 구성",
+        body="\n".join(
+            [
+                "Grafana에서 백엔드 에러 로그 대시보드와 alert rule을 구성한다.",
+                "",
+                "## Harness Metadata",
+                "- issue_number: 25",
+                "- labels: type: infra",
+            ]
+        ),
+        state="QA Review",
+    )
+    service = orchestration.OrchestrationService(db=None)  # type: ignore[arg-type]
+
+    message = service._build_human_qa_message(task, rerun=False, github_comment=False)
+
+    assert "1. Grafana 대시보드가 provisioning으로 자동 등록되는가" in message
+    assert "Infra 확인 대상:" in message
+    assert "Grafana: http://localhost:3002" in message
+    assert "apps/server/docker-compose.monitoring.yml" in message
+    assert "Swagger 주소:" not in message
+    assert "회원가입" not in message
 
 
 def test_qa_summary_keeps_api_smoke_code_fences_balanced(tmp_path, monkeypatch):

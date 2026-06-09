@@ -56,6 +56,42 @@ CONFIG_HUMAN_QA_CHECKLIST = [
     "Redis 컨테이너가 실행 중이며 health에 반영되는가",
 ]
 
+INFRA_HUMAN_QA_CHECKLIST = [
+    "변경된 infra 설정 파일과 운영 문서가 대상 저장소에 반영되어 있는가",
+    "문서에 적힌 로컬 실행 명령 또는 검증 명령이 실제로 성공하는가",
+    "포트, 볼륨, 환경변수 충돌 없이 infra 구성 요소가 시작되는가",
+    "재시작 후에도 필요한 설정, 데이터, provisioning 결과가 유지되는가",
+    "health, status, logs 명령으로 구성 요소의 정상 상태를 확인할 수 있는가",
+    "secret, token, password 같은 민감정보가 설정 파일이나 로그에 노출되지 않는가",
+]
+
+INFRA_BACKEND_LOGGING_HUMAN_QA_CHECKLIST = [
+    "백엔드 API 서버 실행 후 `logs/mymentalcare-api.log` 파일이 생성되는가",
+    "ERROR 로그와 stack trace가 콘솔뿐 아니라 로그 파일에도 남는가",
+    "일 단위 또는 크기 기반 rolling 정책으로 로그 파일이 무한히 커지지 않는가",
+    "`X-Request-Id`, requestId, traceId가 요청 로그에 함께 기록되는가",
+    "password, access token, refresh token, 사용자 채팅 원문이 로그에 남지 않는가",
+    "민감정보 로깅 금지 정책 문서가 실제 금지/허용 항목을 명확히 설명하는가",
+]
+
+INFRA_MONITORING_STACK_HUMAN_QA_CHECKLIST = [
+    "`docker compose -f docker-compose.monitoring.yml config`가 성공하는가",
+    "Loki, Grafana, Alloy 컨테이너가 로컬에서 정상 기동되는가",
+    "Grafana `3002`, Loki `3100`, Alloy `12345` 포트가 기존 web/api와 충돌하지 않는가",
+    "Grafana에 Loki datasource가 provisioning으로 자동 등록되는가",
+    "Alloy가 백엔드 로그 파일을 읽어 Loki로 전송하는가",
+    "Grafana Explore에서 `{service=\"mymentalcare-api\"}` LogQL로 로그가 검색되는가",
+]
+
+INFRA_GRAFANA_ALERT_HUMAN_QA_CHECKLIST = [
+    "Grafana 대시보드가 provisioning으로 자동 등록되는가",
+    "전체 로그, ERROR/Exception, 로그인 실패, OpenAI 실패, Redis/DB 실패 패널이 보이는가",
+    "각 패널의 LogQL이 실제 `mymentalcare-api` 로그를 조회하는가",
+    "Grafana alert rule 또는 Loki alert rule이 provisioning으로 등록되는가",
+    "ERROR/OpenAI/Redis/DB 실패 로그가 발생했을 때 알림 조건이 평가되는가",
+    "Discord webhook 환경변수 설정/미설정 시 동작과 제한 사항이 문서대로 확인되는가",
+]
+
 
 CHECK_NAME_KO = {
     "expected branch is checked out": "예상 브랜치 체크아웃 상태",
@@ -157,6 +193,26 @@ def _extract_issue_type(markdown: str) -> str:
         if label.startswith("type: "):
             return label.removeprefix("type: ").strip()
     return "미지정"
+
+
+def _infra_human_qa_checklist(title: str, body: str) -> list[str]:
+    haystack = f"{title}\n{body}".lower()
+    if (
+        "grafana" in haystack
+        and ("dashboard" in haystack or "대시보드" in haystack)
+        and ("alert" in haystack or "알림" in haystack)
+    ):
+        return INFRA_GRAFANA_ALERT_HUMAN_QA_CHECKLIST
+    if "loki" in haystack and "grafana" in haystack and "alloy" in haystack:
+        return INFRA_MONITORING_STACK_HUMAN_QA_CHECKLIST
+    if ("로그" in haystack or "logging" in haystack or "logback" in haystack) and (
+        "민감정보" in haystack
+        or "request-id" in haystack
+        or "request id" in haystack
+        or "traceid" in haystack
+    ):
+        return INFRA_BACKEND_LOGGING_HUMAN_QA_CHECKLIST
+    return INFRA_HUMAN_QA_CHECKLIST
 
 
 # 이슈 타입에 맞는 QA 대상 브랜치 prefix를 결정한다.
@@ -1284,6 +1340,8 @@ class QAAgent:
         ]
         if issue_type == "config":
             checklist_source = CONFIG_HUMAN_QA_CHECKLIST
+        elif issue_type == "infra":
+            checklist_source = _infra_human_qa_checklist(input_data.title, input_data.body)
         elif issue_type in {"beFeature", "apiConnect", "fullstackFeature"} and _is_ai_chat_context_target(
             input_data.title,
             input_data.body,
@@ -1297,7 +1355,12 @@ class QAAgent:
         qa_request = _extract_section(input_data.body, "Human QA Request")
         swagger_url = settings.target_swagger_url if issue_type in {"beFeature", "apiConnect", "fullstackFeature", "config"} else "N/A"
         frontend_check_types = {"feFeature", "bugfix", "apiConnect", "fullstackFeature"}
-        check_url = settings.frontend_base_url if issue_type in frontend_check_types else settings.target_api_base_url
+        if issue_type in frontend_check_types:
+            check_url = settings.frontend_base_url
+        elif issue_type == "infra":
+            check_url = "infra artifacts / local compose"
+        else:
+            check_url = settings.target_api_base_url
 
         report = task_dir / "qa-report.md"
         report.write_text(

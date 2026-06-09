@@ -2402,7 +2402,9 @@ class OrchestrationService:
                 "API 확인 URL:",
                 settings.target_api_base_url,
             ]
-        elif issue_type in {"beFeature", "config", "infra"}:
+        elif issue_type == "infra":
+            check_target_lines = self._infra_human_qa_target_lines(task)
+        elif issue_type in {"beFeature", "config"}:
             check_target_lines = [
                 "Swagger 주소:",
                 settings.target_swagger_url,
@@ -2452,6 +2454,60 @@ class OrchestrationService:
                 "```",
             ]
         )
+
+    def _infra_human_qa_target_lines(self, task: Task) -> list[str]:
+        haystack = f"{task.title}\n{task.body}".lower()
+        if (
+            "grafana" in haystack
+            and ("dashboard" in haystack or "대시보드" in haystack)
+            and ("alert" in haystack or "알림" in haystack)
+        ):
+            return [
+                "Infra 확인 대상:",
+                "Grafana: http://localhost:3002",
+                "Dashboard: myMentalCare Observability / myMentalCare 에러 로그 모니터링",
+                "",
+                "모니터링 compose:",
+                "apps/server/docker-compose.monitoring.yml",
+                "",
+                "Alerting provisioning:",
+                "apps/server/monitoring/grafana/provisioning/alerting",
+            ]
+        if "loki" in haystack and "grafana" in haystack and "alloy" in haystack:
+            return [
+                "Infra 확인 대상:",
+                "Grafana: http://localhost:3002",
+                "Loki API: http://localhost:3100",
+                "Alloy UI: http://localhost:12345",
+                "",
+                "모니터링 compose:",
+                "apps/server/docker-compose.monitoring.yml",
+            ]
+        if ("로그" in haystack or "logging" in haystack or "logback" in haystack) and (
+            "민감정보" in haystack
+            or "request-id" in haystack
+            or "request id" in haystack
+            or "traceid" in haystack
+        ):
+            return [
+                "Infra 확인 대상:",
+                "백엔드 로그 파일:",
+                "apps/server/logs/mymentalcare-api.log",
+                "",
+                "운영/관찰성 문서:",
+                "docs/observability",
+                "",
+                "API 확인 URL:",
+                settings.target_api_base_url,
+            ]
+        return [
+            "Infra 확인 대상:",
+            "대상 저장소:",
+            str(settings.target_repo_path),
+            "",
+            "관련 infra 파일:",
+            "docker-compose*, monitoring/, docs/observability",
+        ]
 
     def _build_qa_notification_message(self, task: Task, rerun: bool) -> str:
         return self._build_human_qa_message(task, rerun, github_comment=False)
