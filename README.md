@@ -11,7 +11,8 @@ Codex를 주 입력 인터페이스로 사용하고, GitHub Issue/Kanban, 로컬
 Agent는 직접 최종 결정을 내리지 않고 설계안, 구현 결과, 리뷰 결과, QA 리포트 같은 evidence를 남깁니다.
 사람은 각 gate에서 결과를 검토하고 승인하거나 수정 지시를 내립니다.
 
-<img width="1672" height="941" alt="image" src="https://github.com/user-attachments/assets/7dfc42f2-cfa0-47e4-84ab-5eea1f97e545" />
+<img width="1672" height="941" alt="image" src="https://github.com/user-attachments/assets/c7ba0a2f-ab8e-4720-988d-48f9be1388c0" />
+
 
 
 
