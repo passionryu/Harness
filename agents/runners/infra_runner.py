@@ -872,7 +872,8 @@ myMentalCare 백엔드의 장애 징후를 Grafana에서 빠르게 확인한다.
 
 - Loki/Grafana/Alloy 로컬 스택이 실행되어 있어야 한다.
 - API 서버는 `LOG_PATH=/Users/rsy/Desktop/myPlayGround/myMentalCare/apps/server/logs`로 실행되어야 한다.
-- Discord 알림을 쓰려면 로컬 환경변수 `GRAFANA_DISCORD_WEBHOOK_URL`을 설정한다.
+- Discord 알림을 쓰려면 로컬 환경변수 `GRAFANA_DISCORD_WEBHOOK_URL`을 실제 Discord Webhook URL로 설정한다.
+- 값을 설정하지 않으면 Grafana 기동 검증을 위해 `http://localhost:9` placeholder가 사용된다.
 
 ## 실행
 
@@ -934,6 +935,7 @@ Redis/DB 연결 실패 로그를 본다.
 
 Grafana alerting provisioning은 `GRAFANA_DISCORD_WEBHOOK_URL`을 참조한다.
 이 값은 코드에 커밋하지 않는다.
+값이 비어 있으면 Grafana가 alerting provisioning 단계에서 실패할 수 있으므로, docker compose에는 무해한 placeholder 기본값을 둔다.
 
 ```bash
 export GRAFANA_DISCORD_WEBHOOK_URL="Discord Webhook URL"
@@ -975,7 +977,7 @@ def _monitoring_compose_content() -> str:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
-      GRAFANA_DISCORD_WEBHOOK_URL: ${GRAFANA_DISCORD_WEBHOOK_URL:-}
+      GRAFANA_DISCORD_WEBHOOK_URL: ${GRAFANA_DISCORD_WEBHOOK_URL:-http://localhost:9}
     volumes:
       - grafana-data:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
