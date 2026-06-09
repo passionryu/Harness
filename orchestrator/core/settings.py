@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     frontend_base_url: str = "http://localhost:3000"
     target_api_base_url: str = "http://localhost:3001"
     target_swagger_url: str = "http://localhost:3001/swagger-ui/index.html"
+    qa_browser_enabled: bool = True
+    qa_browser_headless: bool = True
+    qa_browser_timeout_ms: int = 45_000
+    qa_browser_login_id: str = "test1"
+    qa_browser_login_password: str = "Password1!"
 
 
 @lru_cache

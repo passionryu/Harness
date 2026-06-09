@@ -10,6 +10,11 @@ from git import Repo
 
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
 from agents.organization import HUMAN_QA_SUPPORT_RUNNERS, QA_RUNNERS, render_runner_definitions
+from agents.runners.playwright_browser_runner import (
+    format_playwright_report_section,
+    run_playwright_browser_qa,
+    should_run_playwright_browser_qa,
+)
 from orchestrator.core.settings import settings
 
 FE_HUMAN_QA_CHECKLIST = [
@@ -60,6 +65,9 @@ CHECK_NAME_KO = {
     "config signup endpoint is permitted": "Config 회원가입 API 인증 없이 접근 가능",
     "config protected api returns 401": "Config 보호 API 미인증 401 반환",
     "config redis container is running": "Config Redis 컨테이너 실행",
+    "playwright browser qa passes": "Playwright 브라우저 QA 통과",
+    "playwright frontend server is reachable": "Playwright 프론트엔드 서버 응답",
+    "playwright api server is reachable": "Playwright API 서버 응답",
 }
 
 
@@ -877,6 +885,8 @@ class QAAgent:
         checks: list[tuple[str, bool, str]] = []
         command_sections: list[str] = []
         api_result_sections: list[str] = []
+        browser_result_sections: list[str] = []
+        extra_artifacts: list[ArtifactSpec] = []
 
         repo_exists = repo_path.exists()
         checks.append(("target repository exists", repo_exists, str(repo_path)))
@@ -1103,6 +1113,47 @@ class QAAgent:
 
             api_result_sections.extend(_format_config_qa_results(config_results))
 
+        if should_run_playwright_browser_qa(issue_type, input_data.title, input_data.body):
+            frontend_process, frontend_status = _start_frontend_if_needed(
+                repo_path,
+                input_data.timeout_seconds,
+            )
+            checks.append(
+                (
+                    "playwright frontend server is reachable",
+                    _is_frontend_alive(),
+                    frontend_status,
+                )
+            )
+
+            api_process, api_status = _start_target_api_if_needed(
+                repo_path,
+                input_data.timeout_seconds,
+            )
+            checks.append(
+                (
+                    "playwright api server is reachable",
+                    _is_api_alive(),
+                    api_status,
+                )
+            )
+
+            browser_result = run_playwright_browser_qa(input_data, issue_type, task_dir)
+            checks.append(
+                (
+                    "playwright browser qa passes",
+                    browser_result.passed,
+                    str(browser_result.report_path),
+                )
+            )
+            browser_result_sections.extend(format_playwright_report_section(browser_result))
+            extra_artifacts.append(ArtifactSpec("qa-playwright-report", Path(browser_result.report_path)))
+            if browser_result.screenshot_dir.exists():
+                extra_artifacts.append(ArtifactSpec("qa-playwright-screenshots", Path(browser_result.screenshot_dir)))
+
+            # Human QA 직후 화면 확인이 가능하도록 QA가 띄운 서버는 종료하지 않는다.
+            _ = frontend_process, api_process
+
         passed = all(passed for _, passed, _ in checks)
         checklist_lines = [
             f"- [{'x' if passed else ' '}] {_translate_check_name(name)} ({detail})"
@@ -1145,6 +1196,8 @@ class QAAgent:
                     "",
                     *api_result_sections,
                     "",
+                    *browser_result_sections,
+                    "",
                     "## Human QA 체크리스트",
                     *human_qa_lines,
                 ]
@@ -1174,6 +1227,7 @@ class QAAgent:
             artifacts=[
                 ArtifactSpec("qa-report", Path(report)),
                 ArtifactSpec("qa-checklist", Path(checklist)),
+                *extra_artifacts,
             ],
             error=None if passed else "QA 검증이 실패했습니다. qa-report.md를 확인하세요.",
         )

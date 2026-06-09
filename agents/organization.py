@@ -47,7 +47,7 @@ FIX_DEVELOP_RUNNERS = [
 QA_RUNNERS = [
     RunnerDefinition("Integration Test Runner", "서비스 경계 간 통합 테스트를 실행한다.", "기존 QA 검증과 연결한다."),
     RunnerDefinition("Curl Scenario Runner", "실제 API curl 시나리오를 실행한다.", "BE QA에서 일부 지원한다."),
-    RunnerDefinition("Browser Scenario Runner", "브라우저에서 사용자 흐름을 검증한다.", "아직 needs_human 중심이다."),
+    RunnerDefinition("Browser Scenario Runner", "브라우저에서 사용자 흐름을 검증한다.", "Playwright로 로그인/화면/채팅 흐름과 콘솔 에러를 검증한다."),
     RunnerDefinition("DB State Validator", "DB 저장 결과와 정합성을 검증한다.", "BE QA에서 일부 지원한다."),
     RunnerDefinition("Concurrency Test Runner", "동시성 충돌과 race condition을 검증한다.", "아직 needs_human 중심이다."),
     RunnerDefinition("Idempotency Validator", "반복 요청과 멱등성을 검증한다.", "아직 needs_human 중심이다."),
