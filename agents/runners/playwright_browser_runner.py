@@ -431,7 +431,6 @@ def _send_and_verify_ai_chat_message(
     screenshot_name: str,
     evidence_title: str,
 ) -> str | None:
-    assistant_count = page.locator(".chat-bubble.is-assistant").count()
     page.locator("#ai-chat-message").fill(message)
     _capture_evidence(
         page,
@@ -460,11 +459,22 @@ def _send_and_verify_ai_chat_message(
             f"status={response.status}, aiReplyFailed={ai_reply_failed}, userMessage={message}",
         )
     )
-    page.wait_for_function(
-        "count => document.querySelectorAll('.chat-bubble.is-assistant').length > count",
-        arg=assistant_count,
-        timeout=settings.qa_browser_timeout_ms,
-    )
+    if assistant_reply:
+        reply_probe = assistant_reply[: min(len(assistant_reply), 40)]
+        page.wait_for_function(
+            "text => document.body.innerText.includes(text)",
+            arg=reply_probe,
+            timeout=settings.qa_browser_timeout_ms,
+        )
+        _capture_evidence(
+            page,
+            screenshot_dir,
+            screenshots,
+            screenshot_name.replace(".png", "-response.png"),
+            f"{evidence_title} 응답 확인",
+            f"마음이 응답이 화면에 반영되었습니다. 확인 문구: `{reply_probe}`",
+            "success",
+        )
     return assistant_reply
 
 

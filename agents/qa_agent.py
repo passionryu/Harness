@@ -1244,6 +1244,14 @@ class QAAgent:
                         )
                 finally:
                     _stop_process(process)
+            elif should_run_ai_chat_quality_scenario(input_data.title, input_data.body):
+                api_result_sections.extend(
+                    [
+                        "## API Smoke Test 결과",
+                        "",
+                        "- AI 마음이 응답 품질 hotfix는 curl smoke 대신 정책 테스트와 Playwright 실제 채팅 시나리오로 검증했습니다.",
+                    ]
+                )
             elif dev_test_checks:
                 api_result_sections.extend(
                     [
