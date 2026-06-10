@@ -13,7 +13,7 @@
 Agent는 직접 최종 결정을 내리지 않고 설계안, 구현 결과, 리뷰 결과, QA 리포트 같은 evidence를 남깁니다.
 사람은 각 gate에서 결과를 검토하고 승인하거나 수정 지시를 내립니다.
 
--> 하네스 워크 플로우
+-> 사람의 승인과 판단 하에 움직이는 하네스 워크 플로우 설계
 <img width="1672" height="941" alt="image" src="https://github.com/user-attachments/assets/434b84bc-a344-4403-a9cc-d0a6a1e9a8e0" />
 
 -> 사전에 정의된 칸반 기반의 워크 플로우
