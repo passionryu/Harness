@@ -58,8 +58,15 @@ def should_run_playwright_browser_qa(issue_type: str, title: str, body: str) -> 
         "테마",
         "화면 분위기",
     ]
-    return issue_type in {"feFeature", "apiConnect", "fullstackFeature", "beFeature", "bugfix"} and any(
-        keyword in haystack for keyword in browser_keywords
+    if issue_type not in {"feFeature", "apiConnect", "fullstackFeature", "beFeature", "bugfix", "hotfix"}:
+        return False
+    return (
+        any(keyword in haystack for keyword in browser_keywords)
+        or (
+            issue_type in {"apiConnect", "fullstackFeature", "beFeature", "bugfix", "hotfix"}
+            and should_run_ai_chat_scenario(title, body)
+        )
+        or should_run_settings_theme_scenario(title, body)
     )
 
 
@@ -67,6 +74,22 @@ def should_run_playwright_browser_qa(issue_type: str, title: str, body: str) -> 
 def should_run_ai_chat_scenario(title: str, body: str) -> bool:
     haystack = f"{title}\n{body}"
     return any(keyword in haystack for keyword in ["채팅", "AI 마음", "OpenAI", "마음이"])
+
+
+# 이슈 내용상 AI 마음이 응답 품질 회귀 검증이 필요한지 판단한다.
+def should_run_ai_chat_quality_scenario(title: str, body: str) -> bool:
+    haystack = f"{title}\n{body}".lower()
+    quality_keywords = [
+        "응답 품질",
+        "답변 품질",
+        "프롬프트",
+        "prompt",
+        "일상 대화",
+        "반복 질문",
+        "부정 감정",
+        "마음이",
+    ]
+    return should_run_ai_chat_scenario(title, body) and any(keyword in haystack for keyword in quality_keywords)
 
 
 # 설정 화면 색상 선택처럼 실제 테마 반영을 브라우저에서 검증해야 하는지 판단한다.
@@ -175,7 +198,7 @@ def run_playwright_browser_qa(input_data: AgentInput, issue_type: str, task_dir:
 
             if should_run_ai_chat_scenario(input_data.title, input_data.body):
                 _login_if_needed(page, screenshot_dir, checks)
-                _run_ai_chat_flow(page, screenshot_dir, checks, screenshots)
+                _run_ai_chat_flow(page, screenshot_dir, checks, screenshots, input_data.title, input_data.body)
 
             context.close()
             browser.close()
@@ -295,6 +318,8 @@ def _run_ai_chat_flow(
     screenshot_dir: Path,
     checks: list[BrowserQaCheck],
     screenshots: list[BrowserScreenshotEvidence],
+    title: str,
+    body: str,
 ) -> None:
     try:
         if _first_visible_text(page, "오늘의 대화 시작"):
@@ -316,40 +341,19 @@ def _run_ai_chat_flow(
 
         _capture_empty_message_edge(page, screenshot_dir, checks, screenshots)
 
-        assistant_count = page.locator(".chat-bubble.is-assistant").count()
-        message = "Playwright QA 확인이야. 오늘 대화 흐름을 차분히 이어갈 수 있는지 봐줘."
-        page.locator("#ai-chat-message").fill(message)
-        _capture_evidence(
-            page,
-            screenshot_dir,
-            screenshots,
-            "02-ai-chat-message-ready.png",
-            "AI 채팅 메시지 입력",
-            "사용자가 검증 메시지를 입력했고, 전송 직전 화면 상태를 기록했습니다.",
-            "success",
-        )
-        with page.expect_response(
-            lambda response: "/api/ai-chat/rooms/today/messages" in response.url
-            and response.request.method == "POST",
-            timeout=settings.qa_browser_timeout_ms,
-        ) as response_info:
-            page.get_by_role("button", name=re.compile("보내기")).click()
-
-        response = response_info.value
-        body = _safe_response_json(response)
-        ai_reply_failed = bool(body.get("aiReplyFailed")) if isinstance(body, dict) else False
-        checks.append(
-            BrowserQaCheck(
-                "AI 채팅 메시지 API 응답",
-                response.status < 400 and not ai_reply_failed,
-                f"status={response.status}, aiReplyFailed={ai_reply_failed}",
+        if should_run_ai_chat_quality_scenario(title, body):
+            _run_ai_chat_quality_flow(page, screenshot_dir, checks, screenshots)
+        else:
+            _send_and_verify_ai_chat_message(
+                page,
+                screenshot_dir,
+                checks,
+                screenshots,
+                "Playwright QA 확인이야. 오늘 대화 흐름을 차분히 이어갈 수 있는지 봐줘.",
+                "02-ai-chat-message-ready.png",
+                "AI 채팅 메시지 입력",
             )
-        )
-        page.wait_for_function(
-            "count => document.querySelectorAll('.chat-bubble.is-assistant').length > count",
-            arg=assistant_count,
-            timeout=settings.qa_browser_timeout_ms,
-        )
+
         _capture_evidence(
             page,
             screenshot_dir,
@@ -371,6 +375,109 @@ def _run_ai_chat_flow(
             "failure",
         )
         checks.append(BrowserQaCheck("AI 채팅 화면 검증", False, str(exc)))
+
+
+# AI 마음이 응답 품질 hotfix에서 문제 재현 문장으로 실제 응답을 검증한다.
+def _run_ai_chat_quality_flow(
+    page: Any,
+    screenshot_dir: Path,
+    checks: list[BrowserQaCheck],
+    screenshots: list[BrowserScreenshotEvidence],
+) -> None:
+    qa_messages = [
+        "안녕! 오늘 하루는 화창하네!",
+        "창밖을 봐 화창하잖아",
+        "해가 쨍쨍하고, 날씨도 좋잖아",
+    ]
+    assistant_replies: list[str] = []
+    for index, message in enumerate(qa_messages, start=1):
+        reply = _send_and_verify_ai_chat_message(
+            page,
+            screenshot_dir,
+            checks,
+            screenshots,
+            message,
+            f"02-ai-chat-quality-{index}.png",
+            f"AI 마음이 응답 품질 검증 {index}",
+        )
+        if reply:
+            assistant_replies.append(reply)
+
+    joined_replies = "\n".join(assistant_replies)
+    blocked_patterns = [
+        "왜 그렇게 느꼈",
+        "구체적인 순간",
+        "분노",
+        "답답함과의 관계",
+        "숨 고르기",
+    ]
+    bad_patterns = [pattern for pattern in blocked_patterns if pattern in joined_replies]
+    checks.append(
+        BrowserQaCheck(
+            "AI 마음이 응답 품질 회귀 검증",
+            not bad_patterns and len(assistant_replies) == len(qa_messages),
+            f"bad_patterns={bad_patterns or '없음'}, replies={len(assistant_replies)}",
+        )
+    )
+
+
+# AI 채팅 메시지를 전송하고 API 응답과 화면 반영을 확인한다.
+def _send_and_verify_ai_chat_message(
+    page: Any,
+    screenshot_dir: Path,
+    checks: list[BrowserQaCheck],
+    screenshots: list[BrowserScreenshotEvidence],
+    message: str,
+    screenshot_name: str,
+    evidence_title: str,
+) -> str | None:
+    assistant_count = page.locator(".chat-bubble.is-assistant").count()
+    page.locator("#ai-chat-message").fill(message)
+    _capture_evidence(
+        page,
+        screenshot_dir,
+        screenshots,
+        screenshot_name,
+        evidence_title,
+        f"검증 메시지 `{message}`를 입력했고, 전송 직전 화면 상태를 기록했습니다.",
+        "success",
+    )
+    with page.expect_response(
+        lambda response: "/api/ai-chat/rooms/today/messages" in response.url
+        and response.request.method == "POST",
+        timeout=settings.qa_browser_timeout_ms,
+    ) as response_info:
+        page.get_by_role("button", name=re.compile("보내기")).click()
+
+    response = response_info.value
+    response_body = _safe_response_json(response)
+    ai_reply_failed = bool(response_body.get("aiReplyFailed")) if isinstance(response_body, dict) else False
+    assistant_reply = _assistant_reply_content(response_body)
+    checks.append(
+        BrowserQaCheck(
+            "AI 채팅 메시지 API 응답",
+            response.status < 400 and not ai_reply_failed and bool(assistant_reply),
+            f"status={response.status}, aiReplyFailed={ai_reply_failed}, userMessage={message}",
+        )
+    )
+    page.wait_for_function(
+        "count => document.querySelectorAll('.chat-bubble.is-assistant').length > count",
+        arg=assistant_count,
+        timeout=settings.qa_browser_timeout_ms,
+    )
+    return assistant_reply
+
+
+# AI 채팅 API 응답에서 마음이 답변 본문을 추출한다.
+def _assistant_reply_content(response_body: Any) -> str | None:
+    if not isinstance(response_body, dict):
+        return None
+    assistant_message = response_body.get("assistantMessage")
+    if isinstance(assistant_message, dict):
+        content = assistant_message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return None
 
 
 def _capture_empty_message_edge(

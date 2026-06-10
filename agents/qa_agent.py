@@ -15,6 +15,7 @@ from agents.runners.playwright_browser_runner import (
     format_playwright_report_section,
     run_playwright_browser_qa,
     should_start_api_for_playwright_browser_qa,
+    should_run_ai_chat_quality_scenario,
     should_run_playwright_browser_qa,
 )
 from orchestrator.core.settings import settings
@@ -45,6 +46,14 @@ AI_CHAT_HUMAN_QA_CHECKLIST = [
     "사용자 메시지와 AI 응답이 다음 응답용 최근 메시지 캐시에 반영되는가",
     "캐시/요약 최적화 후에도 기존 AI 채팅 API 응답 형식과 위기 감지 흐름이 깨지지 않는가",
     "Redis 장애 또는 캐시 누락 상황에서 사용자 응답과 운영 로그가 안전하게 처리되는가",
+]
+
+AI_CHAT_QUALITY_HUMAN_QA_CHECKLIST = [
+    '"안녕! 오늘 하루는 화창하네!" 같은 일상 대화에 자연스럽게 반응하는가',
+    "이미 이유를 설명했는데 같은 이유를 다시 묻지 않는가",
+    "사용자가 말하지 않은 분노, 답답함, 불안 같은 감정을 임의로 붙이지 않는가",
+    "매 답변마다 숨 고르기, 메모, 산책 같은 행동 제안을 반복하지 않는가",
+    "위기 표현이 아닌 일반 대화에서는 과도한 안전 안내로 흐르지 않는가",
 ]
 
 CONFIG_HUMAN_QA_CHECKLIST = [
@@ -107,6 +116,7 @@ CHECK_NAME_KO = {
     "backend dev test command passes": "백엔드 Dev 테스트 명령 재실행 통과",
     "backend qa target is supported": "백엔드 System QA 지원 대상",
     "backend happy smoke test passes": "백엔드 해피케이스 smoke test 통과",
+    "ai chat response policy test passes": "AI 마음이 응답 정책 회귀 테스트 통과",
     "config security test passes": "Config Security 설정 테스트 통과",
     "config backend health is UP": "Config 백엔드 health UP",
     "config swagger is reachable": "Config Swagger 접근 가능",
@@ -1147,10 +1157,40 @@ class QAAgent:
                     )
                 )
 
-        if issue_type in {"beFeature", "apiConnect", "fullstackFeature"}:
+        backend_qa_issue = issue_type in {"beFeature", "apiConnect", "fullstackFeature"} or (
+            issue_type == "hotfix" and should_run_ai_chat_quality_scenario(input_data.title, input_data.body)
+        )
+        if backend_qa_issue:
             dev_test_checks, dev_test_sections = _run_dev_test_report_commands(input_data, repo_path)
             checks.extend(dev_test_checks)
             command_sections.extend(dev_test_sections)
+
+            if should_run_ai_chat_quality_scenario(input_data.title, input_data.body):
+                exit_code, stdout, stderr = _run_command(
+                    [
+                        "./gradlew",
+                        ":modules:bootstrap:mymentalcare:test",
+                        "--tests",
+                        "com.mymentalcare.server.bootstrap.aichat.adapter.OpenAiChatClientTest",
+                    ],
+                    repo_path / "apps/server",
+                    input_data.timeout_seconds,
+                )
+                checks.append(
+                    (
+                        "ai chat response policy test passes",
+                        exit_code == 0,
+                        f"exit_code={exit_code}",
+                    )
+                )
+                command_sections.extend(
+                    _format_qa_command_section(
+                        './gradlew :modules:bootstrap:mymentalcare:test --tests "com.mymentalcare.server.bootstrap.aichat.adapter.OpenAiChatClientTest"',
+                        exit_code,
+                        stdout,
+                        stderr,
+                    )
+                )
 
             api_smoke_target = (
                 _is_reissue_api_target(input_data.title, input_data.body, repo_path)
@@ -1342,6 +1382,8 @@ class QAAgent:
             checklist_source = CONFIG_HUMAN_QA_CHECKLIST
         elif issue_type == "infra":
             checklist_source = _infra_human_qa_checklist(input_data.title, input_data.body)
+        elif should_run_ai_chat_quality_scenario(input_data.title, input_data.body):
+            checklist_source = AI_CHAT_QUALITY_HUMAN_QA_CHECKLIST
         elif issue_type in {"beFeature", "apiConnect", "fullstackFeature"} and _is_ai_chat_context_target(
             input_data.title,
             input_data.body,
@@ -1353,7 +1395,7 @@ class QAAgent:
             checklist_source = FE_HUMAN_QA_CHECKLIST
         human_qa_lines = [f"- [ ] {item}" for item in checklist_source]
         qa_request = _extract_section(input_data.body, "Human QA Request")
-        swagger_url = settings.target_swagger_url if issue_type in {"beFeature", "apiConnect", "fullstackFeature", "config"} else "N/A"
+        swagger_url = settings.target_swagger_url if issue_type in {"beFeature", "apiConnect", "fullstackFeature", "config"} or backend_qa_issue else "N/A"
         frontend_check_types = {"feFeature", "bugfix", "apiConnect", "fullstackFeature"}
         if issue_type in frontend_check_types:
             check_url = settings.frontend_base_url
