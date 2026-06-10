@@ -107,6 +107,22 @@ FRONTEND_ISSUE_KEYWORDS = [
     "localstorage",
 ]
 
+BACKEND_PROMPT_POLICY_KEYWORDS = [
+    "openai",
+    "gpt",
+    "llm",
+    "프롬프트",
+    "prompt",
+    "응답 정책",
+    "응답 품질",
+    "답변 품질",
+    "마음이",
+    "ai 마음",
+    "챗봇 응답",
+    "mindchatresponsepolicy",
+    "openaichatclient",
+]
+
 BACKEND_ISSUE_KEYWORDS = [
     "[be]",
     "backend",
@@ -126,6 +142,7 @@ BACKEND_ISSUE_KEYWORDS = [
     "유스케이스",
     "컨트롤러",
     "데이터베이스",
+    *BACKEND_PROMPT_POLICY_KEYWORDS,
 ]
 
 
@@ -137,6 +154,8 @@ def is_frontend_change_context(context: DevRunnerContext) -> bool:
     if context.issue_type not in {"bugfix", "hotfix"}:
         return False
     haystack = f"{context.title}\n{context.body}".lower()
+    if any(keyword in haystack for keyword in BACKEND_PROMPT_POLICY_KEYWORDS):
+        return False
     return any(keyword in haystack for keyword in FRONTEND_ISSUE_KEYWORDS) or (
         extract_frontend_route(haystack) is not None
     )
@@ -148,6 +167,8 @@ def is_backend_change_context(context: DevRunnerContext) -> bool:
     if context.issue_type not in {"bugfix", "hotfix"}:
         return False
     haystack = f"{context.title}\n{context.body}".lower()
+    if any(keyword in haystack for keyword in BACKEND_PROMPT_POLICY_KEYWORDS):
+        return True
     if is_frontend_change_context(context) and "[be]" not in haystack and "백엔드" not in haystack:
         return False
     if any(keyword in haystack for keyword in BACKEND_ISSUE_KEYWORDS):
