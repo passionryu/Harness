@@ -154,7 +154,12 @@ def _run_issue_command(args: argparse.Namespace) -> EventResult | dict[str, Any]
     with SessionLocal() as db:
         service = OrchestrationService(db)
         if args.command in {"design", "plan"}:
-            return service.run_plan_for_github_issue(force=args.force, **context)
+            result = service.run_plan_for_github_issue(force=args.force, **context)
+            if args.command == "plan":
+                normalized = _normalize_result(result)
+                normalized["warning"] = "@ai-harness plan 명령은 deprecated입니다. 동일 동작은 @ai-harness design로 실행하세요."
+                return normalized
+            return result
         if args.command in {"redesign", "replan"}:
             return service.run_replan_for_github_issue(
                 replan_request=_resolve_note(args, "CLI에서 재설계가 요청되었습니다."),

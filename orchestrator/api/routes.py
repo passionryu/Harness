@@ -158,7 +158,7 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
 
     if command in {settings.design_command, settings.plan_command}:
         try:
-            return OrchestrationService(db).run_plan_for_github_issue(
+            result = OrchestrationService(db).run_plan_for_github_issue(
                 issue_number=issue_number,
                 title=issue_title,
                 body=issue_body,
@@ -166,6 +166,14 @@ def _handle_issue_comment_webhook(payload: dict, db: Session) -> EventResult | d
                 issue_labels=issue_labels,
                 comment_on_duplicate=True,
             )
+            if command == settings.plan_command:
+                payload = result.model_dump() if isinstance(result, EventResult) else dict(result)
+                payload["warning"] = (
+                    "@ai-harness plan 명령은 deprecated입니다. "
+                    "동일 동작은 @ai-harness design으로 실행하세요."
+                )
+                return payload
+            return result
         except ValueError as exc:
             return OrchestrationService(db).comment_command_failure(
                 issue_number=issue_number,
