@@ -3,14 +3,61 @@ from git import Repo
 import agents.qa_agent as qa_agent
 import orchestrator.services.orchestration as orchestration
 from agents.base import AgentInput, AgentStatus
+from agents.qa_plan import build_qa_plan
 from agents.runners.playwright_browser_runner import (
     BrowserQaCheck,
     BrowserScreenshotEvidence,
     PlaywrightBrowserQaResult,
     format_playwright_report_section,
+    should_run_ai_chat_quality_scenario,
+    should_run_checkin_chat_scenario,
 )
 from orchestrator.db.models import Task
-from orchestrator.services.qa_pdf import _markdown_to_html, _render_screenshots
+from orchestrator.services.qa_pdf import _build_html_document, _markdown_to_html, _render_screenshots
+
+
+def test_qa_plan_prefers_issue_qa_criteria_over_static_presets():
+    body = "\n".join(
+        [
+            "## QA 기준",
+            "- 오늘 대화가 없는 사용자가 `채팅 시작하기`를 누르면 체크인 모달이 열린다.",
+            "- 4개 체크인 템플릿을 각각 선택할 수 있다.",
+            "- `기타` 선택 시 직접 입력칸이 노출된다.",
+            "- 채팅창에는 구간 라벨이 표시된다.",
+            "",
+            "## Harness Metadata",
+            "- issue_number: 35",
+            "- labels: type: fullstackFeature",
+        ]
+    )
+
+    plan = build_qa_plan(
+        "[FS] [기능 구현] 체크인 모달 및 대화 구간형 채팅창 구현",
+        body,
+        ["고정 FE 체크리스트"],
+    )
+
+    assert plan.has_issue_specific_items
+    assert plan.human_checklist() == [
+        "오늘 대화가 없는 사용자가 `채팅 시작하기`를 누르면 체크인 모달이 열린다.",
+        "4개 체크인 템플릿을 각각 선택할 수 있다.",
+        "`기타` 선택 시 직접 입력칸이 노출된다.",
+        "채팅창에는 구간 라벨이 표시된다.",
+    ]
+    assert {item.runner_hint for item in plan.items} == {"Browser Scenario Runner"}
+
+
+def test_checkin_chat_issue_does_not_trigger_ai_response_quality_scenario():
+    title = "[FS] [기능 구현] 체크인 모달 및 대화 구간형 채팅창 구현"
+    body = "\n".join(
+        [
+            "체크인 모달과 오늘 대화방 안의 새 주제 구간을 구현한다.",
+            "마음이 아바타와 기존 말풍선 스타일을 유지한다.",
+        ]
+    )
+
+    assert should_run_checkin_chat_scenario(title, body)
+    assert not should_run_ai_chat_quality_scenario(title, body)
 
 
 def test_fe_qa_agent_requires_frontend_runtime_before_human_qa(tmp_path, monkeypatch):
@@ -294,6 +341,7 @@ def test_be_qa_agent_fails_unknown_backend_without_dev_test_commands(tmp_path, m
     target_repo.mkdir()
     repo = Repo.init(target_repo)
     (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
+    (target_repo / "apps/server").mkdir(parents=True)
     repo.index.add(["README.md"])
     repo.index.commit("Initial commit")
     repo.git.checkout("-b", "feature(BE)-19")
@@ -589,6 +637,154 @@ def test_infra_human_qa_message_uses_infra_targets(tmp_path, monkeypatch):
     assert "회원가입" not in message
 
 
+def test_fullstack_qa_agent_uses_issue_specific_qa_plan_for_checkin_chat(tmp_path, monkeypatch):
+    target_repo = tmp_path / "myMentalCare"
+    target_repo.mkdir()
+    repo = Repo.init(target_repo)
+    (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
+    repo.index.add(["README.md"])
+    repo.index.commit("Initial commit")
+    repo.git.checkout("-b", "feature(FS)-35")
+
+    artifact_root = tmp_path / "artifacts"
+    task_id = "task-checkin"
+    for path in [
+        artifact_root / task_id / "plans" / "architecture.md",
+        artifact_root / task_id / "plans" / "edge-case-checklist.md",
+        artifact_root / task_id / "dev" / "test-report.md",
+    ]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("ok\n", encoding="utf-8")
+
+    monkeypatch.setattr(qa_agent.settings, "target_repo_path", target_repo)
+    monkeypatch.setattr(qa_agent.settings, "frontend_base_url", "http://localhost:3000")
+    monkeypatch.setattr(
+        qa_agent,
+        "_run_dev_test_report_commands",
+        lambda input_data, repo_path: (
+            [("backend dev test command passes: pnpm build:web", True, "exit_code=0")],
+            [],
+        ),
+    )
+    monkeypatch.setattr(qa_agent, "_start_frontend_if_needed", lambda repo_path, timeout_seconds: (None, "ok"))
+    monkeypatch.setattr(qa_agent, "_is_frontend_alive", lambda: True)
+    monkeypatch.setattr(qa_agent, "_start_target_api_if_needed", lambda repo_path, timeout_seconds: (None, "ok"))
+    monkeypatch.setattr(qa_agent, "_is_api_alive", lambda: True)
+    monkeypatch.setattr(
+        qa_agent,
+        "run_playwright_browser_qa",
+        lambda input_data, issue_type, task_dir: PlaywrightBrowserQaResult(
+            should_run=True,
+            passed=True,
+            report_path=task_dir / "playwright-report.md",
+            screenshot_dir=task_dir / "screenshots",
+            checks=[BrowserQaCheck("체크인 시작 선택지 표시", True, "templates=4")],
+        ),
+    )
+
+    body = "\n".join(
+        [
+            "## QA 기준",
+            "- 오늘 대화가 없는 사용자가 `채팅 시작하기`를 누르면 체크인 모달이 열린다.",
+            "- 4개 체크인 템플릿을 각각 선택할 수 있다.",
+            "- `기타` 선택 시 직접 입력칸이 노출된다.",
+            "- 채팅창에는 구간 라벨이 표시된다.",
+            "",
+            "## Harness Metadata",
+            "- issue_number: 35",
+            "- labels: type: fullstackFeature",
+        ]
+    )
+
+    result = qa_agent.QAAgent().run(
+        AgentInput(
+            task_id=task_id,
+            title="[FS] [기능 구현] 체크인 모달 및 대화 구간형 채팅창 구현",
+            body=body,
+            state="In Progress",
+            artifacts_root=artifact_root,
+            timeout_seconds=30,
+            retry_count=0,
+            retry_limit=2,
+        )
+    )
+
+    assert result.status == AgentStatus.SUCCESS
+    content = (artifact_root / task_id / "qa" / "qa-report.md").read_text(encoding="utf-8")
+    assert "## QA Plan" in content
+    assert "오늘 대화가 없는 사용자가 `채팅 시작하기`를 누르면 체크인 모달이 열린다." in content
+    assert "4개 체크인 템플릿을 각각 선택할 수 있다." in content
+    assert '"안녕! 오늘 하루는 화창하네!" 같은 일상 대화' not in content
+    assert (artifact_root / task_id / "qa" / "qa-plan.md").exists()
+
+
+def test_hotfix_playwright_qa_report_points_human_reader_to_frontend(tmp_path, monkeypatch):
+    target_repo = tmp_path / "myMentalCare"
+    target_repo.mkdir()
+    repo = Repo.init(target_repo)
+    (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
+    repo.index.add(["README.md"])
+    repo.index.commit("Initial commit")
+    repo.git.checkout("-b", "hotfix-26")
+
+    artifact_root = tmp_path / "artifacts"
+    task_id = "task-hotfix"
+    for path in [
+        artifact_root / task_id / "plans" / "architecture.md",
+        artifact_root / task_id / "plans" / "edge-case-checklist.md",
+        artifact_root / task_id / "dev" / "commit-plan.md",
+        artifact_root / task_id / "dev" / "dev-status.md",
+        artifact_root / task_id / "dev" / "implementation.patch",
+        artifact_root / task_id / "dev" / "test-report.md",
+    ]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("ok\n", encoding="utf-8")
+
+    monkeypatch.setattr(qa_agent.settings, "target_repo_path", target_repo)
+    monkeypatch.setattr(qa_agent.settings, "frontend_base_url", "http://localhost:3000")
+    monkeypatch.setattr(qa_agent, "_start_frontend_if_needed", lambda repo_path, timeout_seconds: (None, "ok"))
+    monkeypatch.setattr(qa_agent, "_is_frontend_alive", lambda: True)
+    monkeypatch.setattr(qa_agent, "_start_target_api_if_needed", lambda repo_path, timeout_seconds: (None, "ok"))
+    monkeypatch.setattr(qa_agent, "_is_api_alive", lambda: True)
+    monkeypatch.setattr(qa_agent, "_run_command", lambda command, cwd, timeout_seconds: (0, "ok", ""))
+    monkeypatch.setattr(
+        qa_agent,
+        "run_playwright_browser_qa",
+        lambda input_data, issue_type, task_dir: PlaywrightBrowserQaResult(
+            should_run=True,
+            passed=True,
+            report_path=task_dir / "playwright-report.md",
+            screenshot_dir=task_dir / "screenshots",
+            checks=[BrowserQaCheck("AI 마음이 응답 품질 회귀 검증", True, "bad_patterns=없음")],
+        ),
+    )
+
+    result = qa_agent.QAAgent().run(
+        AgentInput(
+            task_id=task_id,
+            title="[Hotfix] AI 마음이 일상 대화 응답 품질 개선",
+            body="\n".join(
+                [
+                    "AI 마음이 일상 대화 응답 품질과 반복 질문 문제를 개선한다.",
+                    "",
+                    "## Harness Metadata",
+                    "- issue_number: 26",
+                    "- labels: type: hotfix",
+                ]
+            ),
+            state="In Progress",
+            artifacts_root=artifact_root,
+            timeout_seconds=30,
+            retry_count=0,
+            retry_limit=2,
+        )
+    )
+
+    assert result.status == AgentStatus.SUCCESS
+    content = (artifact_root / task_id / "qa" / "qa-report.md").read_text(encoding="utf-8")
+    assert "확인 URL: `http://localhost:3000`" in content
+
+
 def test_qa_summary_keeps_api_smoke_code_fences_balanced(tmp_path, monkeypatch):
     task_id = "task-1"
     report = tmp_path / "artifacts" / task_id / "qa" / "qa-report.md"
@@ -706,3 +902,81 @@ def test_qa_pdf_renders_screenshot_evidence_titles_and_descriptions(tmp_path):
     assert "브라우저 기능 검증 캡처" in rendered
     assert "AI 채팅 기능 시작 화면" in rendered
     assert "로그인 준비 단계를 제외하고 실제 검증 대상 화면부터 기록합니다." in rendered
+
+
+def test_qa_pdf_restructures_report_for_human_review(tmp_path):
+    screenshot_dir = tmp_path / "screenshots"
+    screenshot_dir.mkdir()
+    (screenshot_dir / "01-ai-chat-entry.png").write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc```\x00\x00\x00\x04\x00\x01"
+        b"\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    (screenshot_dir / "evidence.json").write_text(
+        """
+[
+  {
+    "file_name": "01-ai-chat-entry.png",
+    "title": "AI 채팅 기능 시작 화면",
+    "description": "실제 검증 대상인 AI 채팅 화면에 진입한 상태입니다.",
+    "kind": "success"
+  }
+]
+""",
+        encoding="utf-8",
+    )
+    qa_markdown = "\n".join(
+        [
+            "# System QA Report",
+            "",
+            "- issue_type: `hotfix`",
+            "- issue_number: `26`",
+            "- branch: `hotfix-26`",
+            "- result: `pass`",
+            "- 확인 URL: `http://localhost:3001`",
+            "",
+            "## QA 요청사항",
+            "CLI에서 QA 재검증이 요청되었습니다.",
+            "",
+            "## QA Agent 책임 러너",
+            "- Integration Test Runner: 내부 구현 상세",
+            "",
+            "## 검증 체크리스트",
+            "- [V] 예상 브랜치 체크아웃 상태 (expected=hotfix-26, actual=hotfix-26)",
+            "- [V] Playwright 브라우저 QA 통과 (playwright-report.md)",
+            "",
+            "## Command: ./gradlew test",
+            "",
+            "- exit_code: 0",
+            "",
+            "### stdout",
+            "```text",
+            "BUILD SUCCESSFUL",
+            "```",
+            "",
+            "## API Smoke Test 결과",
+            "AI 응답 품질 hotfix는 정책 테스트와 Playwright 시나리오로 검증했습니다.",
+            "",
+            "## Human QA 체크리스트",
+            "- [ ] 일상 대화에 자연스럽게 반응하는가",
+            "- [ ] 같은 이유를 다시 묻지 않는가",
+        ]
+    )
+
+    rendered = _build_html_document(
+        title="[Hotfix] AI 마음이 일상 대화 응답 품질 개선",
+        issue_number=26,
+        qa_markdown=qa_markdown,
+        playwright_markdown="# Playwright Browser QA Report\n\n원본 상세",
+        screenshot_dir=screenshot_dir,
+    )
+
+    assert "최종 QA 결론" in rendered
+    assert "사람 QA 체크리스트" in rendered
+    assert "자동 검증 요약" in rendered
+    assert rendered.index("사람 QA 체크리스트") < rendered.index("상세 로그 부록")
+    assert "QA Agent 책임 러너" not in rendered
+    assert "Integration Test Runner" not in rendered
+    assert "BUILD SUCCESSFUL" in rendered
+    assert "브라우저 증거 요약" in rendered
+    assert "검증 단계 1 · 정상" in rendered

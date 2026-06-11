@@ -11,6 +11,7 @@ from git import Repo
 
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
 from agents.organization import HUMAN_QA_SUPPORT_RUNNERS, QA_RUNNERS, render_runner_definitions
+from agents.qa_plan import build_qa_plan, qa_plan_coverage_lines, render_qa_plan_markdown
 from agents.runners.playwright_browser_runner import (
     format_playwright_report_section,
     run_playwright_browser_qa,
@@ -223,6 +224,23 @@ def _infra_human_qa_checklist(title: str, body: str) -> list[str]:
     ):
         return INFRA_BACKEND_LOGGING_HUMAN_QA_CHECKLIST
     return INFRA_HUMAN_QA_CHECKLIST
+
+
+def _fallback_human_qa_checklist(issue_type: str, title: str, body: str) -> list[str]:
+    if issue_type == "config":
+        return CONFIG_HUMAN_QA_CHECKLIST
+    if issue_type == "infra":
+        return _infra_human_qa_checklist(title, body)
+    if should_run_ai_chat_quality_scenario(title, body):
+        return AI_CHAT_QUALITY_HUMAN_QA_CHECKLIST
+    if issue_type in {"beFeature", "apiConnect", "fullstackFeature"} and _is_ai_chat_context_target(
+        title,
+        body,
+    ):
+        return AI_CHAT_HUMAN_QA_CHECKLIST
+    if issue_type in {"beFeature", "apiConnect", "fullstackFeature"}:
+        return BE_HUMAN_QA_CHECKLIST
+    return FE_HUMAN_QA_CHECKLIST
 
 
 # 이슈 타입에 맞는 QA 대상 브랜치 prefix를 결정한다.
@@ -1049,6 +1067,11 @@ class QAAgent:
         issue_number = _extract_metadata_value(input_data.body, "issue_number") or "unknown"
         branch_name = _branch_name(issue_type, issue_number)
         repo_path = settings.target_repo_path.expanduser().resolve()
+        qa_plan = build_qa_plan(
+            input_data.title,
+            input_data.body,
+            _fallback_human_qa_checklist(issue_type, input_data.title, input_data.body),
+        )
 
         checks: list[tuple[str, bool, str]] = []
         command_sections: list[str] = []
@@ -1386,26 +1409,18 @@ class QAAgent:
             f"- [{'V' if passed else ' '}] {_translate_check_name(name)} ({detail})"
             for name, passed, detail in checks
         ]
-        if issue_type == "config":
-            checklist_source = CONFIG_HUMAN_QA_CHECKLIST
-        elif issue_type == "infra":
-            checklist_source = _infra_human_qa_checklist(input_data.title, input_data.body)
-        elif should_run_ai_chat_quality_scenario(input_data.title, input_data.body):
-            checklist_source = AI_CHAT_QUALITY_HUMAN_QA_CHECKLIST
-        elif issue_type in {"beFeature", "apiConnect", "fullstackFeature"} and _is_ai_chat_context_target(
-            input_data.title,
-            input_data.body,
-        ):
-            checklist_source = AI_CHAT_HUMAN_QA_CHECKLIST
-        elif issue_type in {"beFeature", "apiConnect", "fullstackFeature"}:
-            checklist_source = BE_HUMAN_QA_CHECKLIST
-        else:
-            checklist_source = FE_HUMAN_QA_CHECKLIST
-        human_qa_lines = [f"- [ ] {item}" for item in checklist_source]
+        human_qa_lines = [f"- [ ] {item}" for item in qa_plan.human_checklist()]
+        qa_plan_lines = render_qa_plan_markdown(qa_plan)
+        qa_plan_path = task_dir / "qa-plan.md"
+        qa_plan_path.write_text("\n".join(qa_plan_lines), encoding="utf-8")
         qa_request = _extract_section(input_data.body, "Human QA Request")
         swagger_url = settings.target_swagger_url if issue_type in {"beFeature", "apiConnect", "fullstackFeature", "config"} or backend_qa_issue else "N/A"
         frontend_check_types = {"feFeature", "bugfix", "apiConnect", "fullstackFeature"}
-        if issue_type in frontend_check_types:
+        if issue_type in frontend_check_types or should_run_playwright_browser_qa(
+            issue_type,
+            input_data.title,
+            input_data.body,
+        ):
             check_url = settings.frontend_base_url
         elif issue_type == "infra":
             check_url = "infra artifacts / local compose"
@@ -1428,6 +1443,10 @@ class QAAgent:
                     "",
                     "## QA 요청사항",
                     *(qa_request or ["추가 QA 요청사항이 없습니다."]),
+                    "",
+                    *qa_plan_lines,
+                    "## QA Plan 커버리지",
+                    *qa_plan_coverage_lines(qa_plan),
                     "",
                     *render_runner_definitions("QA Agent 책임 러너", QA_RUNNERS),
                     *render_runner_definitions("Human QA Support 책임 러너", HUMAN_QA_SUPPORT_RUNNERS),
@@ -1453,6 +1472,10 @@ class QAAgent:
                 [
                     "# QA 체크리스트",
                     "",
+                    *qa_plan_lines,
+                    "## QA Plan 커버리지",
+                    *qa_plan_coverage_lines(qa_plan),
+                    "",
                     *render_runner_definitions("QA Agent 책임 러너", QA_RUNNERS),
                     *checklist_lines,
                     "",
@@ -1467,6 +1490,7 @@ class QAAgent:
             status=AgentStatus.SUCCESS if passed else AgentStatus.FAILED,
             summary=f"{branch_name} QA {'통과' if passed else '실패'}.",
             artifacts=[
+                ArtifactSpec("qa-plan", Path(qa_plan_path)),
                 ArtifactSpec("qa-report", Path(report)),
                 ArtifactSpec("qa-checklist", Path(checklist)),
                 *extra_artifacts,

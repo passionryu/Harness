@@ -57,6 +57,11 @@ def should_run_playwright_browser_qa(issue_type: str, title: str, body: str) -> 
         "색상",
         "테마",
         "화면 분위기",
+        "모달",
+        "마법사",
+        "템플릿",
+        "구간",
+        "새 주제",
     ]
     if issue_type not in {"feFeature", "apiConnect", "fullstackFeature", "beFeature", "bugfix", "hotfix"}:
         return False
@@ -76,6 +81,13 @@ def should_run_ai_chat_scenario(title: str, body: str) -> bool:
     return any(keyword in haystack for keyword in ["채팅", "AI 마음", "OpenAI", "마음이"])
 
 
+# 이슈 내용상 체크인/대화 구간형 채팅 UI를 직접 검증해야 하는지 판단한다.
+def should_run_checkin_chat_scenario(title: str, body: str) -> bool:
+    haystack = f"{title}\n{body}"
+    checkin_keywords = ["체크인", "새 주제", "구간", "템플릿", "마법사", "오늘 대화 이어가기"]
+    return should_run_ai_chat_scenario(title, body) and any(keyword in haystack for keyword in checkin_keywords)
+
+
 # 이슈 내용상 AI 마음이 응답 품질 회귀 검증이 필요한지 판단한다.
 def should_run_ai_chat_quality_scenario(title: str, body: str) -> bool:
     haystack = f"{title}\n{body}".lower()
@@ -87,7 +99,8 @@ def should_run_ai_chat_quality_scenario(title: str, body: str) -> bool:
         "일상 대화",
         "반복 질문",
         "부정 감정",
-        "마음이",
+        "과도한 안전",
+        "같은 이유",
     ]
     return should_run_ai_chat_scenario(title, body) and any(keyword in haystack for keyword in quality_keywords)
 
@@ -329,30 +342,35 @@ def _run_ai_chat_flow(
 
         page.get_by_text("마음이와 오늘의 대화").wait_for(timeout=settings.qa_browser_timeout_ms)
         checks.append(BrowserQaCheck("AI 채팅 화면 진입", True, _frontend_path("/chat")))
-        _capture_evidence(
-            page,
-            screenshot_dir,
-            screenshots,
-            "01-ai-chat-entry.png",
-            "AI 채팅 기능 시작 화면",
-            "로그인 등 준비 단계를 제외하고 실제 검증 대상인 AI 채팅 화면에 진입한 상태입니다.",
-            "success",
-        )
 
-        _capture_empty_message_edge(page, screenshot_dir, checks, screenshots)
-
-        if should_run_ai_chat_quality_scenario(title, body):
-            _run_ai_chat_quality_flow(page, screenshot_dir, checks, screenshots)
+        if should_run_checkin_chat_scenario(title, body):
+            _run_checkin_chat_flow(page, screenshot_dir, checks, screenshots)
         else:
-            _send_and_verify_ai_chat_message(
+            _prepare_ai_chat_entry_flow(page, checks)
+            _capture_evidence(
                 page,
                 screenshot_dir,
-                checks,
                 screenshots,
-                "Playwright QA 확인이야. 오늘 대화 흐름을 차분히 이어갈 수 있는지 봐줘.",
-                "02-ai-chat-message-ready.png",
-                "AI 채팅 메시지 입력",
+                "01-ai-chat-entry.png",
+                "AI 채팅 기능 시작 화면",
+                "로그인 등 준비 단계를 제외하고 실제 검증 대상인 AI 채팅 화면에 진입한 상태입니다.",
+                "success",
             )
+
+            _capture_empty_message_edge(page, screenshot_dir, checks, screenshots)
+
+            if should_run_ai_chat_quality_scenario(title, body):
+                _run_ai_chat_quality_flow(page, screenshot_dir, checks, screenshots)
+            else:
+                _send_and_verify_ai_chat_message(
+                    page,
+                    screenshot_dir,
+                    checks,
+                    screenshots,
+                    "Playwright QA 확인이야. 오늘 대화 흐름을 차분히 이어갈 수 있는지 봐줘.",
+                    "02-ai-chat-message-ready.png",
+                    "AI 채팅 메시지 입력",
+                )
 
         _capture_evidence(
             page,
@@ -375,6 +393,156 @@ def _run_ai_chat_flow(
             "failure",
         )
         checks.append(BrowserQaCheck("AI 채팅 화면 검증", False, str(exc)))
+
+
+# 체크인 모달과 대화 구간형 채팅의 핵심 사용자 흐름을 검증한다.
+def _run_checkin_chat_flow(
+    page: Any,
+    screenshot_dir: Path,
+    checks: list[BrowserQaCheck],
+    screenshots: list[BrowserScreenshotEvidence],
+) -> None:
+    _open_checkin_start_selector(page, checks)
+    required_templates = ["기본 감정형", "대화 시작형", "컨디션 중심형", "하루 회고형"]
+    visible_templates = [label for label in required_templates if _first_visible_text(page, label)]
+    direct_start_visible = _first_visible_text(page, "바로 상담 시작하기")
+    checkin_heading_visible = _first_visible_text(page, "체크인으로 시작하기")
+    checks.append(
+        BrowserQaCheck(
+            "체크인 시작 선택지 표시",
+            direct_start_visible and checkin_heading_visible and len(visible_templates) == len(required_templates),
+            f"templates={visible_templates}",
+        )
+    )
+    _capture_evidence(
+        page,
+        screenshot_dir,
+        screenshots,
+        "01-checkin-start-selector.png",
+        "체크인 모달 시작 선택 화면",
+        "바로 상담 시작하기와 체크인으로 시작하기, 4개 체크인 템플릿이 함께 표시된 상태입니다.",
+        "success",
+    )
+
+    page.get_by_role("button", name=re.compile("기본 감정형")).first.click(timeout=settings.qa_browser_timeout_ms)
+    page.get_by_text("지금 마음은 어떤가요?").wait_for(timeout=settings.qa_browser_timeout_ms)
+    checks.append(BrowserQaCheck("기본 감정형 1단계 표시", True, "지금 마음은 어떤가요?"))
+    _capture_evidence(
+        page,
+        screenshot_dir,
+        screenshots,
+        "02-checkin-basic-emotion-step.png",
+        "체크인 마법사 1단계",
+        "기본 감정형 템플릿을 선택한 뒤 첫 질문과 감정 선택지가 표시된 상태입니다.",
+        "success",
+    )
+
+    page.get_by_role("button", name=re.compile("불안함")).first.click(timeout=settings.qa_browser_timeout_ms)
+    page.get_by_role("button", name=re.compile("^다음$")).click(timeout=settings.qa_browser_timeout_ms)
+    page.get_by_text("그 정도는 어느 정도인가요?").wait_for(timeout=settings.qa_browser_timeout_ms)
+    checks.append(BrowserQaCheck("기본 감정형 2단계 표시", True, "그 정도는 어느 정도인가요?"))
+
+    page.get_by_role("button", name=re.compile("^4$")).click(timeout=settings.qa_browser_timeout_ms)
+    page.get_by_role("button", name=re.compile("^다음$")).click(timeout=settings.qa_browser_timeout_ms)
+    page.get_by_text("무엇 때문인 것 같나요?").wait_for(timeout=settings.qa_browser_timeout_ms)
+    page.get_by_role("button", name=re.compile("기타")).first.click(timeout=settings.qa_browser_timeout_ms)
+    other_input = page.get_by_label("직접 입력").first
+    other_input.fill("자동 QA 확인")
+    checks.append(BrowserQaCheck("기타 직접 입력칸 표시", True, "기타 선택 후 직접 입력 가능"))
+    _capture_evidence(
+        page,
+        screenshot_dir,
+        screenshots,
+        "03-checkin-other-input-edge.png",
+        "엣지 케이스: 기타 직접 입력",
+        "마지막 단계에서 기타를 선택하면 직접 입력칸이 노출되고 값을 입력할 수 있습니다.",
+        "edge",
+    )
+
+    with page.expect_response(
+        lambda response: "/api/ai-chat/rooms/today/segments/check-in" in response.url
+        and response.request.method == "POST",
+        timeout=settings.qa_browser_timeout_ms,
+    ) as response_info:
+        page.get_by_role("button", name=re.compile("체크인 완료")).click(timeout=settings.qa_browser_timeout_ms)
+    response = response_info.value
+    checks.append(
+        BrowserQaCheck(
+            "체크인 완료 API 응답",
+            response.status < 400,
+            f"status={response.status}",
+        )
+    )
+    page.locator(".modal-backdrop").first.wait_for(state="detached", timeout=settings.qa_browser_timeout_ms)
+    page.locator(".chat-segment-divider").first.wait_for(timeout=settings.qa_browser_timeout_ms)
+    checks.append(BrowserQaCheck("체크인 완료 후 구간형 채팅 진입", True, "chat segment divider 표시"))
+
+    continue_visible = _first_visible_text(page, "오늘 대화 이어가기")
+    new_topic_visible = _first_visible_text(page, "새 주제로 시작")
+    checks.append(
+        BrowserQaCheck(
+            "오늘 대화 이어가기/새 주제로 시작 액션 표시",
+            continue_visible and new_topic_visible,
+            f"continue={continue_visible}, newTopic={new_topic_visible}",
+        )
+    )
+    _capture_evidence(
+        page,
+        screenshot_dir,
+        screenshots,
+        "04-checkin-completed-chat-segment.png",
+        "체크인 완료 후 대화 구간 표시",
+        "체크인 완료 뒤 모달이 닫히고 오늘 대화방 안에 구간 라벨과 첫 메시지가 표시된 상태입니다.",
+        "success",
+    )
+
+
+def _open_checkin_start_selector(page: Any, checks: list[BrowserQaCheck]) -> None:
+    backdrop = page.locator(".modal-backdrop").first
+    try:
+        backdrop.wait_for(state="visible", timeout=5000)
+    except Exception:
+        if _first_visible_text(page, "새 주제로 시작"):
+            page.get_by_role("button", name=re.compile("새 주제로 시작")).first.click(timeout=settings.qa_browser_timeout_ms)
+            page.locator(".modal-backdrop").first.wait_for(state="visible", timeout=settings.qa_browser_timeout_ms)
+        else:
+            checks.append(BrowserQaCheck("체크인 시작 모달 열기", False, "모달과 새 주제 버튼을 찾지 못했습니다."))
+            return
+
+    if _first_visible_text(page, "오늘 대화 이어가기") and _first_visible_text(page, "새 주제로 시작"):
+        checks.append(BrowserQaCheck("기존 오늘 대화 분기 표시", True, "오늘 대화 이어가기/새 주제로 시작"))
+        page.get_by_role("button", name=re.compile("새 주제로 시작")).first.click(timeout=settings.qa_browser_timeout_ms)
+
+    page.get_by_text("체크인으로 시작하기").wait_for(timeout=settings.qa_browser_timeout_ms)
+
+
+# 체크인 진입 모달이 있는 채팅 화면에서는 기존 QA 메시지 전송 전에 대화 입력 가능 상태로 만든다.
+def _prepare_ai_chat_entry_flow(page: Any, checks: list[BrowserQaCheck]) -> None:
+    backdrop = page.locator(".modal-backdrop").first
+    try:
+        backdrop.wait_for(state="visible", timeout=5000)
+    except Exception:
+        checks.append(BrowserQaCheck("AI 채팅 진입 모달 처리", True, "모달 없음"))
+        return
+
+    if _first_visible_text(page, "오늘 대화 이어가기"):
+        page.get_by_role("button", name=re.compile("오늘 대화 이어가기")).first.click(timeout=settings.qa_browser_timeout_ms)
+        page.locator(".modal-backdrop").first.wait_for(state="detached", timeout=settings.qa_browser_timeout_ms)
+        checks.append(BrowserQaCheck("AI 채팅 진입 모달 처리", True, "오늘 대화 이어가기 선택"))
+        return
+
+    if _first_visible_text(page, "바로 상담 시작하기"):
+        with page.expect_response(
+            lambda response: "/api/ai-chat/rooms/today/segments" in response.url
+            and response.request.method == "POST",
+            timeout=settings.qa_browser_timeout_ms,
+        ):
+            page.get_by_role("button", name=re.compile("바로 상담 시작하기")).first.click(timeout=settings.qa_browser_timeout_ms)
+        page.locator(".modal-backdrop").first.wait_for(state="detached", timeout=settings.qa_browser_timeout_ms)
+        checks.append(BrowserQaCheck("AI 채팅 진입 모달 처리", True, "바로 상담 시작하기 선택"))
+        return
+
+    checks.append(BrowserQaCheck("AI 채팅 진입 모달 처리", False, "지원하지 않는 모달 상태"))
 
 
 # AI 마음이 응답 품질 hotfix에서 문제 재현 문장으로 실제 응답을 검증한다.
@@ -431,6 +599,7 @@ def _send_and_verify_ai_chat_message(
     screenshot_name: str,
     evidence_title: str,
 ) -> str | None:
+    _prepare_ai_chat_entry_flow(page, checks)
     page.locator("#ai-chat-message").fill(message)
     _capture_evidence(
         page,
