@@ -491,16 +491,20 @@ class MemberRepositoryAdapter(
 
 
 def _write_member_bootstrap_files(context: DevRunnerContext) -> list[str]:
-    base = context.repo_path / (
+    web_base = context.repo_path / (
         "apps/server/modules/bootstrap/app/src/main/kotlin/"
-        "com/example/server/bootstrap/presentation/member"
+        "com/example/server/bootstrap/member/web"
     )
+    request_base = web_base / "request"
+    response_base = web_base / "response"
     resources_base = context.repo_path / "apps/server/modules/bootstrap/app/src/main/resources"
     build_gradle = context.repo_path / "apps/server/modules/bootstrap/app/build.gradle.kts"
     paths = {
-        base / "MemberSignupController.kt": """package com.example.server.bootstrap.presentation.member
+        web_base / "MemberSignupController.kt": """package com.example.server.bootstrap.member.web
 
 import com.example.server.application.member.RegisterMemberService
+import com.example.server.bootstrap.member.web.request.MemberSignupRequest
+import com.example.server.bootstrap.member.web.response.MemberSignupResponse
 import io.swagger.v3.oas.annotations.Operation
 import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
@@ -537,7 +541,7 @@ class MemberSignupController(
     }
 }
 """,
-        base / "MemberSignupRequest.kt": """package com.example.server.bootstrap.presentation.member
+        request_base / "MemberSignupRequest.kt": """package com.example.server.bootstrap.member.web.request
 
 import com.example.server.application.member.RegisterMemberCommand
 import jakarta.validation.constraints.Email
@@ -569,7 +573,7 @@ data class MemberSignupRequest(
         )
 }
 """,
-        base / "MemberSignupResponse.kt": """package com.example.server.bootstrap.presentation.member
+        response_base / "MemberSignupResponse.kt": """package com.example.server.bootstrap.member.web.response
 
 data class MemberSignupResponse(
     val memberId: Long,
@@ -579,9 +583,10 @@ data class MemberSignupResponse(
     val email: String,
 )
 """,
-        base / "ApiExceptionHandler.kt": """package com.example.server.bootstrap.presentation.member
+        web_base / "ApiExceptionHandler.kt": """package com.example.server.bootstrap.member.web
 
 import com.example.server.application.member.DuplicateMemberEmailException
+import com.example.server.bootstrap.member.web.response.ApiErrorResponse
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -647,7 +652,7 @@ class ApiExceptionHandler {
     }
 }
 """,
-        base / "ApiErrorResponse.kt": """package com.example.server.bootstrap.presentation.member
+        response_base / "ApiErrorResponse.kt": """package com.example.server.bootstrap.member.web.response
 
 data class ApiErrorResponse(
     val message: String,

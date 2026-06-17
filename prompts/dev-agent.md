@@ -18,8 +18,8 @@ external-system boundaries visible in code.
 
 Backend runners must also apply `rules/backend-runner.md`. Keep controllers
 thin, put request/response DTOs in separate files, preserve domain/application/
-port/adapter/presentation boundaries, and stop with a clear report instead of
-generating backend code that violates those boundaries.
+domain port/web adapter/outbound adapter/persistence boundaries, and stop with a
+clear report instead of generating backend code that violates those boundaries.
 
 Every generated backend API must include a lightweight Swagger/OpenAPI
 `@Operation` annotation with Korean `summary` and `description`. Do not add
