@@ -228,6 +228,200 @@ class OrchestrationService:
             ]
         )
 
+    # Human QA 전에 이슈 댓글을 성공 기준 보고서로 자동 보강한다.
+    def _repair_issue_reports_before_human_qa(
+        self,
+        task: Task,
+        run_id: str | None,
+        issue_number: int,
+    ) -> None:
+        deleted_count = self._delete_stale_dev_failure_comments(task, run_id, issue_number)
+        dev_reported = self._upsert_issue_report_comment(
+            task,
+            run_id,
+            issue_number,
+            "dev",
+            self._build_issue_dev_report_comment(task),
+        )
+        self._audit(
+            task.id,
+            run_id,
+            "github.issue_reports_repaired",
+            {
+                "issue_number": issue_number,
+                "deleted_stale_failure_comments": deleted_count,
+                "dev_report_upserted": dev_reported,
+            },
+        )
+
+    # 단계별 하네스 보고서 댓글을 하나만 유지하도록 생성 또는 수정한다.
+    def _upsert_issue_report_comment(
+        self,
+        task: Task,
+        run_id: str | None,
+        issue_number: int,
+        report_kind: str,
+        body: str,
+    ) -> bool:
+        try:
+            adapter = GitHubAdapter(settings.github_token, use_gh_cli=settings.github_use_gh_cli)
+        except TypeError:
+            adapter = GitHubAdapter(settings.github_token)
+        is_configured = getattr(adapter, "is_configured", lambda: True)
+        if not is_configured():
+            return self._comment_on_github_issue(
+                task,
+                run_id,
+                issue_number,
+                body,
+                f"github.{report_kind}_report_commented",
+                f"github.{report_kind}_report_comment_failed",
+            )
+
+        try:
+            comments = (
+                adapter.list_issue_comments(settings.github_owner, settings.github_repo, issue_number)
+                if hasattr(adapter, "list_issue_comments")
+                else []
+            )
+            matched_comments = [
+                comment
+                for comment in comments
+                if self._is_harness_report_comment(str(comment.get("body", "")), report_kind)
+                and comment.get("id") is not None
+            ]
+            if matched_comments and hasattr(adapter, "update_issue_comment"):
+                latest_comment = matched_comments[-1]
+                adapter.update_issue_comment(
+                    settings.github_owner,
+                    settings.github_repo,
+                    latest_comment["id"],
+                    body,
+                )
+                for stale_comment in (
+                    matched_comments[:-1] if hasattr(adapter, "delete_issue_comment") else []
+                ):
+                    adapter.delete_issue_comment(
+                        settings.github_owner,
+                        settings.github_repo,
+                        stale_comment["id"],
+                    )
+                self._audit(
+                    task.id,
+                    run_id,
+                    f"github.{report_kind}_report_upserted",
+                    {
+                        "issue_number": issue_number,
+                        "method": "update",
+                        "updated_comment_id": latest_comment["id"],
+                        "deleted_duplicate_count": len(matched_comments[:-1]),
+                    },
+                )
+                return True
+
+            adapter.create_issue_comment(settings.github_owner, settings.github_repo, issue_number, body)
+            self._audit(
+                task.id,
+                run_id,
+                f"github.{report_kind}_report_upserted",
+                {"issue_number": issue_number, "method": "create"},
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - 댓글 보강 실패는 QA 실행 자체를 되돌리지 않는다.
+            self._audit(
+                task.id,
+                run_id,
+                f"github.{report_kind}_report_upsert_failed",
+                {"issue_number": issue_number, "error": str(exc)},
+            )
+            return self._comment_on_github_issue(
+                task,
+                run_id,
+                issue_number,
+                body,
+                f"github.{report_kind}_report_commented",
+                f"github.{report_kind}_report_comment_failed",
+            )
+
+    # 하네스 단계별 보고서 댓글인지 판별한다.
+    def _is_harness_report_comment(self, body: str, report_kind: str) -> bool:
+        if "<!-- ai-harness-generated -->" not in body:
+            return False
+        markers = {
+            "dev": [
+                "# 🛠️ 개발 완료:",
+                "# 🛠️ 구현 보고서:",
+                "# 🛠️ 수동 Dev 완료 기록:",
+            ],
+            "qa": [
+                "# 🔎 System QA 통과:",
+                "# ♻️ 🔎 System QA 재검증 통과:",
+                "# 🔎 QA 보고서:",
+            ],
+            "human_qa": [
+                "# 🧑‍💻 Human QA 요청:",
+                "# ♻️ 🧑‍💻 Human QA Re-QA 요청:",
+            ],
+        }
+        return any(marker in body for marker in markers.get(report_kind, []))
+
+    # 성공 run이 존재하면 오래된 Dev 실패 댓글을 삭제한다.
+    def _delete_stale_dev_failure_comments(
+        self,
+        task: Task,
+        run_id: str | None,
+        issue_number: int,
+    ) -> int:
+        if self._latest_successful_run(task.id, {"dev", "manual_dev"}) is None:
+            return 0
+        try:
+            adapter = GitHubAdapter(settings.github_token, use_gh_cli=settings.github_use_gh_cli)
+        except TypeError:
+            adapter = GitHubAdapter(settings.github_token)
+        if not hasattr(adapter, "list_issue_comments") or not hasattr(adapter, "delete_issue_comment"):
+            return 0
+
+        try:
+            comments = adapter.list_issue_comments(settings.github_owner, settings.github_repo, issue_number)
+            stale_comments = [
+                comment
+                for comment in comments
+                if self._is_stale_dev_failure_comment(str(comment.get("body", "")))
+                and comment.get("id") is not None
+            ]
+            for comment in stale_comments:
+                adapter.delete_issue_comment(settings.github_owner, settings.github_repo, comment["id"])
+            if stale_comments:
+                self._audit(
+                    task.id,
+                    run_id,
+                    "github.stale_dev_failure_comments_deleted",
+                    {"issue_number": issue_number, "deleted_count": len(stale_comments)},
+                )
+            return len(stale_comments)
+        except Exception as exc:  # noqa: BLE001 - 실패 댓글 정리 실패는 QA 자체를 막지 않는다.
+            self._audit(
+                task.id,
+                run_id,
+                "github.stale_dev_failure_comment_delete_failed",
+                {"issue_number": issue_number, "error": str(exc)},
+            )
+            return 0
+
+    # 성공 구현 이후 남아 있으면 혼선을 주는 Dev 실패 댓글인지 판단한다.
+    def _is_stale_dev_failure_comment(self, body: str) -> bool:
+        if "<!-- ai-harness-generated -->" not in body:
+            return False
+        return any(
+            marker in body
+            for marker in [
+                "# ⚠️ Dev Agent 확인 필요:",
+                "자동 구현을 완료하지 못했습니다",
+                "구현 전 중단",
+                "구현 확인 필요",
+            ]
+        )
+
     # gh CLI 인증을 사용해 GitHub 이슈 댓글을 작성한다.
     def _comment_on_github_issue_with_gh(self, issue_number: int, body: str) -> tuple[bool, str]:
         repo = f"{settings.github_owner}/{settings.github_repo}"
@@ -886,21 +1080,20 @@ class OrchestrationService:
         )
         self._move_github_project_status_best_effort(task, run_id)
 
-        qa_commented = self._comment_on_github_issue(
+        self._repair_issue_reports_before_human_qa(task, run_id, issue_number)
+        qa_commented = self._upsert_issue_report_comment(
             task,
             run_id,
             issue_number,
+            "qa",
             self._build_qa_comment(task, previous),
-            "github.qa_commented",
-            "github.qa_comment_failed",
         )
-        human_qa_commented = self._comment_on_github_issue(
+        human_qa_commented = self._upsert_issue_report_comment(
             task,
             run_id,
             issue_number,
+            "human_qa",
             self._build_human_qa_comment(task, rerun=False),
-            "github.human_qa_commented",
-            "github.human_qa_comment_failed",
         )
         if qa_commented and human_qa_commented:
             self._audit(
@@ -970,21 +1163,20 @@ class OrchestrationService:
             {"issue_number": issue_number, "issue_url": issue_url},
         )
 
-        qa_commented = self._comment_on_github_issue(
+        self._repair_issue_reports_before_human_qa(task, run_id, issue_number)
+        qa_commented = self._upsert_issue_report_comment(
             task,
             run_id,
             issue_number,
+            "qa",
             self._build_qa_comment(task, previous, rerun=True),
-            "github.qa_rerun_commented",
-            "github.qa_rerun_comment_failed",
         )
-        human_qa_commented = self._comment_on_github_issue(
+        human_qa_commented = self._upsert_issue_report_comment(
             task,
             run_id,
             issue_number,
+            "human_qa",
             self._build_human_qa_comment(task, rerun=True),
-            "github.human_qa_rerun_commented",
-            "github.human_qa_rerun_comment_failed",
         )
         if qa_commented and human_qa_commented:
             self._audit(
@@ -1476,6 +1668,17 @@ class OrchestrationService:
     def _latest_run(self, task_id: str) -> Run | None:
         return self.db.scalar(
             select(Run).where(Run.task_id == task_id).order_by(Run.started_at.desc()).limit(1)
+        )
+
+    # 지정한 agent 중 가장 최근 성공 run을 조회한다.
+    def _latest_successful_run(self, task_id: str, agent_names: set[str]) -> Run | None:
+        return self.db.scalar(
+            select(Run)
+            .where(Run.task_id == task_id)
+            .where(Run.agent_name.in_(agent_names))
+            .where(Run.status == AgentStatus.SUCCESS.value)
+            .order_by(Run.started_at.desc())
+            .limit(1)
         )
 
     def _latest_running_run(self, task_id: str) -> Run | None:
@@ -2229,6 +2432,57 @@ class OrchestrationService:
                 "```",
             ]
         )
+
+    # Human QA 전에 남길 표준 구현 보고서 댓글을 만든다.
+    def _build_issue_dev_report_comment(self, task: Task) -> str:
+        branch_name = self._branch_name_for_task(task)
+        run = self._latest_successful_run(task.id, {"dev", "manual_dev"})
+        run_summary = run.summary if run and run.summary else "구현 완료 run 요약을 찾지 못했습니다."
+        run_id = run.id if run else "unknown"
+        commit_lines = self._read_commit_plan_summary(task.id)
+        return "\n".join(
+            [
+                "<!-- ai-harness-generated -->",
+                "",
+                f"# 🛠️ 구현 보고서: {task.title}",
+                "",
+                f"Task ID: `{task.id}`",
+                "",
+                "## 구현 요약",
+                run_summary,
+                "",
+                "## 브랜치 / Run",
+                f"- 브랜치: `{branch_name}`",
+                f"- run: `{run_id}`",
+                "",
+                "## 커밋 / 구현 단위",
+                *commit_lines,
+                "",
+                "## 주요 산출물",
+                f"- `artifacts/{task.id}/dev/commit-plan.md`",
+                f"- `artifacts/{task.id}/dev/dev-status.md`",
+                f"- `artifacts/{task.id}/dev/implementation.patch`",
+                f"- `artifacts/{task.id}/dev/test-report.md`",
+                "",
+                "## 다음 단계",
+                "- System QA 결과와 Human QA 체크리스트를 확인합니다.",
+            ]
+        )
+
+    # commit-plan.md에서 사람이 읽을 만한 커밋 요약을 추출한다.
+    def _read_commit_plan_summary(self, task_id: str) -> list[str]:
+        commit_plan_path = settings.artifact_root / task_id / "dev" / "commit-plan.md"
+        if not commit_plan_path.exists():
+            return ["- 커밋 계획 파일을 찾지 못했습니다. 구현 run 또는 수동 완료 기록을 확인하세요."]
+        lines = [
+            line.strip()
+            for line in commit_plan_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        commit_lines = [
+            line for line in lines if line.startswith("- ") or line[:2].isdigit() or line.startswith("1.")
+        ][:12]
+        return commit_lines or ["- 커밋 상세는 `commit-plan.md`를 확인하세요."]
 
     # 수동 완료 기록을 Markdown artifact로 저장한다.
     def _write_manual_completion_artifact(

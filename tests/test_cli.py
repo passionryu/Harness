@@ -344,3 +344,85 @@ def test_cli_manual_complete_dev_records_success_run(tmp_path, monkeypatch, caps
         assert latest_run.agent_name == "manual_dev"
         assert latest_run.status == "success"
         assert (tmp_path / "artifacts" / task.id / "dev" / "manual-completion.md").exists()
+
+
+# Human QA 전에 실패성 Dev 댓글을 지우고 구현 보고서를 성공 기준으로 보강하는지 검증한다.
+def test_issue_report_repair_deletes_stale_dev_failure_and_updates_dev_report(tmp_path, monkeypatch):
+    issue_number = uuid4().int % 1_000_000_000
+    deleted_comments: list[int] = []
+    updated_comments: list[tuple[int, str]] = []
+
+    class FakeGitHubAdapter:
+        def __init__(self, token: str | None, use_gh_cli: bool = False):
+            self.token = token
+            self.use_gh_cli = use_gh_cli
+
+        def is_configured(self) -> bool:
+            return True
+
+        def list_issue_comments(self, owner: str, repo: str, issue_number: int) -> list[dict]:
+            return [
+                {
+                    "id": 10,
+                    "body": "<!-- ai-harness-generated -->\n\n# ⚠️ Dev Agent 확인 필요: old\n자동 구현을 완료하지 못했습니다",
+                },
+                {
+                    "id": 20,
+                    "body": "<!-- ai-harness-generated -->\n\n# 🛠️ 구현 보고서: old",
+                },
+            ]
+
+        def update_issue_comment(self, owner: str, repo: str, comment_id: int, body: str) -> None:
+            updated_comments.append((comment_id, body))
+
+        def delete_issue_comment(self, owner: str, repo: str, comment_id: int) -> None:
+            deleted_comments.append(comment_id)
+
+        def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> None:
+            raise AssertionError("기존 구현 보고서가 있으므로 새 댓글을 만들면 안 된다.")
+
+    monkeypatch.setattr(cli.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "github_token", "token")
+    monkeypatch.setattr(orchestration.settings, "github_owner", "passionryu")
+    monkeypatch.setattr(orchestration.settings, "github_repo", "myMentalCare")
+    monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
+
+    with SessionLocal() as db:
+        task = Task(
+            title="[FE] 알림 서비스 준비중 처리",
+            body="\n".join(
+                [
+                    "마이페이지 알림 서비스를 준비중 상태로 비활성화한다.",
+                    "",
+                    "## Harness Metadata",
+                    f"- issue_number: {issue_number}",
+                    "- labels: type: feFeature",
+                ]
+            ),
+            github_issue_number=issue_number,
+            github_issue_url=f"https://github.com/passionryu/myMentalCare/issues/{issue_number}",
+            state="QA Review",
+        )
+        db.add(task)
+        db.flush()
+        run = Run(
+            task_id=task.id,
+            agent_name="manual_dev",
+            status="success",
+            summary="Codex가 수동 구현과 검증을 완료했다.",
+        )
+        db.add(run)
+        db.commit()
+
+        commit_plan = tmp_path / "artifacts" / task.id / "dev" / "commit-plan.md"
+        commit_plan.parent.mkdir(parents=True)
+        commit_plan.write_text("- 925f378 알림 설정 준비중 상태 전환\n", encoding="utf-8")
+
+        service = orchestration.OrchestrationService(db)
+        service._repair_issue_reports_before_human_qa(task, run.id, issue_number)
+
+    assert deleted_comments == [10]
+    assert updated_comments[0][0] == 20
+    assert "# 🛠️ 구현 보고서: [FE] 알림 서비스 준비중 처리" in updated_comments[0][1]
+    assert "925f378 알림 설정 준비중 상태 전환" in updated_comments[0][1]
