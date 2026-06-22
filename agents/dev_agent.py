@@ -442,7 +442,7 @@ class DevAgent:
                     f"- branch_status: {branch_status}",
                     f"- selected_runner: `{runner_name}`",
                     f"- mode: `{'refactor' if is_refactor_mode else 'develop'}`",
-                    f"- current_step: {'완료' if commits else '구현 전 중단'}",
+                    f"- current_step: {'완료' if result_status == AgentStatus.SUCCESS else '구현 확인 필요'}",
                     "- visibility: GitHub 이슈 댓글과 이 artifact에서 확인합니다.",
                     "",
                     "## 백엔드 스타일",
@@ -542,15 +542,12 @@ class DevAgent:
         )
 
         action_label = "리팩터링" if is_refactor_mode else "개발 구현"
-        summary = (
-            f"{action_label}이 {runner_name}에 의해 {branch_name}에서 완료되었습니다. 커밋 기록 {len(commits)}개가 생성되었습니다."
-            if commits
-            else (
-                f"{action_label} 러너가 {branch_name}에서 구현 전 중단되었습니다: {runner_error}"
-                if runner_error
-                else f"{action_label} 브랜치가 준비되었습니다: {branch_name}. 커밋 계획이 생성되었습니다."
-            )
-        )
+        if result_status == AgentStatus.SUCCESS and commits:
+            summary = f"{action_label}이 {runner_name}에 의해 {branch_name}에서 완료되었습니다. 커밋 기록 {len(commits)}개가 생성되었습니다."
+        elif result_status == AgentStatus.SUCCESS:
+            summary = f"{action_label} 브랜치가 준비되었습니다: {branch_name}. 커밋 계획이 생성되었습니다."
+        else:
+            summary = f"{action_label} 러너가 {branch_name}에서 자동 구현을 완료하지 못했습니다: {runner_error}"
 
         return AgentResult(
             status=result_status,

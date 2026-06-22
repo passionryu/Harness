@@ -827,9 +827,10 @@ def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monk
     assert plan_response.status_code == 200
     assert develop_response.status_code == 200
     result = develop_response.json()
-    assert result["status"] == "failed"
+    assert result["status"] == "needs_human"
     assert "frontend_implementation_runner" in result["reason"]
     assert "test_implementation_runner" in result["reason"]
+    assert result["current_state"] == "Dev Ready"
     assert repo.active_branch.name == expected_branch
     task_id = plan_response.json()["task_id"]
     commit_plan = tmp_path / "artifacts" / task_id / "dev" / "commit-plan.md"
@@ -845,6 +846,89 @@ def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monk
     assert (tmp_path / "artifacts" / task_id / "dev" / "test_implementation_runner.md").exists()
     assert (tmp_path / "artifacts" / task_id / "dev" / "implementation.patch").exists()
     assert (tmp_path / "artifacts" / task_id / "dev" / "test-report.md").exists()
+
+
+def test_develop_needs_human_records_run_and_comments(tmp_path, monkeypatch):
+    captured_comments: list[str] = []
+
+    class FakeGitHubAdapter:
+        def __init__(self, token: str | None, use_gh_cli: bool = False):
+            self.token = token
+            self.use_gh_cli = use_gh_cli
+
+        def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> None:
+            captured_comments.append(body)
+
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "github_token", "token")
+    monkeypatch.setattr(orchestration.settings, "development_base_branch", "main")
+    monkeypatch.setattr(orchestration, "GitHubAdapter", FakeGitHubAdapter)
+
+    target_repo = tmp_path / "targetApp"
+    target_repo.mkdir()
+    repo = Repo.init(target_repo)
+    (target_repo / "README.md").write_text("# test repo\n", encoding="utf-8")
+    (target_repo / "apps/web").mkdir(parents=True)
+    (target_repo / "apps/web/package.json").write_text(
+        json.dumps({"name": "@app/web", "private": True, "scripts": {}}),
+        encoding="utf-8",
+    )
+    repo.index.add(["README.md", "apps/web/package.json"])
+    repo.index.commit("Initial commit")
+    monkeypatch.setattr(orchestration.settings, "target_repo_path", target_repo)
+
+    from orchestrator.db.models import Run, Task
+    from orchestrator.db.session import SessionLocal
+    from orchestrator.services.orchestration import OrchestrationService
+
+    issue_number = uuid4().int % 1_000_000_000
+    with SessionLocal() as db:
+        task = Task(
+            title="[FE] 회원 가입 기능 구현",
+            body="\n".join(
+                [
+                    "회원가입 화면을 추가한다.",
+                    "",
+                    "## Harness Metadata",
+                    "- labels: type: feFeature",
+                    f"- issue_number: {issue_number}",
+                ]
+            ),
+            github_issue_number=issue_number,
+            github_issue_url=f"https://github.com/passionryu/targetApp/issues/{issue_number}",
+            state="Dev Ready",
+        )
+        db.add(task)
+        db.flush()
+        db.add(Run(task_id=task.id, agent_name="design", status="success", summary="design ok"))
+        db.commit()
+
+    with SessionLocal() as db:
+        result = OrchestrationService(db).run_develop_for_github_issue(
+            issue_number=issue_number,
+            title="[FE] 회원 가입 기능 구현",
+            body="회원가입 화면을 추가한다.",
+            issue_url=f"https://github.com/passionryu/targetApp/issues/{issue_number}",
+            issue_labels=["type: feFeature"],
+        )
+
+    assert result["status"] == "needs_human"
+    assert result["current_state"] == "Dev Ready"
+    assert "frontend_implementation_runner" in result["reason"]
+    assert any("Dev Agent 확인 필요" in comment for comment in captured_comments)
+
+    with SessionLocal() as db:
+        task = db.query(Task).filter(Task.github_issue_number == issue_number).one()
+        latest_run = (
+            db.query(Run)
+            .filter(Run.task_id == task.id)
+            .order_by(Run.started_at.desc())
+            .first()
+        )
+        assert task.state == "Dev Ready"
+        assert latest_run.agent_name == "dev"
+        assert latest_run.status == "needs_human"
+        assert latest_run.finished_at is not None
 
 
 def test_issue_comment_develop_command_without_plan_is_ignored(monkeypatch):
@@ -1039,6 +1123,7 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
     assert "ddd_modeling_runner" in result["reason"]
     assert "api_implementation_runner" in result["reason"]
     assert "test_implementation_runner" in result["reason"]
+    assert result["current_state"] == "Dev Ready"
 
     task_id = plan_response.json()["task_id"]
     dev_dir = tmp_path / "artifacts" / task_id / "dev"

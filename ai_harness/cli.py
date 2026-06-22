@@ -519,6 +519,20 @@ def _approve(args: argparse.Namespace) -> EventResult:
     raise ValueError("--issue 또는 --task-id 중 하나가 필요합니다.")
 
 
+# Codex/사람이 자동 runner 밖에서 완료한 Dev/QA 결과를 공식 run으로 기록한다.
+def _manual_complete(args: argparse.Namespace) -> EventResult:
+    context = _optional_issue_context(args.issue)
+    with SessionLocal() as db:
+        service = OrchestrationService(db)
+        return service.record_manual_completion_for_github_issue(
+            issue_number=args.issue,
+            stage=args.stage,
+            completed_by=args.completed_by,
+            notes=args.notes or "",
+            issue_url=context["issue_url"],
+        )
+
+
 # 하네스 세팅 변경 이력을 Notion History 표에 기록한다.
 def _document_harness(args: argparse.Namespace) -> dict[str, Any]:
     result = publish_harness_history_record(
@@ -756,6 +770,16 @@ def _build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--approved-by", required=True, help="승인자 이름")
     approve.add_argument("--notes", default="", help="승인 메모")
     approve.set_defaults(handler=_approve)
+
+    manual_complete = subparsers.add_parser(
+        "manual-complete",
+        help="Codex/사람이 수동 완료한 Dev/QA를 공식 run과 상태 전이로 기록",
+    )
+    _add_issue_option(manual_complete)
+    manual_complete.add_argument("--stage", required=True, choices=["dev", "qa"], help="수동 완료를 기록할 단계")
+    manual_complete.add_argument("--completed-by", required=True, help="완료 기록자 이름")
+    manual_complete.add_argument("--notes", default="", help="수동 완료 메모")
+    manual_complete.set_defaults(handler=_manual_complete)
 
     return parser
 

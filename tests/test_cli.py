@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import ai_harness.cli as cli
 import orchestrator.services.orchestration as orchestration
-from orchestrator.db.models import Task
+from orchestrator.db.models import Run, Task
 from orchestrator.db.session import SessionLocal
 
 
@@ -282,3 +282,65 @@ def test_cli_approve_plan_moves_task_to_dev_ready(tmp_path, monkeypatch, capsys)
     with SessionLocal() as db:
         task = db.query(Task).filter(Task.github_issue_number == issue_number).one()
         assert task.state == "Dev Ready"
+
+
+# CLI manual-complete 명령이 자동 runner 밖의 구현 완료를 공식 run으로 기록하는지 검증한다.
+def test_cli_manual_complete_dev_records_success_run(tmp_path, monkeypatch, capsys):
+    issue_number = uuid4().int % 1_000_000_000
+    monkeypatch.setattr(cli.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(orchestration.settings, "github_token", "")
+    monkeypatch.setattr(orchestration.settings, "github_project_number", 0)
+
+    with SessionLocal() as db:
+        task = Task(
+            title="[FE] 알림 서비스 준비중 처리",
+            body="\n".join(
+                [
+                    "마이페이지 알림 서비스를 준비중 상태로 비활성화한다.",
+                    "",
+                    "## Harness Metadata",
+                    f"- issue_number: {issue_number}",
+                    "- labels: type: feFeature",
+                ]
+            ),
+            github_issue_number=issue_number,
+            github_issue_url=f"https://github.com/passionryu/myMentalCare/issues/{issue_number}",
+            state="Dev Ready",
+        )
+        db.add(task)
+        db.commit()
+
+    exit_code = cli.main(
+        [
+            "--json",
+            "manual-complete",
+            "--issue",
+            str(issue_number),
+            "--stage",
+            "dev",
+            "--completed-by",
+            "passionryu",
+            "--notes",
+            "Codex가 수동 구현과 테스트를 완료했다.",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    payload = json.loads(captured.out)
+    assert payload["previous_state"] == "Dev Ready"
+    assert payload["current_state"] == "Dev Review"
+
+    with SessionLocal() as db:
+        task = db.query(Task).filter(Task.github_issue_number == issue_number).one()
+        latest_run = (
+            db.query(Run)
+            .filter(Run.task_id == task.id)
+            .order_by(Run.started_at.desc())
+            .first()
+        )
+        assert task.state == "Dev Review"
+        assert latest_run.agent_name == "manual_dev"
+        assert latest_run.status == "success"
+        assert (tmp_path / "artifacts" / task.id / "dev" / "manual-completion.md").exists()

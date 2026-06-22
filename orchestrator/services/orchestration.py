@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from agents.base import AgentInput, AgentStatus
+from agents.base import AgentInput, AgentStatus, ArtifactSpec
 from agents.organization import render_work_units
 from agents.plan_agent import (
     _decision_questions,
@@ -597,7 +597,51 @@ class OrchestrationService:
             )
 
         previous = task.state
-        run_id = self._run_agent(task, "dev")
+        try:
+            run_id = self._run_agent(task, "dev")
+        except Exception as exc:  # noqa: BLE001 - 실패도 하네스 상태와 GitHub 댓글에 남긴다.
+            latest_run = self._latest_run(task.id)
+            run_id = latest_run.id if latest_run else None
+            if task.state != KanbanState.DEV_READY.value:
+                task.state = KanbanState.DEV_READY.value
+            self._record_transition(
+                task.id,
+                previous,
+                task.state,
+                "dev agent stopped before completion; waiting for human implementation or retry",
+                "agent",
+            )
+            self._audit(
+                task.id,
+                run_id,
+                "dev.needs_human",
+                {
+                    "issue_number": issue_number,
+                    "issue_url": issue_url,
+                    "error": str(exc),
+                    "run_status": latest_run.status if latest_run else "failed",
+                },
+            )
+            self._move_github_project_status_best_effort(task, run_id)
+            self._comment_on_github_issue(
+                task,
+                run_id,
+                issue_number,
+                self._build_develop_failed_comment(task, previous, str(exc)),
+                "github.develop_failed_commented",
+                "github.develop_failed_comment_failed",
+            )
+            self.db.commit()
+            return {
+                "status": latest_run.status if latest_run else AgentStatus.FAILED.value,
+                "task_id": task.id,
+                "previous_state": previous,
+                "current_state": task.state,
+                "run_id": run_id,
+                "reason": str(exc),
+                "next": settings.develop_command,
+            }
+
         if task.state != KanbanState.DEV_REVIEW.value:
             task.state = KanbanState.DEV_REVIEW.value
             self._record_transition(
@@ -1137,6 +1181,112 @@ class OrchestrationService:
         if task is None:
             raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
         return self.approve_task_stage(task, stage, payload)
+
+    # Codex나 사람이 수동으로 끝낸 구현/QA를 공식 run과 상태 전이로 기록한다.
+    def record_manual_completion_for_github_issue(
+        self,
+        issue_number: int,
+        stage: str,
+        completed_by: str,
+        notes: str = "",
+        issue_url: str = "",
+    ) -> EventResult:
+        task = self._find_github_issue_task(issue_number, issue_url)
+        if task is None:
+            raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
+        return self.record_manual_completion(task, stage, completed_by, notes)
+
+    # 자동 runner 밖에서 완료된 작업도 하네스 감사 로그와 산출물로 흡수한다.
+    def record_manual_completion(
+        self,
+        task: Task,
+        stage: str,
+        completed_by: str,
+        notes: str = "",
+    ) -> EventResult:
+        previous = task.state
+        target_state = self._manual_completion_target_state(stage)
+        allowed_states = self._manual_completion_allowed_states(stage)
+        if previous not in allowed_states:
+            raise ValueError(
+                f"{stage} 수동 완료는 {', '.join(sorted(allowed_states))} 상태에서만 기록할 수 있습니다. "
+                f"현재 상태: {previous}"
+            )
+
+        now = now_kst()
+        run = Run(
+            task_id=task.id,
+            agent_name=f"manual_{stage}",
+            status=AgentStatus.SUCCESS.value,
+            started_at=now,
+            finished_at=now,
+            timeout_seconds=0,
+            summary=f"{stage} 단계가 {completed_by}에 의해 수동 완료로 기록되었습니다.",
+            error=None,
+        )
+        self.db.add(run)
+        self.db.flush()
+
+        artifact = self._write_manual_completion_artifact(task, run, stage, completed_by, notes)
+        self.artifact_store.persist_agent_artifacts(task.id, run.id, [artifact])
+
+        if task.state != target_state:
+            task.state = target_state
+            self._record_transition(
+                task.id,
+                previous,
+                task.state,
+                f"{stage} manually completed by {completed_by}",
+                "human",
+            )
+
+        self._audit(
+            task.id,
+            run.id,
+            f"manual.{stage}_completed",
+            {"completed_by": completed_by, "notes": notes, "previous_state": previous},
+        )
+        self._move_github_project_status_best_effort(task, run.id)
+
+        if task.github_issue_number:
+            self._comment_on_github_issue(
+                task,
+                run.id,
+                int(task.github_issue_number),
+                self._build_manual_completion_comment(task, stage, completed_by, notes, run),
+                f"github.manual_{stage}_completed_commented",
+                f"github.manual_{stage}_completed_comment_failed",
+            )
+
+        self.db.commit()
+        return EventResult(
+            task_id=task.id,
+            previous_state=previous,
+            current_state=task.state,
+            message=f"{stage} 수동 완료를 공식 run으로 기록했고 작업 상태를 {task.state}로 변경했습니다.",
+        )
+
+    # 수동 완료 stage별 목표 상태를 반환한다.
+    def _manual_completion_target_state(self, stage: str) -> str:
+        mapping = {
+            "dev": KanbanState.DEV_REVIEW.value,
+            "qa": KanbanState.QA_REVIEW.value,
+        }
+        try:
+            return mapping[stage]
+        except KeyError as exc:
+            raise ValueError(f"지원하지 않는 수동 완료 stage입니다: {stage}") from exc
+
+    # 수동 완료 stage별 허용 시작 상태를 반환한다.
+    def _manual_completion_allowed_states(self, stage: str) -> set[str]:
+        mapping = {
+            "dev": {KanbanState.DEV_READY.value, KanbanState.DEV_REVIEW.value},
+            "qa": {KanbanState.QA_READY.value, KanbanState.QA_REVIEW.value},
+        }
+        try:
+            return mapping[stage]
+        except KeyError as exc:
+            raise ValueError(f"지원하지 않는 수동 완료 stage입니다: {stage}") from exc
 
     # task의 현재 상태와 승인 stage가 맞는지 검증하고 다음 gate로 전환한다.
     def approve_task_stage(self, task: Task, stage: str, payload: HumanApproval) -> EventResult:
@@ -2025,7 +2175,143 @@ class OrchestrationService:
                 "개발 결과를 사람이 확인한 뒤 Dev 승인을 기록하세요.",
                 "",
                 "```markdown",
-                self._approval_command(task, "dev"),
+            self._approval_command(task, "dev"),
+            "```",
+        ]
+    )
+
+    # Dev Agent가 구현 전 중단되었을 때도 공식 기록 댓글을 남긴다.
+    def _build_develop_failed_comment(self, task: Task, previous_state: str, error: str) -> str:
+        latest_run = self._latest_run(task.id)
+        run_status = latest_run.status if latest_run else AgentStatus.FAILED.value
+        run_summary = latest_run.summary if latest_run and latest_run.summary else "Dev Agent 실행이 완료되지 않았습니다."
+        run_error = latest_run.error if latest_run and latest_run.error else error
+        branch_name = self._branch_name_for_task(task)
+        return "\n".join(
+            [
+                "<!-- ai-harness-generated -->",
+                "",
+                f"# ⚠️ Dev Agent 확인 필요: {task.title}",
+                "",
+                f"Task ID: `{task.id}`",
+                "",
+                "Dev Agent를 호출했지만 자동 구현을 완료하지 못했습니다.",
+                "capability 부족 또는 runner 처리 불가도 공식 실행 결과로 기록합니다.",
+                "",
+                "### 상태",
+                f"- previous: `{previous_state}`",
+                f"- current: `{task.state}`",
+                f"- dev status: `{run_status}`",
+                "",
+                "### 브랜치",
+                f"- `{branch_name}`",
+                "",
+                "### 실행 결과",
+                f"- {run_summary}",
+                "",
+                "### 실패/확인 필요 사유",
+                f"- `{run_error}`",
+                "",
+                "### Dev 산출물",
+                f"- `artifacts/{task.id}/dev/commit-plan.md`",
+                f"- `artifacts/{task.id}/dev/dev-status.md`",
+                f"- `artifacts/{task.id}/dev/implementation.patch`",
+                f"- `artifacts/{task.id}/dev/test-report.md`",
+                "",
+                "### 다음 단계",
+                "- Dev Runner capability를 보강하거나 Codex 대화형 구현으로 이어가세요.",
+                "- 상태는 재시도 가능한 `Dev Ready`에 유지됩니다.",
+                "",
+                "다시 Dev Agent를 호출하려면 아래 명령을 사용하세요.",
+                "",
+                "```markdown",
+                settings.develop_command,
+                "```",
+            ]
+        )
+
+    # 수동 완료 기록을 Markdown artifact로 저장한다.
+    def _write_manual_completion_artifact(
+        self,
+        task: Task,
+        run: Run,
+        stage: str,
+        completed_by: str,
+        notes: str,
+    ) -> ArtifactSpec:
+        stage_dir = settings.artifact_root / task.id / stage
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = stage_dir / "manual-completion.md"
+        artifact_path.write_text(
+            "\n".join(
+                [
+                    f"# Manual {stage.upper()} Completion",
+                    "",
+                    f"- task_id: `{task.id}`",
+                    f"- issue: `#{task.github_issue_number or 'unknown'}`",
+                    f"- title: {task.title}",
+                    f"- completed_by: {completed_by}",
+                    f"- recorded_at: {self._format_dt(run.finished_at)}",
+                    f"- state: `{task.state}`",
+                    "",
+                    "## Notes",
+                    notes.strip() or "수동 완료 메모가 없습니다.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return ArtifactSpec(kind=f"manual_{stage}_completion", path=artifact_path)
+
+    # 수동 완료 결과를 GitHub 이슈 댓글용 Markdown으로 만든다.
+    def _build_manual_completion_comment(
+        self,
+        task: Task,
+        stage: str,
+        completed_by: str,
+        notes: str,
+        run: Run,
+    ) -> str:
+        icon = "🛠️" if stage == "dev" else "🔎"
+        title = "수동 Dev 완료 기록" if stage == "dev" else "수동 QA 완료 기록"
+        artifact_path = f"artifacts/{task.id}/{stage}/manual-completion.md"
+        next_command = self._approval_command(task, stage)
+        return "\n".join(
+            [
+                "<!-- ai-harness-generated -->",
+                "",
+                f"# {icon} {title}: {task.title}",
+                "",
+                f"Task ID: `{task.id}`",
+                "",
+                "자동 Runner 밖에서 Codex 또는 사람이 완료한 작업을 하네스의 공식 실행 기록으로 반영했습니다.",
+                "",
+                "### 상태",
+                f"- current: `{task.state}`",
+                f"- run: `{run.id}`",
+                f"- status: `{run.status}`",
+                "",
+                "### 기록자",
+                f"- {completed_by}",
+                "",
+                "### 완료 메모",
+                notes.strip() or "- 수동 완료 메모가 없습니다.",
+                "",
+                "### 산출물",
+                f"- `{artifact_path}`",
+                "",
+                "### 다음 단계",
+                "결과를 확인했다면 아래 승인 명령을 실행하세요.",
+                "",
+                "```bash",
+                "cd /Users/rsy/Desktop/myPlayGround/harness",
+                f".venv/bin/python -m ai_harness.cli approve --issue {task.github_issue_number or '<issue>'} --stage {stage} --approved-by <name>",
+                "```",
+                "",
+                "짧은 표기:",
+                "",
+                "```bash",
+                next_command,
                 "```",
             ]
         )
