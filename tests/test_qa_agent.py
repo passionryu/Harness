@@ -711,6 +711,8 @@ def test_fullstack_qa_agent_uses_issue_specific_qa_plan_for_checkin_chat(tmp_pat
 
     assert result.status == AgentStatus.SUCCESS
     content = (artifact_root / task_id / "qa" / "qa-report.md").read_text(encoding="utf-8")
+    assert "## Agent Markdown Spec: qa" in content
+    assert "자동 검증하지 못한 항목은 PASS로 표시하지 않는다." in content
     assert "## QA Plan" in content
     assert "오늘 대화가 없는 사용자가 `채팅 시작하기`를 누르면 체크인 모달이 열린다." in content
     assert "4개 체크인 템플릿을 각각 선택할 수 있다." in content

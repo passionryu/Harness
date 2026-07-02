@@ -9,6 +9,7 @@ from urllib.parse import urljoin
 
 from git import Repo
 
+from agents.agent_spec import AgentSpecError, load_agent_spec, render_agent_spec_context
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
 from agents.organization import HUMAN_QA_SUPPORT_RUNNERS, QA_RUNNERS, render_runner_definitions
 from agents.qa_plan import build_qa_plan, qa_plan_coverage_lines, render_qa_plan_markdown
@@ -241,6 +242,19 @@ def _fallback_human_qa_checklist(issue_type: str, title: str, body: str) -> list
     if issue_type in {"beFeature", "apiConnect", "fullstackFeature"}:
         return BE_HUMAN_QA_CHECKLIST
     return FE_HUMAN_QA_CHECKLIST
+
+
+def _agent_markdown_spec_lines(name: str) -> list[str]:
+    try:
+        return render_agent_spec_context(load_agent_spec(name))
+    except AgentSpecError as exc:
+        return [
+            f"## Agent Markdown Spec: {name}",
+            "",
+            "- spec_status: `missing_or_invalid`",
+            f"- reason: {exc}",
+            "",
+        ]
 
 
 # 이슈 타입에 맞는 QA 대상 브랜치 prefix를 결정한다.
@@ -1411,6 +1425,7 @@ class QAAgent:
         ]
         human_qa_lines = [f"- [ ] {item}" for item in qa_plan.human_checklist()]
         qa_plan_lines = render_qa_plan_markdown(qa_plan)
+        agent_spec_lines = _agent_markdown_spec_lines("qa")
         qa_plan_path = task_dir / "qa-plan.md"
         qa_plan_path.write_text("\n".join(qa_plan_lines), encoding="utf-8")
         qa_request = _extract_section(input_data.body, "Human QA Request")
@@ -1444,6 +1459,7 @@ class QAAgent:
                     "## QA 요청사항",
                     *(qa_request or ["추가 QA 요청사항이 없습니다."]),
                     "",
+                    *agent_spec_lines,
                     *qa_plan_lines,
                     "## QA Plan 커버리지",
                     *qa_plan_coverage_lines(qa_plan),
@@ -1472,6 +1488,7 @@ class QAAgent:
                 [
                     "# QA 체크리스트",
                     "",
+                    *agent_spec_lines,
                     *qa_plan_lines,
                     "## QA Plan 커버리지",
                     *qa_plan_coverage_lines(qa_plan),
