@@ -44,7 +44,7 @@ def should_run_playwright_browser_qa(issue_type: str, title: str, body: str) -> 
     if not settings.qa_browser_enabled:
         return False
     haystack = f"{title}\n{body}".lower()
-    browser_keywords = [
+    explicit_browser_keywords = [
         "playwright",
         "e2e",
         "브라우저 qa",
@@ -53,20 +53,11 @@ def should_run_playwright_browser_qa(issue_type: str, title: str, body: str) -> 
         "시각 검증",
         "visual qa",
         "ui/ux 검증",
-        "설정",
-        "색상",
-        "테마",
-        "화면 분위기",
-        "모달",
-        "마법사",
-        "템플릿",
-        "구간",
-        "새 주제",
     ]
     if issue_type not in {"feFeature", "apiConnect", "fullstackFeature", "beFeature", "bugfix", "hotfix"}:
         return False
     return (
-        any(keyword in haystack for keyword in browser_keywords)
+        any(keyword in haystack for keyword in explicit_browser_keywords)
         or (
             issue_type in {"apiConnect", "fullstackFeature", "beFeature", "bugfix", "hotfix"}
             and should_run_ai_chat_scenario(title, body)

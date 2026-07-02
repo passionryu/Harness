@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from agents.agent_spec import DEFAULT_SPEC_DIR, load_agent_spec
+from agents.agent_spec import DEFAULT_PLAYBOOK_DIR, DEFAULT_SPEC_DIR, list_markdown_specs, load_agent_spec
 from agents.base import AgentInput, AgentStatus
 from agents.documentation_agent import publish_harness_history_record
 from agents.planning_assistant_agent import PlanningAssistantAgent
@@ -656,18 +656,46 @@ def _agent_specs(args: argparse.Namespace) -> dict[str, Any]:
             "hard_rules": spec.section("Hard Rules"),
         }
 
-    specs = []
-    for path in sorted(DEFAULT_SPEC_DIR.glob("*.md")):
-        spec = load_agent_spec(path.stem)
-        specs.append(
-            {
-                "name": spec.name,
-                "version": spec.version,
-                "summary": spec.summary,
-                "path": str(spec.path),
-            }
-        )
+    specs = [
+        {
+            "name": spec.name,
+            "version": spec.version,
+            "summary": spec.summary,
+            "path": str(spec.path),
+        }
+        for spec in list_markdown_specs(DEFAULT_SPEC_DIR)
+    ]
     return {"status": "ok", "specs": specs}
+
+
+def _playbooks(args: argparse.Namespace) -> dict[str, Any]:
+    if args.name:
+        spec = load_agent_spec(args.name, DEFAULT_PLAYBOOK_DIR)
+        return {
+            "status": "ok",
+            "name": spec.name,
+            "version": spec.version,
+            "summary": spec.summary,
+            "path": str(spec.path),
+            "triggers": spec.triggers,
+            "inputs": spec.inputs,
+            "outputs": spec.outputs,
+            "mission": spec.section("Mission"),
+            "codex_execution_steps": spec.section("Codex Execution Steps"),
+            "decision_rules": spec.section("Decision Rules"),
+            "hard_rules": spec.section("Hard Rules"),
+        }
+
+    playbooks = [
+        {
+            "name": spec.name,
+            "version": spec.version,
+            "summary": spec.summary,
+            "path": str(spec.path),
+        }
+        for spec in list_markdown_specs(DEFAULT_PLAYBOOK_DIR)
+    ]
+    return {"status": "ok", "playbooks": playbooks}
 
 
 # CLI 하위 명령과 handler를 등록한다.
@@ -682,6 +710,10 @@ def _build_parser() -> argparse.ArgumentParser:
     agent_specs = subparsers.add_parser("agent-specs", help="Markdown Agent spec 목록 또는 상세 조회")
     agent_specs.add_argument("--name", default="", help="상세 조회할 Agent spec 이름. 예: qa")
     agent_specs.set_defaults(handler=_agent_specs)
+
+    playbooks = subparsers.add_parser("playbooks", help="Codex Markdown playbook 목록 또는 상세 조회")
+    playbooks.add_argument("--name", default="", help="상세 조회할 playbook 이름. 예: frontend-implementation")
+    playbooks.set_defaults(handler=_playbooks)
 
     for command, help_text in [
         ("design", "GitHub issue를 기반으로 Design Agent를 실행"),

@@ -35,6 +35,18 @@ harness agent-specs
 harness agent-specs --name qa
 ```
 
+Codex 실행 playbook 목록:
+
+```bash
+harness playbooks
+```
+
+특정 playbook 상세:
+
+```bash
+harness playbooks --name qa-verification
+```
+
 JSON 출력:
 
 ```bash
@@ -64,6 +76,20 @@ harness --json agent-specs --name qa
 - PDF 렌더링
 - timeout, retry, error handling
 - Markdown spec schema validation
+
+## Codex Playbook
+
+실제 구현, 검증, 문서화 절차는 `agents/playbooks/*.md`에 둔다.
+Agent spec이 역할과 호출 조건을 정의한다면, playbook은 Codex가 어떤 파일을 읽고 어떤 순서로 실행하고 어떤 증거를 남길지 정의한다.
+
+대표 playbook:
+
+- `frontend-implementation`
+- `backend-kotlin-spring`
+- `api-connect`
+- `qa-verification`
+- `infra-config`
+- `documentation`
 
 ## 필수 구조
 
@@ -111,11 +137,13 @@ outputs:
 - Markdown spec은 사람이 읽고 바꾸는 source of truth다.
 - 코드가 아직 spec을 읽지 않는 영역은 spec을 운영 기준으로 삼되, 실제 연결 작업을 별도 이슈로 남긴다.
 - spec 변경 후에는 `pytest tests/test_agent_spec.py`를 실행한다.
-- 실행 로직 변경이 필요한 경우 Markdown만 바꾸지 말고 Python runner도 같이 연결한다.
+- 실행 판단과 작업 순서는 먼저 `agents/playbooks/*.md`에 추가한다.
+- Python runner 변경은 외부 API, 테스트 실행, PDF 렌더링처럼 실제 부작용이 있는 adapter가 필요할 때만 한다.
 
 ## 현재 연결 상태
 
 - 모든 주요 Agent의 Markdown spec이 존재한다.
-- `harness agent-specs`로 목록과 상세를 조회할 수 있다.
+- `harness agent-specs`로 에이전트 역할 목록과 상세를 조회할 수 있다.
+- `harness playbooks`로 Codex 실행 playbook 목록과 상세를 조회할 수 있다.
 - QA Agent는 `agents/specs/qa.md`를 읽어 QA 산출물에 Mission, Decision Rules, Hard Rules를 포함한다.
 - 다른 Agent는 아직 spec을 실제 실행 context로 완전히 사용하지 않는다.

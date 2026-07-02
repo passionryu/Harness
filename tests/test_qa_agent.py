@@ -11,6 +11,7 @@ from agents.runners.playwright_browser_runner import (
     format_playwright_report_section,
     should_run_ai_chat_quality_scenario,
     should_run_checkin_chat_scenario,
+    should_run_playwright_browser_qa,
 )
 from orchestrator.db.models import Task
 from orchestrator.services.qa_pdf import _build_html_document, _markdown_to_html, _render_screenshots
@@ -58,6 +59,24 @@ def test_checkin_chat_issue_does_not_trigger_ai_response_quality_scenario():
 
     assert should_run_checkin_chat_scenario(title, body)
     assert not should_run_ai_chat_quality_scenario(title, body)
+
+
+def test_playwright_browser_qa_requires_explicit_browser_or_supported_scenario():
+    assert not should_run_playwright_browser_qa(
+        "feFeature",
+        "[FE] 메인 페이지와 회원가입/로그인 모달 구현",
+        "따뜻한 정신 건강 서비스 메인 화면과 AI 채팅 진입점을 구현한다.",
+    )
+    assert should_run_playwright_browser_qa(
+        "feFeature",
+        "[FE] 회원가입 모달 Playwright 브라우저 검증",
+        "실제 브라우저에서 모달 플로우를 검증한다.",
+    )
+    assert should_run_playwright_browser_qa(
+        "bugfix",
+        "[Bugfix] 설정 색상 테마 반영",
+        "설정 색상 선택값이 실제 화면 분위기에 반영되어야 한다.",
+    )
 
 
 def test_fe_qa_agent_requires_frontend_runtime_before_human_qa(tmp_path, monkeypatch):

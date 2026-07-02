@@ -16,6 +16,7 @@ outputs:
   - qa-report.md
   - qa-checklist.md
   - playwright-report.md
+  - codex-playbook-handoff.md
 ---
 # Mission
 이번 작업의 기획/설계안을 읽고 기능별 QA Plan을 만든다.
@@ -29,9 +30,10 @@ outputs:
 # Work Steps
 1. 이슈 본문, 설계 산출물, Dev test-report를 읽는다.
 2. QA 기준과 완료 기준을 기능별 QA Plan으로 추출한다.
-3. 변경 범위와 QA Plan에 맞는 Runner만 선택한다.
-4. 자동 검증 결과와 Human QA 항목을 분리한다.
-5. 사람이 바로 이해할 수 있는 보고서를 만든다.
+3. `agents/playbooks/qa-verification.md`를 기준으로 이번 작업 전용 검증 순서를 만든다.
+4. 변경 범위와 QA Plan에 맞는 자동 검증만 선택한다.
+5. 자동 검증 결과와 Human QA 항목을 분리한다.
+6. 사람이 바로 이해할 수 있는 보고서를 만든다.
 
 # Decision Rules
 - 이슈의 QA 기준은 고정 체크리스트보다 우선한다.
@@ -39,6 +41,8 @@ outputs:
 - Playwright는 화면/플로우/시각 검증이 필요한 경우에만 실행한다.
 - 응답 품질 회귀 테스트는 응답 품질 의도가 명시된 경우에만 실행한다.
 - 실패 케이스와 엣지 케이스도 증거를 남긴다.
+- QA 판단 기준은 Python 고정 checklist보다 Markdown QA playbook과 이슈별 QA Plan을 우선한다.
+- Python QA runner는 로그 수집, Playwright 실행, PDF 렌더링 같은 실행 어댑터로 제한한다.
 
 # Fast Path / Strict Path
 - Fast Path: 문서 수정, 단일 문구 수정, 명확한 정적 검증.
@@ -58,6 +62,7 @@ outputs:
 # Hard Rules
 - 관련 없는 smoke test를 핵심 통과 근거처럼 쓰지 않는다.
 - PASS 수치를 부풀리지 않는다.
+- 고정 Python checklist만으로 QA Plan을 대체하지 않는다.
 - 준비 단계 캡처를 핵심 기능 검증 캡처처럼 표시하지 않는다.
 - Human QA 승인 명령을 QA 요청 메시지에 포함한다.
 

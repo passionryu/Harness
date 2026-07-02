@@ -27,6 +27,7 @@ class AgentSpec:
 
 
 DEFAULT_SPEC_DIR = Path(__file__).resolve().parent / "specs"
+DEFAULT_PLAYBOOK_DIR = Path(__file__).resolve().parent / "playbooks"
 REQUIRED_SECTIONS = ["Mission", "Decision Rules", "Hard Rules"]
 
 
@@ -35,6 +36,19 @@ def load_agent_spec(name: str, spec_dir: Path = DEFAULT_SPEC_DIR) -> AgentSpec:
     if not path.exists():
         raise AgentSpecError(f"Agent spec 파일이 없습니다: {path}")
     return parse_agent_spec(path.read_text(encoding="utf-8"), path=path)
+
+
+def load_agent_playbook(name: str) -> AgentSpec:
+    return load_agent_spec(name, DEFAULT_PLAYBOOK_DIR)
+
+
+def list_markdown_specs(spec_dir: Path = DEFAULT_SPEC_DIR) -> list[AgentSpec]:
+    specs: list[AgentSpec] = []
+    for path in sorted(spec_dir.glob("*.md")):
+        if path.name.upper() == "README.MD":
+            continue
+        specs.append(load_agent_spec(path.stem, spec_dir))
+    return specs
 
 
 def parse_agent_spec(markdown: str, path: Path | None = None) -> AgentSpec:

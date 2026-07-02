@@ -2,7 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from agents.agent_spec import AgentSpecError, DEFAULT_SPEC_DIR, load_agent_spec, parse_agent_spec, render_agent_spec_context
+from agents.agent_spec import (
+    AgentSpecError,
+    DEFAULT_PLAYBOOK_DIR,
+    DEFAULT_SPEC_DIR,
+    list_markdown_specs,
+    load_agent_spec,
+    parse_agent_spec,
+    render_agent_spec_context,
+)
 
 
 def test_parse_agent_spec_reads_frontmatter_and_required_sections():
@@ -80,5 +88,25 @@ def test_all_checked_in_agent_specs_load():
         spec = load_agent_spec(name)
         assert spec.name == name
         assert spec.section("Mission")
+        assert spec.section("Decision Rules")
+        assert spec.section("Hard Rules")
+
+
+def test_all_checked_in_codex_playbooks_load():
+    expected_names = {
+        "frontend-implementation",
+        "backend-kotlin-spring",
+        "api-connect",
+        "qa-verification",
+        "infra-config",
+        "documentation",
+    }
+    specs = list_markdown_specs(DEFAULT_PLAYBOOK_DIR)
+    actual_names = {spec.name for spec in specs}
+
+    assert expected_names <= actual_names
+    for spec in specs:
+        assert spec.section("Mission")
+        assert spec.section("Codex Execution Steps")
         assert spec.section("Decision Rules")
         assert spec.section("Hard Rules")

@@ -44,6 +44,29 @@ def test_cli_agent_specs_returns_specific_spec(capsys):
     assert "자동 검증하지 못한 항목은 PASS로 표시하지 않는다." in payload["decision_rules"]
 
 
+def test_cli_playbooks_lists_markdown_playbooks(capsys):
+    exit_code = cli.main(["--json", "playbooks"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    names = {item["name"] for item in payload["playbooks"]}
+    assert {"frontend-implementation", "backend-kotlin-spring", "qa-verification"} <= names
+
+
+def test_cli_playbooks_returns_specific_playbook(capsys):
+    exit_code = cli.main(["--json", "playbooks", "--name", "frontend-implementation"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert payload["name"] == "frontend-implementation"
+    assert "프론트엔드" in payload["summary"]
+    assert "FE 작업을 DDD Modeling Runner로 보내지 않는다." in payload["hard_rules"]
+
+
 # CLI sync 명령이 GitHub 이슈를 하네스 DB task로 저장하는지 검증한다.
 def test_cli_sync_issue_imports_github_issue(monkeypatch, capsys):
     issue_number = uuid4().int % 1_000_000_000
