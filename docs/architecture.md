@@ -34,7 +34,6 @@ ai-harness/
 │   ├── db/
 │   └── services/
 ├── agents/
-├── prompts/
 ├── workflows/
 ├── rules/
 ├── sandbox/

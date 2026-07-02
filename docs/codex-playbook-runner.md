@@ -73,7 +73,6 @@ harness playbooks --name frontend-implementation
 다만 새 기능의 판단 기준은 Python runner 내부 조건문이 아니라 Markdown playbook에 먼저 추가한다.
 Python runner는 다음 역할로 격하한다.
 
-- legacy compatibility
 - repeatable command adapter
 - evidence collector
 - safety guard

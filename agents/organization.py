@@ -34,16 +34,6 @@ DEVELOPMENT_RUNNERS = [
     RunnerDefinition("Test Implementation Runner", "단위, 통합, smoke 테스트를 작성한다.", "현재는 capability 판단과 산출물 안내부터 수행한다."),
 ]
 
-FIX_DEVELOP_RUNNERS = [
-    RunnerDefinition("Failure Log Analyzer", "실패한 run과 로그를 읽고 원인을 분류한다.", "fix-develop의 기본 분석 단계로 동작한다."),
-    RunnerDefinition("Compile Error Fix Runner", "컴파일 실패를 최소 수정으로 복구한다.", "아직 needs_human 중심이다."),
-    RunnerDefinition("Test Failure Fix Runner", "깨진 테스트를 의도에 맞게 복구한다.", "CORS preflight 실패 패턴부터 지원한다."),
-    RunnerDefinition("Dependency/Config Fix Runner", "의존성 또는 설정 누락을 복구한다.", "아직 needs_human 중심이다."),
-    RunnerDefinition("Contract Mismatch Fix Runner", "FE/BE contract 불일치를 복구한다.", "아직 needs_human 중심이다."),
-    RunnerDefinition("Frontend Build Fix Runner", "프론트엔드 빌드와 타입 오류를 복구한다.", "아직 needs_human 중심이다."),
-    RunnerDefinition("Regression Verification Runner", "수정 후 회귀 검증을 다시 실행한다.", "검증 명령 재실행으로 일부 지원한다."),
-]
-
 QA_RUNNERS = [
     RunnerDefinition("Integration Test Runner", "서비스 경계 간 통합 테스트를 실행한다.", "기존 QA 검증과 연결한다."),
     RunnerDefinition("Curl Scenario Runner", "실제 API curl 시나리오를 실행한다.", "BE QA에서 일부 지원한다."),
@@ -82,7 +72,6 @@ def render_ai_organization_catalog() -> list[str]:
     sections = [
         ("Product Planner Agent", PRODUCT_PLANNER_RUNNERS),
         ("Development Agent", DEVELOPMENT_RUNNERS),
-        ("Fix Develop Agent", FIX_DEVELOP_RUNNERS),
         ("QA Agent", QA_RUNNERS),
         ("Human QA Support", HUMAN_QA_SUPPORT_RUNNERS),
     ]
