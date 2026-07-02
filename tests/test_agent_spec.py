@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from agents.agent_spec import AgentSpecError, parse_agent_spec, render_agent_spec_context
+from agents.agent_spec import AgentSpecError, DEFAULT_SPEC_DIR, load_agent_spec, parse_agent_spec, render_agent_spec_context
 
 
 def test_parse_agent_spec_reads_frontmatter_and_required_sections():
@@ -60,3 +60,25 @@ outputs: [qa-report.md]
 """,
             path=Path("qa.md"),
         )
+
+
+def test_all_checked_in_agent_specs_load():
+    expected_names = {
+        "design",
+        "plan",
+        "dev",
+        "review",
+        "qa",
+        "documentation",
+        "domain_knowledge",
+        "planning_assistant",
+    }
+    actual_names = {path.stem for path in DEFAULT_SPEC_DIR.glob("*.md")}
+
+    assert expected_names <= actual_names
+    for name in expected_names:
+        spec = load_agent_spec(name)
+        assert spec.name == name
+        assert spec.section("Mission")
+        assert spec.section("Decision Rules")
+        assert spec.section("Hard Rules")
