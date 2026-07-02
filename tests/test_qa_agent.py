@@ -151,7 +151,10 @@ def test_fe_qa_agent_requires_frontend_runtime_before_human_qa(tmp_path, monkeyp
 
     assert result.status == AgentStatus.SUCCESS
     report = artifact_root / task_id / "qa" / "qa-report.md"
+    codex_handoff = artifact_root / task_id / "qa" / "codex-playbook-handoff.md"
     content = report.read_text(encoding="utf-8")
+    assert codex_handoff.exists()
+    assert "agents/playbooks/qa-verification.md" in codex_handoff.read_text(encoding="utf-8")
     assert "프론트엔드 dev 서버 응답" in content
     assert "프론트엔드 화면 주요 문구 확인" in content
     assert "GET http://localhost:3000" in content

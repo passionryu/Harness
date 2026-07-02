@@ -12,7 +12,7 @@ from git import Repo
 from agents.agent_spec import AgentSpecError, load_agent_spec, render_agent_spec_context
 from agents.base import AgentInput, AgentResult, AgentStatus, ArtifactSpec
 from agents.organization import HUMAN_QA_SUPPORT_RUNNERS, QA_RUNNERS, render_runner_definitions
-from agents.qa_plan import build_qa_plan, qa_plan_coverage_lines, render_qa_plan_markdown
+from agents.qa_plan import QaPlan, build_qa_plan, qa_plan_coverage_lines, render_qa_plan_markdown
 from agents.runners.playwright_browser_runner import (
     format_playwright_report_section,
     run_playwright_browser_qa,
@@ -398,6 +398,31 @@ def _format_qa_command_section(command: str, exit_code: int, stdout: str, stderr
         "```text",
         stderr.strip() or "(비어 있음)",
         "```",
+    ]
+
+
+def _render_codex_qa_playbook_handoff(qa_plan: QaPlan, passed: bool) -> list[str]:
+    return [
+        "# Codex QA Playbook Handoff",
+        "",
+        "## 선택한 Playbook",
+        "- `agents/playbooks/qa-verification.md`",
+        "",
+        "## 실행 원칙",
+        "- QA 판단은 이슈별 QA Plan과 `qa-verification` playbook을 우선한다.",
+        "- Python QA runner는 로그 수집, Playwright 실행, PDF 렌더링 같은 실행 어댑터로 본다.",
+        "- 자동 검증하지 않은 항목은 PASS로 표시하지 않는다.",
+        "",
+        "## QA Plan 상태",
+        f"- fallback_used: `{qa_plan.fallback_used}`",
+        f"- item_count: `{len(qa_plan.items)}`",
+        f"- result: `{'pass' if passed else 'fail'}`",
+        "",
+        "## 다음 Codex 실행 체크",
+        "- [ ] 이슈/설계/Dev artifact에서 QA 기준을 추출했다.",
+        "- [ ] 변경 범위와 무관한 smoke test를 핵심 근거로 쓰지 않았다.",
+        "- [ ] 성공/실패/엣지 케이스 증거를 분리했다.",
+        "- [ ] Human QA 체크리스트와 승인 명령을 남겼다.",
     ]
 
 
@@ -1428,6 +1453,11 @@ class QAAgent:
         agent_spec_lines = _agent_markdown_spec_lines("qa")
         qa_plan_path = task_dir / "qa-plan.md"
         qa_plan_path.write_text("\n".join(qa_plan_lines), encoding="utf-8")
+        codex_handoff = task_dir / "codex-playbook-handoff.md"
+        codex_handoff.write_text(
+            "\n".join(_render_codex_qa_playbook_handoff(qa_plan, passed)),
+            encoding="utf-8",
+        )
         qa_request = _extract_section(input_data.body, "Human QA Request")
         swagger_url = settings.target_swagger_url if issue_type in {"beFeature", "apiConnect", "fullstackFeature", "config"} or backend_qa_issue else "N/A"
         frontend_check_types = {"feFeature", "bugfix", "apiConnect", "fullstackFeature"}
@@ -1510,6 +1540,7 @@ class QAAgent:
                 ArtifactSpec("qa-plan", Path(qa_plan_path)),
                 ArtifactSpec("qa-report", Path(report)),
                 ArtifactSpec("qa-checklist", Path(checklist)),
+                ArtifactSpec("codex-playbook-handoff", Path(codex_handoff)),
                 *extra_artifacts,
             ],
             error=None if passed else "QA 검증이 실패했습니다. qa-report.md를 확인하세요.",

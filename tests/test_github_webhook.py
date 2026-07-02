@@ -835,12 +835,16 @@ def test_issue_comment_develop_command_approves_plan_and_runs_dev(tmp_path, monk
     task_id = plan_response.json()["task_id"]
     commit_plan = tmp_path / "artifacts" / task_id / "dev" / "commit-plan.md"
     dev_status = tmp_path / "artifacts" / task_id / "dev" / "dev-status.md"
+    codex_handoff = tmp_path / "artifacts" / task_id / "dev" / "codex-playbook-handoff.md"
     assert commit_plan.exists()
     assert dev_status.exists()
+    assert codex_handoff.exists()
     assert expected_branch in commit_plan.read_text()
     assert "selected_runner: `frontend_implementation_runner, test_implementation_runner`" in (
         commit_plan.read_text()
     )
+    assert "codex_playbooks: `frontend-implementation`" in commit_plan.read_text()
+    assert "agents/playbooks/frontend-implementation.md" in codex_handoff.read_text()
     assert "status: `needs_human`" in dev_status.read_text()
     assert (tmp_path / "artifacts" / task_id / "dev" / "frontend_implementation_runner.md").exists()
     assert (tmp_path / "artifacts" / task_id / "dev" / "test_implementation_runner.md").exists()

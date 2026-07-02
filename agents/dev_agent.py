@@ -134,6 +134,63 @@ def _commit_units(issue_type: str) -> list[tuple[str, str]]:
     ]
 
 
+def _contains_any(text: str, keywords: list[str]) -> bool:
+    return any(keyword.lower() in text.lower() for keyword in keywords)
+
+
+# Dev Agent의 실행 기준이 되는 Codex Markdown playbook을 선택한다.
+def _codex_playbooks(issue_type: str, title: str, body: str) -> list[str]:
+    text = f"{title}\n{body}"
+    if issue_type == "feFeature":
+        return ["frontend-implementation"]
+    if issue_type == "beFeature":
+        return ["backend-kotlin-spring"]
+    if issue_type == "apiConnect":
+        return ["api-connect"]
+    if issue_type == "fullstackFeature":
+        return ["backend-kotlin-spring", "frontend-implementation", "api-connect"]
+    if issue_type in {"config", "infra"}:
+        return ["infra-config"]
+    if issue_type == "docs":
+        return ["documentation"]
+
+    playbooks: list[str] = []
+    if _contains_any(text, ["frontend", "next", "tsx", "화면", "버튼", "모달", "ui", "ux", "web"]):
+        playbooks.append("frontend-implementation")
+    if _contains_any(text, ["backend", "api", "spring", "kotlin", "db", "redis", "서버", "도메인"]):
+        playbooks.append("backend-kotlin-spring")
+    if _contains_any(text, ["연동", "contract", "request", "response", "client"]):
+        playbooks.append("api-connect")
+    if _contains_any(text, ["infra", "config", "환경", "docker", "railway", "github actions", "jwt"]):
+        playbooks.append("infra-config")
+    return playbooks or ["frontend-implementation"]
+
+
+def _render_codex_playbook_handoff(playbooks: list[str], runner_name: str, result_status: AgentStatus) -> list[str]:
+    lines = [
+        "# Codex Playbook Handoff",
+        "",
+        "## 선택한 Playbook",
+        *[f"- `agents/playbooks/{name}.md`" for name in playbooks],
+        "",
+        "## 실행 원칙",
+        "- 위 Markdown playbook을 Python runner 코드보다 먼저 읽고 따른다.",
+        "- Codex가 직접 코드베이스를 읽고, 필요한 파일을 수정하고, 변경 범위에 맞는 테스트를 실행한다.",
+        "- Python runner는 상태 기록, 반복 명령 실행, 외부 I/O 수집이 필요한 경우의 compatibility adapter로만 본다.",
+        "",
+        "## Legacy Runner 상태",
+        f"- selected_runner: `{runner_name}`",
+        f"- runner_status: `{result_status.value}`",
+        "",
+        "## 다음 Codex 실행 체크",
+        "- [ ] 이슈 본문과 승인된 design artifact를 읽었다.",
+        "- [ ] 선택된 playbook의 `Codex Execution Steps`를 적용했다.",
+        "- [ ] 관련 없는 runner로 우회하지 않았다.",
+        "- [ ] 변경 파일, 테스트 결과, 남은 위험을 보고했다.",
+    ]
+    return lines
+
+
 # 백엔드 구현 규칙을 반드시 적용해야 하는 이슈 타입인지 판단한다.
 def _requires_backend_style(context: DevRunnerContext) -> bool:
     return context.issue_type in {"beFeature", "apiConnect", "fullstackFeature"} or is_backend_change_context(context)
@@ -287,6 +344,7 @@ class DevAgent:
         base_branch = settings.development_base_branch
         feature_name = _feature_name(input_data.title)
         commit_units = _commit_units(issue_type)
+        codex_playbooks = _codex_playbooks(issue_type, input_data.title, input_data.body)
         backend_style_lines = ["- backend orchestration style skill: repository context not initialized"]
         refactor_request = _extract_refactor_request(input_data.body)
         is_refactor_mode = _is_refactor_mode(input_data.body)
@@ -394,6 +452,7 @@ class DevAgent:
                     f"- base_branch: `{base_branch}`",
                     f"- branch_status: {branch_status}",
                     f"- selected_runner: `{runner_name}`",
+                    f"- codex_playbooks: {', '.join(f'`{name}`' for name in codex_playbooks)}",
                     f"- mode: `{'refactor' if is_refactor_mode else 'develop'}`",
                     "",
                     "## 규칙",
@@ -441,6 +500,7 @@ class DevAgent:
                     f"- base_branch: `{base_branch}`",
                     f"- branch_status: {branch_status}",
                     f"- selected_runner: `{runner_name}`",
+                    f"- codex_playbooks: {', '.join(f'`{name}`' for name in codex_playbooks)}",
                     f"- mode: `{'refactor' if is_refactor_mode else 'develop'}`",
                     f"- current_step: {'완료' if result_status == AgentStatus.SUCCESS else '구현 확인 필요'}",
                     "- visibility: GitHub 이슈 댓글과 이 artifact에서 확인합니다.",
@@ -519,6 +579,12 @@ class DevAgent:
             encoding="utf-8",
         )
 
+        codex_handoff = task_dir / "codex-playbook-handoff.md"
+        codex_handoff.write_text(
+            "\n".join(_render_codex_playbook_handoff(codex_playbooks, runner_name, result_status)),
+            encoding="utf-8",
+        )
+
         report = task_dir / "test-report.md"
         report.write_text(
             "\n".join(
@@ -529,6 +595,7 @@ class DevAgent:
                     f"- base_branch: `{base_branch}`",
                     f"- branch_status: {branch_status}",
                     f"- selected_runner: `{runner_name}`",
+                    f"- codex_playbooks: {', '.join(f'`{name}`' for name in codex_playbooks)}",
                     f"- runner_status: `{result_status.value}`",
                     "- test code: 각 구현 단위마다 테스트 코드가 필요합니다.",
                     "- smoke test: 실행된 경우 아래 command 섹션에서 확인하세요.",
@@ -556,6 +623,7 @@ class DevAgent:
             artifacts=[
                 ArtifactSpec("commit-plan", Path(commit_plan)),
                 ArtifactSpec("dev-status", Path(status)),
+                ArtifactSpec("codex-playbook-handoff", Path(codex_handoff)),
                 ArtifactSpec("backend-style-checklist", Path(style_guide)),
                 ArtifactSpec("patch", Path(patch)),
                 ArtifactSpec("test-report", Path(report)),
