@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from agents.agent_spec import DEFAULT_SPEC_DIR, load_agent_spec
 from agents.base import AgentInput, AgentStatus
 from agents.documentation_agent import publish_harness_history_record
 from agents.planning_assistant_agent import PlanningAssistantAgent
@@ -638,6 +639,37 @@ def _add_issue_option(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number")
 
 
+def _agent_specs(args: argparse.Namespace) -> dict[str, Any]:
+    if args.name:
+        spec = load_agent_spec(args.name)
+        return {
+            "status": "ok",
+            "name": spec.name,
+            "version": spec.version,
+            "summary": spec.summary,
+            "path": str(spec.path),
+            "triggers": spec.triggers,
+            "inputs": spec.inputs,
+            "outputs": spec.outputs,
+            "mission": spec.section("Mission"),
+            "decision_rules": spec.section("Decision Rules"),
+            "hard_rules": spec.section("Hard Rules"),
+        }
+
+    specs = []
+    for path in sorted(DEFAULT_SPEC_DIR.glob("*.md")):
+        spec = load_agent_spec(path.stem)
+        specs.append(
+            {
+                "name": spec.name,
+                "version": spec.version,
+                "summary": spec.summary,
+                "path": str(spec.path),
+            }
+        )
+    return {"status": "ok", "specs": specs}
+
+
 # CLI 하위 명령과 handler를 등록한다.
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -646,6 +678,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", action="store_true", help="결과를 JSON으로 출력")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    agent_specs = subparsers.add_parser("agent-specs", help="Markdown Agent spec 목록 또는 상세 조회")
+    agent_specs.add_argument("--name", default="", help="상세 조회할 Agent spec 이름. 예: qa")
+    agent_specs.set_defaults(handler=_agent_specs)
 
     for command, help_text in [
         ("design", "GitHub issue를 기반으로 Design Agent를 실행"),

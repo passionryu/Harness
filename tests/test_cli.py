@@ -21,6 +21,29 @@ def test_cli_status_returns_not_found_for_unknown_issue(capsys):
     assert f"#{issue_number}" in payload["reason"]
 
 
+def test_cli_agent_specs_lists_markdown_specs(capsys):
+    exit_code = cli.main(["--json", "agent-specs"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    names = {item["name"] for item in payload["specs"]}
+    assert {"design", "dev", "qa", "documentation"} <= names
+
+
+def test_cli_agent_specs_returns_specific_spec(capsys):
+    exit_code = cli.main(["--json", "agent-specs", "--name", "qa"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert payload["name"] == "qa"
+    assert "기획/설계안" in payload["summary"]
+    assert "자동 검증하지 못한 항목은 PASS로 표시하지 않는다." in payload["decision_rules"]
+
+
 # CLI sync 명령이 GitHub 이슈를 하네스 DB task로 저장하는지 검증한다.
 def test_cli_sync_issue_imports_github_issue(monkeypatch, capsys):
     issue_number = uuid4().int % 1_000_000_000
