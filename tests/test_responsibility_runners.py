@@ -79,7 +79,7 @@ def test_inspect_codebase_reads_server_migrations(tmp_path):
     assert snapshot.migrations == ["V1__init.sql"]
 
 
-def test_db_migration_runner_applies_explicit_sql(tmp_path):
+def test_db_migration_runner_leaves_codex_handoff_without_writing_migration(tmp_path):
     context = _make_context(
         tmp_path,
         "\n".join(
@@ -94,14 +94,17 @@ def test_db_migration_runner_applies_explicit_sql(tmp_path):
 
     result = DBMigrationRunner().run(context)
 
-    assert result.status == AgentStatus.SUCCESS
+    assert result.status == AgentStatus.NEEDS_HUMAN
     migration = (
         context.repo_path
         / "apps/server/modules/bootstrap/app/src/main/resources/db/migration/V2__테스트_기능.sql"
     )
-    assert migration.exists()
-    assert "login_id" in migration.read_text(encoding="utf-8")
-    assert context.repo.head.commit.message == "[테스트 기능] : DB migration 추가"
+    assert not migration.exists()
+    report = (context.task_dir / "db_migration_runner.md").read_text(encoding="utf-8")
+    assert "agents/playbooks/backend-kotlin-spring.md" in report
+    assert "repository_changes: none" in report
+    assert "alter table member add column login_id" in report
+    assert context.repo.head.commit.message == "Initial commit"
 
 
 def test_api_implementation_runner_does_not_write_partial_contract(tmp_path):
@@ -112,9 +115,9 @@ def test_api_implementation_runner_does_not_write_partial_contract(tmp_path):
     assert result.status == AgentStatus.NEEDS_HUMAN
     contract = context.repo_path / "docs/api/harness-12-post-api-members-signup.md"
     assert not contract.exists()
-    assert "API 자동 구현 capability가 부족한 경우" in (context.task_dir / "api_implementation_runner.md").read_text(
-        encoding="utf-8"
-    )
+    report = (context.task_dir / "api_implementation_runner.md").read_text(encoding="utf-8")
+    assert "agents/playbooks/backend-kotlin-spring.md" in report
+    assert "repository_changes: none" in report
     assert context.repo.head.commit.message == "Initial commit"
 
 
@@ -124,7 +127,7 @@ def test_api_implementation_runner_does_not_handle_api_connect(tmp_path):
     assert APIImplementationRunner().can_handle(context) is False
 
 
-def test_api_connect_runner_connects_login_modal_to_api(tmp_path):
+def test_api_connect_runner_leaves_codex_handoff_without_modifying_frontend(tmp_path):
     context = _make_context(
         tmp_path,
         "로그인 화면은 `POST /api/auth/login` API와 연동한다.",
@@ -166,14 +169,15 @@ def test_api_connect_runner_connects_login_modal_to_api(tmp_path):
 
     result = APIConnectRunner().run(context)
 
-    assert result.status == AgentStatus.SUCCESS
+    assert result.status == AgentStatus.NEEDS_HUMAN
     auth_api = context.repo_path / "apps/web/lib/auth-api.ts"
-    assert auth_api.exists()
-    assert "/api/auth/login" in auth_api.read_text(encoding="utf-8")
+    assert not auth_api.exists()
     page_text = page.read_text(encoding="utf-8")
-    assert "await loginMember" in page_text
-    assert "myMentalCare.accessToken" in page_text
-    assert context.repo.head.commit.message == "[테스트 기능] : 로그인 API 프론트엔드 연동"
+    assert "await loginMember" not in page_text
+    report = (context.task_dir / "api_connect_runner.md").read_text(encoding="utf-8")
+    assert "agents/playbooks/api-connect.md" in report
+    assert "POST /api/auth/login" in report
+    assert context.repo.head.commit.message == "Add login modal"
 
 
 def test_ddd_modeling_runner_does_not_write_partial_scaffold(tmp_path):
@@ -193,11 +197,13 @@ def test_ddd_modeling_runner_does_not_write_partial_scaffold(tmp_path):
     assert not (base_dir / "RegisterMemberResult.kt").exists()
     assert not service.exists()
     assert not policy_checker.exists()
-    assert "불완전한 TODO 파일" in (context.task_dir / "ddd_modeling_runner.md").read_text(encoding="utf-8")
+    report = (context.task_dir / "ddd_modeling_runner.md").read_text(encoding="utf-8")
+    assert "agents/playbooks/backend-kotlin-spring.md" in report
+    assert "repository_changes: none" in report
     assert context.repo.head.commit.message == "Initial commit"
 
 
-def test_refactoring_runner_splits_controller_data_classes(tmp_path):
+def test_refactoring_runner_leaves_codex_handoff_without_rewriting_controller(tmp_path):
     context = _make_context(
         tmp_path,
         "\n".join(
@@ -235,9 +241,11 @@ def test_refactoring_runner_splits_controller_data_classes(tmp_path):
 
     result = RefactoringRunner().run(context)
 
-    assert result.status == AgentStatus.SUCCESS
+    assert result.status == AgentStatus.NEEDS_HUMAN
     dto = controller_dir / "MemberRequest.kt"
-    assert dto.exists()
-    assert "data class MemberRequest" in dto.read_text(encoding="utf-8")
-    assert "data class MemberRequest" not in controller.read_text(encoding="utf-8")
-    assert context.repo.head.commit.message == "[테스트 기능] : controller data class 분리"
+    assert not dto.exists()
+    assert "data class MemberRequest" in controller.read_text(encoding="utf-8")
+    report = (context.task_dir / "refactoring_runner.md").read_text(encoding="utf-8")
+    assert "agents/playbooks/backend-kotlin-spring.md" in report
+    assert "repository_changes: none" in report
+    assert context.repo.head.commit.message == "Add controller"

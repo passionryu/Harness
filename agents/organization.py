@@ -24,14 +24,14 @@ PRODUCT_PLANNER_RUNNERS = [
 ]
 
 DEVELOPMENT_RUNNERS = [
-    RunnerDefinition("DDD Modeling Runner", "도메인 모델, 정책, 유스케이스 흐름을 구현한다.", "현재는 capability 판단과 산출물 안내부터 수행한다."),
-    RunnerDefinition("DB Migration Runner", "스키마 변경, 인덱스, nullable, unique 정책을 구현한다.", "현재는 capability 판단과 산출물 안내부터 수행한다."),
-    RunnerDefinition("API Implementation Runner", "API endpoint, request/response, application 호출을 구현한다.", "현재는 capability 판단과 산출물 안내부터 수행한다."),
-    RunnerDefinition("Frontend Implementation Runner", "화면, 상태, 폼, 사용자 메시지를 구현한다.", "현재는 capability 판단과 산출물 안내부터 수행한다."),
-    RunnerDefinition("API Connect Runner", "프론트엔드 요청과 백엔드 contract를 연결한다.", "현재는 capability 판단과 산출물 안내부터 수행한다."),
-    RunnerDefinition("Event Flow Runner", "비동기 이벤트, 실시간 흐름, 상태 전이를 구현한다.", "현재는 capability 판단과 산출물 안내부터 수행한다."),
-    RunnerDefinition("Refactoring Runner", "사람이 요청한 구조 개선과 책임 분리를 수행한다.", "현재는 기존 refactor 흐름과 연결한다."),
-    RunnerDefinition("Test Implementation Runner", "단위, 통합, smoke 테스트를 작성한다.", "현재는 capability 판단과 산출물 안내부터 수행한다."),
+    RunnerDefinition("DDD Modeling Runner", "도메인 모델, 정책, 유스케이스 흐름 책임을 식별한다.", "Codex backend playbook handoff artifact를 생성한다."),
+    RunnerDefinition("DB Migration Runner", "스키마 변경, 인덱스, nullable, unique 정책 책임을 식별한다.", "명시된 DDL과 backend playbook handoff artifact를 생성한다."),
+    RunnerDefinition("API Implementation Runner", "API endpoint, request/response, application 연결 책임을 식별한다.", "Codex backend playbook handoff artifact를 생성한다."),
+    RunnerDefinition("Frontend Implementation Runner", "화면, 상태, 폼, 사용자 메시지 책임을 식별한다.", "Codex frontend playbook handoff artifact를 생성한다."),
+    RunnerDefinition("API Connect Runner", "프론트엔드 요청과 백엔드 contract 연결 책임을 식별한다.", "Codex API connect playbook handoff artifact를 생성한다."),
+    RunnerDefinition("Event Flow Runner", "비동기 이벤트, 실시간 흐름, 상태 전이 책임을 식별한다.", "Codex backend playbook handoff artifact를 생성한다."),
+    RunnerDefinition("Refactoring Runner", "사람이 요청한 구조 개선과 책임 분리 범위를 식별한다.", "Codex playbook handoff artifact를 생성한다."),
+    RunnerDefinition("Test Implementation Runner", "단위, 통합, smoke 테스트 명령을 실행한다.", "반복 가능한 테스트 명령 실행과 결과 수집을 수행한다."),
 ]
 
 QA_RUNNERS = [
@@ -85,39 +85,39 @@ def render_ai_organization_catalog() -> list[str]:
 def work_units_for_issue_type(issue_type: str) -> list[WorkUnit]:
     if issue_type == "feFeature":
         return [
-            WorkUnit("Frontend Implementation Runner", "사용자 화면과 입력 흐름 구현", "화면/컴포넌트/상태 변경"),
-            WorkUnit("Test Implementation Runner", "프론트엔드 smoke 또는 단위 테스트 작성", "테스트 스크립트와 결과"),
+            WorkUnit("Frontend Implementation Runner", "사용자 화면과 입력 흐름 책임 식별", "frontend playbook handoff"),
+            WorkUnit("Test Implementation Runner", "프론트엔드 smoke 또는 단위 테스트 명령 실행", "테스트 명령과 결과"),
         ]
     if issue_type == "beFeature":
         return [
-            WorkUnit("DDD Modeling Runner", "도메인 모델과 정책 흐름 구현", "domain/application 변경"),
-            WorkUnit("DB Migration Runner", "필요한 DB 변경 구현", "DDL 또는 migration"),
-            WorkUnit("API Implementation Runner", "API endpoint와 request/response 구현", "controller/DTO/application 연결"),
-            WorkUnit("Test Implementation Runner", "도메인/API 테스트 작성", "Gradle 테스트 결과"),
+            WorkUnit("DDD Modeling Runner", "도메인 모델과 정책 흐름 책임 식별", "backend playbook handoff"),
+            WorkUnit("DB Migration Runner", "필요한 DB 변경 책임 식별", "DDL 요약과 backend playbook handoff"),
+            WorkUnit("API Implementation Runner", "API endpoint와 request/response 책임 식별", "endpoint 요약과 backend playbook handoff"),
+            WorkUnit("Test Implementation Runner", "도메인/API 테스트 명령 실행", "Gradle 테스트 결과"),
         ]
     if issue_type == "apiConnect":
         return [
-            WorkUnit("API Connect Runner", "FE/BE contract 연결", "API client와 endpoint 연결"),
+            WorkUnit("API Connect Runner", "FE/BE contract 연결 책임 식별", "api-connect playbook handoff"),
             WorkUnit("Curl Scenario Runner", "실제 API 호출 시나리오 검증", "curl 결과"),
             WorkUnit("Regression Detector", "기존 회원가입/로그인 등 주요 흐름 회귀 확인", "회귀 검증 결과"),
         ]
     if issue_type == "fullstackFeature":
         return [
-            WorkUnit("DDD Modeling Runner", "도메인 모델과 정책 흐름 구현", "domain/application 변경"),
-            WorkUnit("DB Migration Runner", "DB schema와 제약 조건 구현", "DDL 또는 migration"),
-            WorkUnit("API Implementation Runner", "백엔드 API contract와 endpoint 구현", "API 코드와 테스트"),
-            WorkUnit("Frontend Implementation Runner", "사용자 화면과 상태 구현", "Next.js 화면/컴포넌트"),
-            WorkUnit("API Connect Runner", "프론트 요청과 백엔드 응답 연결", "API client와 submit 흐름"),
-            WorkUnit("Test Implementation Runner", "FE/BE 자동 검증 작성", "테스트 코드와 결과"),
+            WorkUnit("DDD Modeling Runner", "도메인 모델과 정책 흐름 책임 식별", "backend playbook handoff"),
+            WorkUnit("DB Migration Runner", "DB schema와 제약 조건 책임 식별", "DDL 요약과 backend playbook handoff"),
+            WorkUnit("API Implementation Runner", "백엔드 API contract와 endpoint 책임 식별", "endpoint 요약과 backend playbook handoff"),
+            WorkUnit("Frontend Implementation Runner", "사용자 화면과 상태 책임 식별", "frontend playbook handoff"),
+            WorkUnit("API Connect Runner", "프론트 요청과 백엔드 응답 연결 책임 식별", "api-connect playbook handoff"),
+            WorkUnit("Test Implementation Runner", "FE/BE 검증 명령 실행", "테스트 명령과 결과"),
         ]
     if issue_type in {"config", "infra"}:
         return [
-            WorkUnit("Dependency/Config Fix Runner", "설정/의존성 변경 범위 확인", "설정 파일 변경"),
+            WorkUnit("Dependency/Config Fix Runner", "설정/의존성 변경 범위 확인", "infra-config playbook handoff"),
             WorkUnit("Security Boundary Validator", "보안 경계와 헬스체크 검증", "검증 결과"),
         ]
     return [
         WorkUnit("Requirement Clarifier", "요구사항을 구현 가능한 작업으로 명확화", "질문과 결정 사항"),
-        WorkUnit("Risk Detector", "자동 구현 위험과 수동 판단 지점을 탐지", "risk-register.md"),
+        WorkUnit("Risk Detector", "Codex handoff와 수동 판단 지점을 탐지", "risk-register.md"),
     ]
 
 

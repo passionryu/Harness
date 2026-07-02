@@ -608,13 +608,13 @@ class DevAgent:
             encoding="utf-8",
         )
 
-        action_label = "리팩터링" if is_refactor_mode else "개발 구현"
+        action_label = "리팩터링" if is_refactor_mode else "개발"
         if result_status == AgentStatus.SUCCESS and commits:
-            summary = f"{action_label}이 {runner_name}에 의해 {branch_name}에서 완료되었습니다. 커밋 기록 {len(commits)}개가 생성되었습니다."
+            summary = f"{action_label}이 Codex playbook 기준으로 {branch_name}에서 완료되었습니다. 커밋 기록 {len(commits)}개가 생성되었습니다."
         elif result_status == AgentStatus.SUCCESS:
-            summary = f"{action_label} 브랜치가 준비되었습니다: {branch_name}. 커밋 계획이 생성되었습니다."
+            summary = f"{action_label} 브랜치가 준비되었습니다: {branch_name}. 커밋 계획과 Codex playbook handoff가 생성되었습니다."
         else:
-            summary = f"{action_label} 러너가 {branch_name}에서 자동 구현을 완료하지 못했습니다: {runner_error}"
+            summary = f"{action_label} runner가 {branch_name}에서 Codex handoff 또는 도구 실행을 완료하지 못했습니다: {runner_error}"
 
         return AgentResult(
             status=result_status,

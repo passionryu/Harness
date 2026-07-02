@@ -341,9 +341,10 @@ artifacts/{task_id}/dev/test-report.md
 
 주의:
 
-- 현재 Dev Agent는 모든 기능을 완전 자동 구현하지 않는다.
+- 현재 Dev Agent의 구현 판단 기준은 Python 자동 개발자가 아니라 `agents/playbooks/*.md`이다.
+- 앱 코드를 생성하던 runner는 Codex handoff adapter로 동작한다.
 - runner capability가 부족하면 `needs_human`으로 멈춘다.
-- 실패하면 Codex 대화형 수정 또는 Dev Agent 내부 runner 확장으로 이어간다.
+- 실패하면 Codex 대화형 수정 또는 필요한 도구 호출 adapter 보강으로 이어간다.
 
 ### `harness fix-develop` Deprecated
 
@@ -387,7 +388,7 @@ harness refactor --issue 8 --note-file ./notes/refactor-issue-8.md
 
 언제 쓰는가:
 
-- 자동 구현 결과가 마음에 들지 않을 때
+- Codex 구현 결과가 마음에 들지 않을 때
 - 코드 스타일, DDD 경계, DTO 분리, 메시지 정책 등을 사람이 보정하고 싶을 때
 
 ### `harness qa`
@@ -818,9 +819,9 @@ harness qa --issue 8
 
 의미:
 
-- 현재 runner가 안전하게 자동 구현하기 어렵다.
+- 현재 runner가 안전한 Codex handoff 또는 도구 실행으로 처리하기 어렵다.
 - 요구사항이 불명확하다.
-- 로그는 읽었지만 자동 수리 전략에 매칭되지 않았다.
+- 로그는 읽었지만 적용할 playbook 또는 반복 가능한 도구 adapter가 확정되지 않았다.
 - 코드베이스 수정이 위험하다고 판단했다.
 
 다음 행동:

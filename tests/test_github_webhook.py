@@ -1020,8 +1020,8 @@ def test_fix_develop_command_is_deprecated(tmp_path, monkeypatch):
                 task_id=task.id,
                 agent_name="dev",
                 status="failed",
-                summary="fullstack_runner가 Gradle 테스트에서 실패했습니다.",
-                error="Kotlin/Spring 구현 후 Gradle 테스트가 실패했습니다.",
+                summary="Dev runner가 테스트 명령에서 실패했습니다.",
+                error="Codex playbook handoff 후 테스트 명령이 실패했습니다.",
             )
         )
         db.commit()
@@ -1040,7 +1040,7 @@ def test_fix_develop_command_is_deprecated(tmp_path, monkeypatch):
     assert "Dev Agent 내부 runner" in captured["body"]
 
 
-def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
+def test_backend_develop_uses_playbook_handoff_and_does_not_generate_member_signup_files(
     tmp_path, monkeypatch
 ):
     secret = "test-secret"
@@ -1137,7 +1137,7 @@ def test_backend_develop_uses_kotlin_runner_and_generates_member_signup_files(
     assert (dev_dir / "ddd_modeling_runner.md").exists()
     assert (dev_dir / "api_implementation_runner.md").exists()
     assert (dev_dir / "test_implementation_runner.md").exists()
-    assert "자동 구현은 아직 수행하지 않습니다" in (
+    assert "runner는 앱 코드를 생성하지 않는다" in (
         dev_dir / "ddd_modeling_runner.md"
     ).read_text()
     assert "backend orchestration style skill: required" in (

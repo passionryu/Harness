@@ -71,7 +71,8 @@ harness playbooks --name frontend-implementation
 현재 auto-run, QA PDF, branch guard, artifact 저장과 연결되어 있기 때문이다.
 
 다만 새 기능의 판단 기준은 Python runner 내부 조건문이 아니라 Markdown playbook에 먼저 추가한다.
-Python runner는 다음 역할로 격하한다.
+앱 코드를 생성하던 runner는 Codex handoff adapter로 격하한다.
+Python runner는 다음 역할만 맡긴다.
 
 - repeatable command adapter
 - evidence collector
