@@ -1,591 +1,45 @@
-import logging
+from __future__ import annotations
+
 import subprocess
-import tempfile
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-from agents.base import AgentInput, AgentStatus, ArtifactSpec
-from agents.organization import render_work_units
-from agents.plan_agent import (
-    _decision_questions,
-    _extract_sql_blocks,
-    _flow_chart_for_issue_type,
-    _is_login_api_plan,
-    _profile_for_issue_type,
-    _sequence_diagram_for_issue_type,
-    _should_include_usecase_diagrams,
-)
-from orchestrator.api.schemas import EventResult, HumanApproval, ManualEvent, TaskCreate
+from agents.base import AgentInput, AgentResult, AgentStatus
+from orchestrator.api.schemas import EventResult, HumanApproval
 from orchestrator.core.settings import settings
-from orchestrator.db.models import AuditLog, Run, StateTransition, Task
 from orchestrator.services.agent_registry import AgentRegistry
-from orchestrator.services.artifacts import ArtifactStore
-from orchestrator.services.discord import DiscordNotifier
 from orchestrator.services.github_adapter import GitHubAdapter
-from orchestrator.services.google_chat import GoogleChatNotifier
-from orchestrator.services.qa_pdf import build_qa_pdf_report
-from workflows.state_machine import KanbanState, StateMachine, WorkflowEvent
 
-logger = logging.getLogger(__name__)
+
 KST = ZoneInfo("Asia/Seoul")
+AI_HARNESS_GENERATED_MARKER = "<!-- ai-harness-generated -->"
 
 
-def now_kst() -> datetime:
-    return datetime.now(KST)
+@dataclass(frozen=True)
+class IssueContext:
+    issue_number: int
+    title: str
+    body: str
+    issue_url: str = ""
+    issue_labels: tuple[str, ...] = ()
+
+    @property
+    def task_id(self) -> str:
+        return f"issue-{self.issue_number}"
 
 
 class OrchestrationService:
-    def __init__(self, db: Session):
-        self.db = db
-        self.state_machine = StateMachine()
+    """Stateless GitHub issue -> Markdown artifact orchestrator.
+
+    The harness no longer owns a database, state machine, or runner capability
+    layer. Each command creates a deterministic artifact packet under
+    `artifacts/issue-{number}/...` and optionally comments on GitHub.
+    """
+
+    def __init__(self) -> None:
         self.agent_registry = AgentRegistry()
-        self.artifact_store = ArtifactStore(db)
-
-    # GitHub API 댓글 작성이 실패하면 gh CLI로 한 번 더 시도한다.
-    def _comment_on_github_issue(
-        self,
-        task: Task,
-        run_id: str | None,
-        issue_number: int,
-        body: str,
-        success_event: str,
-        failure_event: str,
-    ) -> bool:
-        api_error: str | None = None
-        if not settings.github_token:
-            if settings.github_use_gh_cli:
-                gh_result = self._comment_on_github_issue_with_gh(issue_number, body)
-                if gh_result[0]:
-                    self._audit(
-                        task.id,
-                        run_id,
-                        success_event,
-                        {"issue_number": issue_number, "method": "gh_cli", "api_error": None},
-                    )
-                    return True
-                self._audit(
-                    task.id,
-                    run_id,
-                    failure_event,
-                    {"issue_number": issue_number, "api_error": None, "gh_error": gh_result[1]},
-                )
-                return False
-            self._audit(
-                task.id,
-                run_id,
-                failure_event,
-                {"issue_number": issue_number, "api_error": "GITHUB_TOKEN이 설정되어 있지 않습니다."},
-            )
-            return False
-
-        if settings.github_token:
-            try:
-                GitHubAdapter(settings.github_token).create_issue_comment(
-                    settings.github_owner,
-                    settings.github_repo,
-                    issue_number,
-                    body,
-                )
-                self._audit(
-                    task.id,
-                    run_id,
-                    success_event,
-                    {"issue_number": issue_number, "method": "github_api"},
-                )
-                return True
-            except Exception as exc:  # noqa: BLE001 - fallback decides final result
-                api_error = str(exc)
-
-        gh_result = self._comment_on_github_issue_with_gh(issue_number, body)
-        if gh_result[0]:
-            self._audit(
-                task.id,
-                run_id,
-                success_event,
-                {
-                    "issue_number": issue_number,
-                    "method": "gh_cli",
-                    "api_error": api_error,
-                },
-            )
-            return True
-
-        self._audit(
-            task.id,
-            run_id,
-            failure_event,
-            {
-                "issue_number": issue_number,
-                "api_error": api_error,
-                "gh_error": gh_result[1],
-            },
-        )
-        return False
-
-    # Plan/Replan 결과 댓글은 이슈당 하나만 남기도록 기존 댓글을 수정하고 오래된 중복 댓글을 정리한다.
-    def _upsert_plan_comment_on_github_issue(
-        self,
-        task: Task,
-        run_id: str | None,
-        issue_number: int,
-        body: str,
-    ) -> bool:
-        try:
-            adapter = GitHubAdapter(settings.github_token, use_gh_cli=settings.github_use_gh_cli)
-        except TypeError:
-            adapter = GitHubAdapter(settings.github_token)
-        is_configured = getattr(adapter, "is_configured", lambda: True)
-        if not is_configured():
-            self._audit(
-                task.id,
-                run_id,
-                "github.plan_comment_failed",
-                {"issue_number": issue_number, "reason": "GitHub 인증이 설정되어 있지 않습니다."},
-            )
-            return False
-
-        try:
-            comments = (
-                adapter.list_issue_comments(settings.github_owner, settings.github_repo, issue_number)
-                if hasattr(adapter, "list_issue_comments")
-                else []
-            )
-            plan_comments = [
-                comment
-                for comment in comments
-                if self._is_harness_plan_comment(str(comment.get("body", "")))
-                and comment.get("id") is not None
-            ]
-            if plan_comments and hasattr(adapter, "update_issue_comment"):
-                latest_comment = plan_comments[-1]
-                adapter.update_issue_comment(
-                    settings.github_owner,
-                    settings.github_repo,
-                    latest_comment["id"],
-                    body,
-                )
-                for stale_comment in (plan_comments[:-1] if hasattr(adapter, "delete_issue_comment") else []):
-                    adapter.delete_issue_comment(
-                        settings.github_owner,
-                        settings.github_repo,
-                        stale_comment["id"],
-                    )
-                self._audit(
-                    task.id,
-                    run_id,
-                    "github.plan_comment_upserted",
-                    {
-                        "issue_number": issue_number,
-                        "method": "update",
-                        "updated_comment_id": latest_comment["id"],
-                        "deleted_duplicate_count": len(plan_comments[:-1]),
-                    },
-                )
-                return True
-
-            adapter.create_issue_comment(settings.github_owner, settings.github_repo, issue_number, body)
-            self._audit(
-                task.id,
-                run_id,
-                "github.plan_comment_upserted",
-                {"issue_number": issue_number, "method": "create"},
-            )
-            return True
-        except Exception as exc:  # noqa: BLE001 - audit records integration failure
-            fallback_result = self._comment_on_github_issue(
-                task,
-                run_id,
-                issue_number,
-                body,
-                "github.plan_comment_upserted",
-                "github.plan_comment_failed",
-            )
-            if fallback_result:
-                return True
-            self._audit(
-                task.id,
-                run_id,
-                "github.plan_comment_failed",
-                {"issue_number": issue_number, "error": str(exc)},
-            )
-            return False
-
-    # 하네스가 작성한 Design/Redesign 호환 댓글인지 판단한다.
-    def _is_harness_plan_comment(self, body: str) -> bool:
-        if "<!-- ai-harness-generated -->" not in body:
-            return False
-        return any(
-            title in body
-            for title in [
-                "# 🏗️ AI Design:",
-                "# ♻️ 🏗️ AI Re-Design:",
-                "# 🏗️ AI Plan:",
-                "# ♻️ 🏗️ AI Re-Plan:",
-            ]
-        )
-
-    # Human QA 전에 이슈 댓글을 성공 기준 보고서로 자동 보강한다.
-    def _repair_issue_reports_before_human_qa(
-        self,
-        task: Task,
-        run_id: str | None,
-        issue_number: int,
-    ) -> None:
-        deleted_count = self._delete_stale_dev_failure_comments(task, run_id, issue_number)
-        dev_reported = self._upsert_issue_report_comment(
-            task,
-            run_id,
-            issue_number,
-            "dev",
-            self._build_issue_dev_report_comment(task),
-        )
-        self._audit(
-            task.id,
-            run_id,
-            "github.issue_reports_repaired",
-            {
-                "issue_number": issue_number,
-                "deleted_stale_failure_comments": deleted_count,
-                "dev_report_upserted": dev_reported,
-            },
-        )
-
-    # 단계별 하네스 보고서 댓글을 하나만 유지하도록 생성 또는 수정한다.
-    def _upsert_issue_report_comment(
-        self,
-        task: Task,
-        run_id: str | None,
-        issue_number: int,
-        report_kind: str,
-        body: str,
-    ) -> bool:
-        try:
-            adapter = GitHubAdapter(settings.github_token, use_gh_cli=settings.github_use_gh_cli)
-        except TypeError:
-            adapter = GitHubAdapter(settings.github_token)
-        is_configured = getattr(adapter, "is_configured", lambda: True)
-        if not is_configured():
-            return self._comment_on_github_issue(
-                task,
-                run_id,
-                issue_number,
-                body,
-                f"github.{report_kind}_report_commented",
-                f"github.{report_kind}_report_comment_failed",
-            )
-
-        try:
-            comments = (
-                adapter.list_issue_comments(settings.github_owner, settings.github_repo, issue_number)
-                if hasattr(adapter, "list_issue_comments")
-                else []
-            )
-            matched_comments = [
-                comment
-                for comment in comments
-                if self._is_harness_report_comment(str(comment.get("body", "")), report_kind)
-                and comment.get("id") is not None
-            ]
-            if matched_comments and hasattr(adapter, "update_issue_comment"):
-                latest_comment = matched_comments[-1]
-                adapter.update_issue_comment(
-                    settings.github_owner,
-                    settings.github_repo,
-                    latest_comment["id"],
-                    body,
-                )
-                for stale_comment in (
-                    matched_comments[:-1] if hasattr(adapter, "delete_issue_comment") else []
-                ):
-                    adapter.delete_issue_comment(
-                        settings.github_owner,
-                        settings.github_repo,
-                        stale_comment["id"],
-                    )
-                self._audit(
-                    task.id,
-                    run_id,
-                    f"github.{report_kind}_report_upserted",
-                    {
-                        "issue_number": issue_number,
-                        "method": "update",
-                        "updated_comment_id": latest_comment["id"],
-                        "deleted_duplicate_count": len(matched_comments[:-1]),
-                    },
-                )
-                return True
-
-            adapter.create_issue_comment(settings.github_owner, settings.github_repo, issue_number, body)
-            self._audit(
-                task.id,
-                run_id,
-                f"github.{report_kind}_report_upserted",
-                {"issue_number": issue_number, "method": "create"},
-            )
-            return True
-        except Exception as exc:  # noqa: BLE001 - 댓글 보강 실패는 QA 실행 자체를 되돌리지 않는다.
-            self._audit(
-                task.id,
-                run_id,
-                f"github.{report_kind}_report_upsert_failed",
-                {"issue_number": issue_number, "error": str(exc)},
-            )
-            return self._comment_on_github_issue(
-                task,
-                run_id,
-                issue_number,
-                body,
-                f"github.{report_kind}_report_commented",
-                f"github.{report_kind}_report_comment_failed",
-            )
-
-    # 하네스 단계별 보고서 댓글인지 판별한다.
-    def _is_harness_report_comment(self, body: str, report_kind: str) -> bool:
-        if "<!-- ai-harness-generated -->" not in body:
-            return False
-        markers = {
-            "dev": [
-                "# 🛠️ 개발 완료:",
-                "# 🛠️ 구현 보고서:",
-                "# 🛠️ 수동 Dev 완료 기록:",
-            ],
-            "qa": [
-                "# 🔎 System QA 통과:",
-                "# ♻️ 🔎 System QA 재검증 통과:",
-                "# 🔎 QA 보고서:",
-            ],
-            "human_qa": [
-                "# 🧑‍💻 Human QA 요청:",
-                "# ♻️ 🧑‍💻 Human QA Re-QA 요청:",
-            ],
-        }
-        return any(marker in body for marker in markers.get(report_kind, []))
-
-    # 성공 run이 존재하면 오래된 Dev 실패 댓글을 삭제한다.
-    def _delete_stale_dev_failure_comments(
-        self,
-        task: Task,
-        run_id: str | None,
-        issue_number: int,
-    ) -> int:
-        if self._latest_successful_run(task.id, {"dev", "manual_dev"}) is None:
-            return 0
-        try:
-            adapter = GitHubAdapter(settings.github_token, use_gh_cli=settings.github_use_gh_cli)
-        except TypeError:
-            adapter = GitHubAdapter(settings.github_token)
-        if not hasattr(adapter, "list_issue_comments") or not hasattr(adapter, "delete_issue_comment"):
-            return 0
-
-        try:
-            comments = adapter.list_issue_comments(settings.github_owner, settings.github_repo, issue_number)
-            stale_comments = [
-                comment
-                for comment in comments
-                if self._is_stale_dev_failure_comment(str(comment.get("body", "")))
-                and comment.get("id") is not None
-            ]
-            for comment in stale_comments:
-                adapter.delete_issue_comment(settings.github_owner, settings.github_repo, comment["id"])
-            if stale_comments:
-                self._audit(
-                    task.id,
-                    run_id,
-                    "github.stale_dev_failure_comments_deleted",
-                    {"issue_number": issue_number, "deleted_count": len(stale_comments)},
-                )
-            return len(stale_comments)
-        except Exception as exc:  # noqa: BLE001 - 실패 댓글 정리 실패는 QA 자체를 막지 않는다.
-            self._audit(
-                task.id,
-                run_id,
-                "github.stale_dev_failure_comment_delete_failed",
-                {"issue_number": issue_number, "error": str(exc)},
-            )
-            return 0
-
-    # 성공 구현 이후 남아 있으면 혼선을 주는 Dev 실패 댓글인지 판단한다.
-    def _is_stale_dev_failure_comment(self, body: str) -> bool:
-        if "<!-- ai-harness-generated -->" not in body:
-            return False
-        return any(
-            marker in body
-            for marker in [
-                "# ⚠️ Dev Agent 확인 필요:",
-                "자동 구현을 완료하지 못했습니다",
-                "구현 전 중단",
-                "구현 확인 필요",
-            ]
-        )
-
-    # gh CLI 인증을 사용해 GitHub 이슈 댓글을 작성한다.
-    def _comment_on_github_issue_with_gh(self, issue_number: int, body: str) -> tuple[bool, str]:
-        repo = f"{settings.github_owner}/{settings.github_repo}"
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as file:
-            file.write(body)
-            body_path = Path(file.name)
-        try:
-            completed = subprocess.run(
-                [
-                    "gh",
-                    "issue",
-                    "comment",
-                    str(issue_number),
-                    "--repo",
-                    repo,
-                    "--body-file",
-                    str(body_path),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            if completed.returncode == 0:
-                return True, ""
-            return False, (completed.stderr or completed.stdout or f"exit_code={completed.returncode}").strip()
-        except Exception as exc:  # noqa: BLE001 - caller records fallback failure
-            return False, str(exc)
-        finally:
-            body_path.unlink(missing_ok=True)
-
-    # task가 아직 없거나 로드되지 않은 안내 댓글도 가능한 범위에서 작성한다.
-    def _comment_on_github_issue_best_effort(self, issue_number: int, body: str) -> bool:
-        if settings.github_token:
-            try:
-                GitHubAdapter(settings.github_token).create_issue_comment(
-                    settings.github_owner,
-                    settings.github_repo,
-                    issue_number,
-                    body,
-                )
-                return True
-            except Exception:  # noqa: BLE001 - gh CLI fallback is intentionally best-effort
-                pass
-        return self._comment_on_github_issue_with_gh(issue_number, body)[0]
-
-    def create_task(self, payload: TaskCreate) -> Task:
-        task = Task(
-            title=payload.title,
-            body=payload.body,
-            github_issue_url=payload.github_issue_url,
-            github_issue_number=payload.github_issue_number,
-            state="Backlog",
-            retry_limit=settings.agent_retry_limit,
-        )
-        self.db.add(task)
-        self.db.flush()
-        self._record_transition(task.id, None, task.state, "task created", "human")
-        self._audit(task.id, None, "task.created", {"title": task.title})
-        self.db.commit()
-        self.db.refresh(task)
-        return task
-
-    def get_task(self, task_id: str) -> Task | None:
-        return self.db.scalar(select(Task).where(Task.id == task_id))
-
-    # GitHub 이슈 task를 repo URL까지 포함해 찾는다.
-    def _find_github_issue_task(self, issue_number: int, issue_url: str) -> Task | None:
-        current_repo_issue_url = f"https://github.com/{settings.github_owner}/{settings.github_repo}/issues/{issue_number}"
-        candidate_urls = [url for url in [issue_url, current_repo_issue_url] if url]
-        for candidate_url in dict.fromkeys(candidate_urls):
-            task = self.db.scalar(
-                select(Task)
-                .where(Task.github_issue_number == issue_number)
-                .where(Task.github_issue_url == candidate_url)
-            )
-            if task is not None:
-                return task
-
-        legacy_tasks = self.db.scalars(
-            select(Task)
-            .where(Task.github_issue_number == issue_number)
-            .where(Task.github_issue_url.is_(None))
-        ).all()
-        if len(legacy_tasks) == 1:
-            return legacy_tasks[0]
-        matching_tasks = self.db.scalars(
-            select(Task).where(Task.github_issue_number == issue_number)
-        ).all()
-        if len(matching_tasks) == 1:
-            return matching_tasks[0]
-        return None
-
-    def upsert_github_issue_task(
-        self,
-        issue_number: int,
-        title: str,
-        body: str,
-        issue_url: str,
-    ) -> Task:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            task = Task(
-                title=title,
-                body=body,
-                github_issue_url=issue_url,
-                github_issue_number=issue_number,
-                state=KanbanState.BACKLOG.value,
-                retry_limit=settings.agent_retry_limit,
-            )
-            self.db.add(task)
-            self.db.flush()
-            self._record_transition(task.id, None, task.state, "GitHub issue synced", "system")
-            self._audit(
-                task.id,
-                None,
-                "task.created_from_github",
-                {"issue_number": issue_number, "issue_url": issue_url},
-            )
-        else:
-            task.title = title
-            task.body = body
-            task.github_issue_url = issue_url
-            if task.state == "Todo":
-                task.state = KanbanState.PLAN_REVIEW.value
-        return task
-
-    def has_successful_agent_run(self, task_id: str, agent_name: str) -> bool:
-        return (
-            self.db.scalar(
-                select(Run.id)
-                .where(Run.task_id == task_id)
-                .where(Run.agent_name == agent_name)
-                .where(Run.status == AgentStatus.SUCCESS.value)
-                .limit(1)
-            )
-            is not None
-        )
-
-    # 기존 plan 실행과 새 design 실행을 모두 성공한 설계 기록으로 인정한다.
-    def has_successful_design_run(self, task_id: str) -> bool:
-        return (
-            self.db.scalar(
-                select(Run.id)
-                .where(Run.task_id == task_id)
-                .where(Run.agent_name.in_(["plan", "design"]))
-                .where(Run.status == AgentStatus.SUCCESS.value)
-                .limit(1)
-            )
-            is not None
-        )
-
-    # Dev가 직접 성공했거나 fix-develop로 복구된 작업인지 판단한다.
-    def has_successful_development_run(self, task_id: str) -> bool:
-        return (
-            self.db.scalar(
-                select(Run.id)
-                .where(Run.task_id == task_id)
-                .where(Run.agent_name.in_(["dev", "fix_develop"]))
-                .where(Run.status == AgentStatus.SUCCESS.value)
-                .limit(1)
-            )
-            is not None
-        )
 
     def run_plan_for_github_issue(
         self,
@@ -598,81 +52,17 @@ class OrchestrationService:
         comment_on_duplicate: bool = False,
         issue_labels: list[str] | None = None,
     ) -> EventResult:
-        body = self._append_issue_metadata(body, issue_labels or [], issue_number)
+        context = self._context(issue_number, title, body, issue_url, issue_labels)
+        body = self._append_issue_metadata(context.body, context.issue_labels, context.issue_number)
         if replan_request:
-            body = self._append_replan_request(body, replan_request)
-        task = self.upsert_github_issue_task(issue_number, title, body, issue_url)
-        previous = task.state
-        template_errors = self._validate_issue_template(body, title)
-        if template_errors:
-            self._audit(
-                task.id,
-                None,
-                "design.blocked_by_issue_template",
-                {
-                    "issue_number": issue_number,
-                    "issue_url": issue_url,
-                    "errors": template_errors,
-                },
-            )
-            self.db.commit()
-            raise ValueError(
-                "Design Agent를 실행할 수 없습니다. 이슈 본문이 타입 템플릿을 만족하지 않습니다: "
-                + "; ".join(template_errors)
-            )
-
-        if not force and self.has_successful_design_run(task.id):
-            self._audit(
-                task.id,
-                None,
-                "design.skipped_duplicate",
-                {
-                    "issue_number": issue_number,
-                    "comment_on_duplicate": False,
-                    "reason": "기존 Design 댓글을 유지하고 새 안내 댓글을 남기지 않습니다.",
-                },
-            )
-            self.db.commit()
-            return EventResult(
-                task_id=task.id,
-                previous_state=previous,
-                current_state=task.state,
-                message="이미 Design이 완료되어 중복 실행을 스킵했습니다.",
-            )
-
-        run_id = self._run_agent(task, "design")
-        if task.state != KanbanState.PLAN_REVIEW.value:
-            task.state = KanbanState.PLAN_REVIEW.value
-            self._record_transition(
-                task.id,
-                previous,
-                task.state,
-                "design agent completed; waiting for human design approval",
-                "agent",
-            )
-        self._audit(
-            task.id,
-            run_id,
-            "design.completed" if not force else "design.redesigned",
-            {
-                "issue_number": issue_number,
-                "issue_url": issue_url,
-                "force": force,
-                "has_replan_request": bool(replan_request),
-            },
+            body = self._append_named_section(body, "Human Redesign Request", replan_request)
+        result = self._run_agent(context, "design", body, "Design Requested")
+        self._comment_on_github_issue_best_effort(
+            context.issue_number,
+            self._agent_comment("Design Agent", context, result, "design"),
         )
-        self._move_github_project_status_best_effort(task, run_id)
-
-        self._upsert_plan_comment_on_github_issue(task, run_id, issue_number, self._build_plan_comment(task))
-
-        self._notify_after_plan(task, run_id, force=force)
-        self.db.commit()
-        return EventResult(
-            task_id=task.id,
-            previous_state=previous,
-            current_state=task.state,
-            message="Design Agent 실행이 완료되어 Plan Review에서 사람 승인을 기다립니다.",
-        )
+        suffix = " 재설계 요청이 반영되었습니다." if replan_request or force else ""
+        return self._event(context, "Design Artifact Ready", f"Design artifact를 생성했습니다.{suffix}")
 
     def run_replan_for_github_issue(
         self,
@@ -693,70 +83,6 @@ class OrchestrationService:
             issue_labels=issue_labels,
         )
 
-    # GitHub 이슈의 기존 산출물을 Documentation Agent로 정리한다.
-    def run_documentation_for_github_issue(
-        self,
-        issue_number: int,
-        title: str,
-        body: str,
-        issue_url: str,
-        issue_labels: list[str] | None = None,
-    ) -> EventResult:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
-        previous = task.state
-        task.title = title
-        task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
-        task.github_issue_url = issue_url
-
-        run_id = self._run_agent(task, "documentation")
-        self._audit(
-            task.id,
-            run_id,
-            "documentation.completed",
-            {"issue_number": issue_number, "issue_url": issue_url},
-        )
-        self.db.commit()
-        return EventResult(
-            task_id=task.id,
-            previous_state=previous,
-            current_state=task.state,
-            message="Documentation Agent가 이슈별 작업 기록을 생성했습니다.",
-        )
-
-    # GitHub 이슈의 기존 산출물을 Domain Knowledge Agent로 Obsidian에 정리한다.
-    def run_domain_knowledge_for_github_issue(
-        self,
-        issue_number: int,
-        title: str,
-        body: str,
-        issue_url: str,
-        issue_labels: list[str] | None = None,
-    ) -> EventResult:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
-        previous = task.state
-        task.title = title
-        task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
-        task.github_issue_url = issue_url
-
-        run_id = self._run_agent(task, "domain_knowledge")
-        self._audit(
-            task.id,
-            run_id,
-            "domain_knowledge.completed",
-            {"issue_number": issue_number, "issue_url": issue_url},
-        )
-        self.db.commit()
-        return EventResult(
-            task_id=task.id,
-            previous_state=previous,
-            current_state=task.state,
-            message="Domain Knowledge Agent가 Obsidian 서비스 지식을 정리했습니다.",
-        )
-
     def run_develop_for_github_issue(
         self,
         issue_number: int,
@@ -764,148 +90,16 @@ class OrchestrationService:
         body: str,
         issue_url: str,
         issue_labels: list[str] | None = None,
-    ) -> EventResult | dict[str, str]:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            return self._skip_develop_command(
-                issue_number,
-                f"Design을 찾을 수 없습니다. 먼저 {settings.design_command}을 실행하세요.",
-            )
-
-        task.title = title
-        task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
-        task.github_issue_url = issue_url
-
-        if not self.has_successful_design_run(task.id):
-            return self._skip_develop_command(
-                issue_number,
-                f"성공한 Design 실행 기록이 없습니다. 먼저 {settings.design_command}을 실행하세요.",
-                task.id,
-            )
-
-        if task.state not in {KanbanState.DEV_READY.value, KanbanState.DEV_REVIEW.value}:
-            return self._skip_develop_command(
-                issue_number,
-                f"현재 작업 상태는 `{task.state}`입니다. develop은 `{KanbanState.DEV_READY.value}`에서만 실행할 수 있습니다. 먼저 design 승인을 기록하세요.",
-                task.id,
-            )
-
-        previous = task.state
-        try:
-            run_id = self._run_agent(task, "dev")
-        except Exception as exc:  # noqa: BLE001 - 실패도 하네스 상태와 GitHub 댓글에 남긴다.
-            latest_run = self._latest_run(task.id)
-            run_id = latest_run.id if latest_run else None
-            if task.state != KanbanState.DEV_READY.value:
-                task.state = KanbanState.DEV_READY.value
-            self._record_transition(
-                task.id,
-                previous,
-                task.state,
-                "dev agent stopped before completion; waiting for human implementation or retry",
-                "agent",
-            )
-            self._audit(
-                task.id,
-                run_id,
-                "dev.needs_human",
-                {
-                    "issue_number": issue_number,
-                    "issue_url": issue_url,
-                    "error": str(exc),
-                    "run_status": latest_run.status if latest_run else "failed",
-                },
-            )
-            self._move_github_project_status_best_effort(task, run_id)
-            self._comment_on_github_issue(
-                task,
-                run_id,
-                issue_number,
-                self._build_develop_failed_comment(task, previous, str(exc)),
-                "github.develop_failed_commented",
-                "github.develop_failed_comment_failed",
-            )
-            self.db.commit()
-            return {
-                "status": latest_run.status if latest_run else AgentStatus.FAILED.value,
-                "task_id": task.id,
-                "previous_state": previous,
-                "current_state": task.state,
-                "run_id": run_id,
-                "reason": str(exc),
-                "next": settings.develop_command,
-            }
-
-        if task.state != KanbanState.DEV_REVIEW.value:
-            task.state = KanbanState.DEV_REVIEW.value
-            self._record_transition(
-                task.id,
-                previous,
-                task.state,
-                "dev agent completed; waiting for human dev approval",
-                "agent",
-            )
-
-        review_run_id: str | None = None
-        review_error: str | None = None
-        try:
-            review_run_id = self._run_agent(task, "review")
-        except ValueError as exc:
-            review_error = str(exc)
-
-        self._audit(
-            task.id,
-            run_id,
-            "dev.completed",
-            {"issue_number": issue_number, "issue_url": issue_url},
+    ) -> EventResult:
+        context = self._context(issue_number, title, body, issue_url, issue_labels)
+        body = self._append_issue_metadata(context.body, context.issue_labels, context.issue_number)
+        result = self._run_agent(context, "dev", body, "Codex Dev Requested")
+        self._comment_on_github_issue_best_effort(
+            context.issue_number,
+            self._agent_comment("Codex Dev Handoff", context, result, "dev"),
         )
-        if review_run_id:
-            self._audit(
-                task.id,
-                review_run_id,
-                "review.completed",
-                {"issue_number": issue_number, "issue_url": issue_url},
-            )
-        if review_error:
-            self._audit(
-                task.id,
-                None,
-                "review.needs_human",
-                {"issue_number": issue_number, "issue_url": issue_url, "error": review_error},
-            )
-        self._move_github_project_status_best_effort(task, run_id)
+        return self._event(context, "Codex Dev Handoff Ready", "Codex가 직접 구현할 dev handoff artifact를 생성했습니다.")
 
-        self._comment_on_github_issue(
-            task,
-            run_id,
-            issue_number,
-            self._build_develop_comment(task, previous),
-            "github.develop_commented",
-            "github.develop_comment_failed",
-        )
-        self._comment_on_github_issue(
-            task,
-            review_run_id,
-            issue_number,
-            self._build_review_comment(task, review_error),
-            "github.review_commented",
-            "github.review_comment_failed",
-        )
-
-        self._notify_after_dev(task, run_id)
-        self.db.commit()
-        return EventResult(
-            task_id=task.id,
-            previous_state=previous,
-            current_state=task.state,
-            message=(
-                "Dev Agent 실행이 완료되었지만 Review Agent가 확인 요청을 남겼습니다."
-                if review_error
-                else "Dev Agent와 Review Agent 실행이 완료되어 Dev Review에서 사람 승인을 기다립니다."
-            ),
-        )
-
-    # Deprecated된 fix-develop 명령을 실행하지 않고 새 Dev 중심 복구 흐름으로 안내한다.
     def run_fix_develop_for_github_issue(
         self,
         issue_number: int,
@@ -913,39 +107,15 @@ class OrchestrationService:
         body: str,
         issue_url: str,
         issue_labels: list[str] | None = None,
-    ) -> EventResult | dict[str, str]:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            return self._skip_develop_command(
-                issue_number,
-                "작업을 찾을 수 없습니다. 먼저 plan과 develop을 실행하세요.",
-            )
-
-        task.title = title
-        task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
-        task.github_issue_url = issue_url
-
-        reason = (
-            "fix-develop Agent는 deprecated되었습니다. "
-            "이제 개발 실패 복구는 Dev Agent 내부 runner 또는 Codex 대화형 수정 흐름에서 처리합니다. "
-            "최근 실패 로그를 기준으로 Codex에게 수정을 요청하거나, 수정 후 다시 develop/qa를 진행하세요."
+    ) -> dict[str, str]:
+        context = self._context(issue_number, title, body, issue_url, issue_labels)
+        reason = "fix-develop은 제거되었습니다. Codex가 issue와 artifact를 읽고 직접 수정합니다."
+        self._write_note(context, "dev", "fix-develop-deprecated.md", ["# fix-develop Deprecated", "", reason])
+        self._comment_on_github_issue_best_effort(
+            context.issue_number,
+            "\n".join([AI_HARNESS_GENERATED_MARKER, "", f"# fix-develop 제거 안내: {context.title}", "", reason]),
         )
-        self._audit(
-            task.id,
-            None,
-            "fix_develop.deprecated",
-            {"issue_number": issue_number, "issue_url": issue_url},
-        )
-        self._comment_on_github_issue(
-            task,
-            None,
-            issue_number,
-            self._build_fix_develop_deprecated_comment(task, reason),
-            "github.fix_develop_deprecated_commented",
-            "github.fix_develop_deprecated_comment_failed",
-        )
-        self.db.commit()
-        return {"status": "deprecated", "reason": reason, "task_id": task.id}
+        return {"status": "deprecated", "reason": reason, "task_id": context.task_id}
 
     def run_refactor_for_github_issue(
         self,
@@ -955,79 +125,16 @@ class OrchestrationService:
         issue_url: str,
         refactor_request: str,
         issue_labels: list[str] | None = None,
-    ) -> EventResult | dict[str, str]:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            return self._skip_refactor_command(
-                issue_number,
-                "작업을 찾을 수 없습니다. 먼저 plan과 develop을 실행하세요.",
-            )
-
-        task.title = title
-        task.body = self._append_refactor_request(
-            self._append_issue_metadata(body, issue_labels or [], issue_number),
-            refactor_request,
+    ) -> EventResult:
+        context = self._context(issue_number, title, body, issue_url, issue_labels)
+        body = self._append_issue_metadata(context.body, context.issue_labels, context.issue_number)
+        body = self._append_named_section(body, "Human Refactor Request", refactor_request)
+        result = self._run_agent(context, "dev", body, "Codex Refactor Requested")
+        self._comment_on_github_issue_best_effort(
+            context.issue_number,
+            self._agent_comment("Codex Refactor Handoff", context, result, "dev"),
         )
-        task.github_issue_url = issue_url
-
-        if not self.has_successful_development_run(task.id):
-            return self._skip_refactor_command(
-                issue_number,
-                "성공한 개발 또는 개발 수정 실행 기록이 없습니다. 먼저 @ai-harness develop 또는 @ai-harness fix-develop을 실행하세요.",
-                task.id,
-            )
-
-        if task.state not in {
-            KanbanState.DEV_REVIEW.value,
-            KanbanState.QA_READY.value,
-            KanbanState.QA_REVIEW.value,
-            "In Progress",
-            "System QA",
-            "Human QA",
-        }:
-            return self._skip_refactor_command(
-                issue_number,
-                f"현재 작업 상태는 `{task.state}`입니다. refactor는 개발이 시작된 이후에만 실행할 수 있습니다.",
-                task.id,
-            )
-
-        previous = task.state
-        run_id = self._run_agent(task, "dev")
-        task.state = KanbanState.DEV_REVIEW.value
-        self._record_transition(
-            task.id,
-            previous,
-            task.state,
-            f"refactor requested by {settings.refactor_command}",
-            "human",
-        )
-        self._audit(
-            task.id,
-            run_id,
-            "dev.refactored",
-            {
-                "issue_number": issue_number,
-                "issue_url": issue_url,
-                "has_refactor_request": bool(refactor_request),
-            },
-        )
-
-        self._comment_on_github_issue(
-            task,
-            run_id,
-            issue_number,
-            self._build_refactor_comment(task, previous),
-            "github.refactor_commented",
-            "github.refactor_comment_failed",
-        )
-
-        self.db.commit()
-        return EventResult(
-            task_id=task.id,
-            previous_state=previous,
-            current_state=task.state,
-            message="리팩터링 요청을 반영했고 Dev Review에서 사람 승인을 기다립니다.",
-        )
+        return self._event(context, "Codex Refactor Handoff Ready", "Codex가 직접 리팩터링할 handoff artifact를 생성했습니다.")
 
     def run_qa_for_github_issue(
         self,
@@ -1037,79 +144,15 @@ class OrchestrationService:
         issue_url: str,
         issue_labels: list[str] | None = None,
         qa_request: str | None = None,
-    ) -> EventResult | dict[str, str]:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            return self._skip_qa_command(issue_number, "작업을 찾을 수 없습니다. 먼저 plan과 develop을 실행하세요.")
-
-        task.title = title
-        task.body = self._append_qa_request(
-            self._append_issue_metadata(body, issue_labels or [], issue_number),
-            qa_request,
-        )
-        task.github_issue_url = issue_url
-
-        if task.state != KanbanState.QA_READY.value:
-            next_command = (
-                settings.reqa_command
-                if task.state in {KanbanState.QA_REVIEW.value, "System QA", "Human QA"}
-                else settings.develop_command
-            )
-            return self._skip_qa_command(
-                issue_number,
-                f"현재 작업 상태는 `{task.state}`입니다. QA는 `{KanbanState.QA_READY.value}`에서만 실행할 수 있습니다. 먼저 dev 승인을 기록하세요.",
-                task.id,
-                next_command,
-            )
-
-        previous = task.state
-        run_id = self._run_agent(task, "qa")
-        task.state = KanbanState.QA_REVIEW.value
-        self._record_transition(
-            task.id,
-            previous,
-            task.state,
-            "QA agent completed; waiting for human QA approval",
-            "system",
-        )
-        self._audit(
-            task.id,
-            run_id,
-            "qa.completed",
-            {"issue_number": issue_number, "issue_url": issue_url},
-        )
-        self._move_github_project_status_best_effort(task, run_id)
-
-        self._repair_issue_reports_before_human_qa(task, run_id, issue_number)
-        qa_commented = self._upsert_issue_report_comment(
-            task,
-            run_id,
-            issue_number,
-            "qa",
-            self._build_qa_comment(task, previous),
-        )
-        human_qa_commented = self._upsert_issue_report_comment(
-            task,
-            run_id,
-            issue_number,
-            "human_qa",
-            self._build_human_qa_comment(task, rerun=False),
-        )
-        if qa_commented and human_qa_commented:
-            self._audit(
-                task.id,
-                run_id,
-                "github.qa_comments_completed",
-                {"issue_number": issue_number},
-            )
-
-        self._notify_after_qa(task, run_id, rerun=False)
-        self.db.commit()
-        return EventResult(
-            task_id=task.id,
-            previous_state=previous,
-            current_state=task.state,
-            message="QA Agent 실행이 완료되어 QA Review에서 사람 승인을 기다립니다.",
+    ) -> EventResult:
+        return self._run_qa_like(
+            issue_number=issue_number,
+            title=title,
+            body=body,
+            issue_url=issue_url,
+            issue_labels=issue_labels,
+            qa_request=qa_request,
+            rerun=False,
         )
 
     def rerun_qa_for_github_issue(
@@ -1120,80 +163,50 @@ class OrchestrationService:
         issue_url: str,
         issue_labels: list[str] | None = None,
         qa_request: str | None = None,
-    ) -> EventResult | dict[str, str]:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            return self._skip_qa_command(
-                issue_number,
-                "작업을 찾을 수 없습니다. 먼저 design과 develop을 실행하세요.",
-                next_command=settings.design_command,
-            )
-
-        task.title = title
-        task.body = self._append_qa_request(
-            self._append_issue_metadata(body, issue_labels or [], issue_number),
-            qa_request,
-        )
-        task.github_issue_url = issue_url
-
-        if task.state != KanbanState.QA_REVIEW.value:
-            next_command = (
-                settings.qa_command if task.state == KanbanState.QA_READY.value else settings.develop_command
-            )
-            return self._skip_qa_command(
-                issue_number,
-                f"현재 작업 상태는 `{task.state}`입니다. re-QA는 `{KanbanState.QA_REVIEW.value}`에서만 실행할 수 있습니다.",
-                task.id,
-                next_command,
-            )
-
-        previous = task.state
-        run_id = self._run_agent(task, "qa")
-        self._record_transition(
-            task.id,
-            previous,
-            task.state,
-            f"system QA rerun requested by {settings.reqa_command}",
-            "system",
-        )
-        self._audit(
-            task.id,
-            run_id,
-            "qa.rerun_completed",
-            {"issue_number": issue_number, "issue_url": issue_url},
+    ) -> EventResult:
+        return self._run_qa_like(
+            issue_number=issue_number,
+            title=title,
+            body=body,
+            issue_url=issue_url,
+            issue_labels=issue_labels,
+            qa_request=qa_request,
+            rerun=True,
         )
 
-        self._repair_issue_reports_before_human_qa(task, run_id, issue_number)
-        qa_commented = self._upsert_issue_report_comment(
-            task,
-            run_id,
-            issue_number,
-            "qa",
-            self._build_qa_comment(task, previous, rerun=True),
+    def run_documentation_for_github_issue(
+        self,
+        issue_number: int,
+        title: str,
+        body: str,
+        issue_url: str,
+        issue_labels: list[str] | None = None,
+    ) -> EventResult:
+        context = self._context(issue_number, title, body, issue_url, issue_labels)
+        body = self._append_issue_metadata(context.body, context.issue_labels, context.issue_number)
+        result = self._run_agent(context, "documentation", body, "Documentation Requested")
+        self._comment_on_github_issue_best_effort(
+            context.issue_number,
+            self._agent_comment("Documentation Agent", context, result, "documentation"),
         )
-        human_qa_commented = self._upsert_issue_report_comment(
-            task,
-            run_id,
-            issue_number,
-            "human_qa",
-            self._build_human_qa_comment(task, rerun=True),
-        )
-        if qa_commented and human_qa_commented:
-            self._audit(
-                task.id,
-                run_id,
-                "github.qa_rerun_comments_completed",
-                {"issue_number": issue_number},
-            )
+        return self._event(context, "Documentation Artifact Ready", "Documentation artifact를 생성했습니다.")
 
-        self._notify_after_qa(task, run_id, rerun=True)
-        self.db.commit()
-        return EventResult(
-            task_id=task.id,
-            previous_state=previous,
-            current_state=task.state,
-            message="QA 재검증이 통과되었고 작업 상태는 QA Review로 유지됩니다.",
+    def run_domain_knowledge_for_github_issue(
+        self,
+        issue_number: int,
+        title: str,
+        body: str,
+        issue_url: str,
+        issue_labels: list[str] | None = None,
+    ) -> EventResult:
+        context = self._context(issue_number, title, body, issue_url, issue_labels)
+        body = self._append_issue_metadata(context.body, context.issue_labels, context.issue_number)
+        result = self._run_agent(context, "domain_knowledge", body, "Domain Knowledge Requested")
+        self._comment_on_github_issue_best_effort(
+            context.issue_number,
+            self._agent_comment("Domain Knowledge Agent", context, result, "domain-knowledge"),
         )
+        return self._event(context, "Domain Knowledge Artifact Ready", "Domain knowledge artifact를 생성했습니다.")
 
     def comment_status_for_github_issue(
         self,
@@ -1203,29 +216,13 @@ class OrchestrationService:
         issue_url: str,
         issue_labels: list[str] | None = None,
     ) -> dict[str, str]:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            task = self.upsert_github_issue_task(
-                issue_number=issue_number,
-                title=title,
-                body=self._append_issue_metadata(body, issue_labels or [], issue_number),
-                issue_url=issue_url,
-            )
-        else:
-            task.title = title
-            task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
-            task.github_issue_url = issue_url
-
-        self._comment_on_github_issue(
-            task,
-            None,
-            issue_number,
-            self._build_status_comment(task),
-            "status.commented",
-            "status.comment_failed",
+        context = self._context(issue_number, title, body, issue_url, issue_labels)
+        status = self.status_for_github_issue(context.issue_number, context.title, context.body, context.issue_url)
+        self._comment_on_github_issue_best_effort(
+            context.issue_number,
+            self._status_comment(context, status),
         )
-        self.db.commit()
-        return {"status": "ok", "message": "상태 댓글을 생성했습니다.", "task_id": task.id}
+        return {"status": "ok", "task_id": context.task_id, "message": "상태 artifact 기준 댓글을 생성했습니다."}
 
     def cancel_github_issue_task(
         self,
@@ -1236,43 +233,65 @@ class OrchestrationService:
         issue_labels: list[str] | None = None,
         reason: str = "cancel requested",
     ) -> dict[str, str]:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            task = self.upsert_github_issue_task(
-                issue_number=issue_number,
-                title=title,
-                body=self._append_issue_metadata(body, issue_labels or [], issue_number),
-                issue_url=issue_url,
-            )
-        else:
-            task.title = title
-            task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
-            task.github_issue_url = issue_url
+        context = self._context(issue_number, title, body, issue_url, issue_labels)
+        path = self._write_note(
+            context,
+            "control",
+            "cancelled.md",
+            ["# Cancelled", "", f"- reason: {reason}", f"- at: {self._now()}"],
+        )
+        self._comment_on_github_issue_best_effort(
+            context.issue_number,
+            "\n".join([AI_HARNESS_GENERATED_MARKER, "", f"# 작업 중지 기록: {context.title}", "", f"- reason: {reason}", f"- artifact: `{path}`"]),
+        )
+        return {"status": "ok", "task_id": context.task_id, "artifact": str(path)}
 
-        previous = task.state
-        running_run = self._latest_running_run(task.id)
-        task.state = "Cancelled"
-        self._record_transition(task.id, previous, task.state, reason, "human")
-        self._audit(
-            task.id,
-            running_run.id if running_run else None,
-            "task.cancelled",
-            {
-                "issue_number": issue_number,
-                "reason": reason,
-                "had_running_run": bool(running_run),
-            },
+    def approve_stage_for_github_issue(
+        self,
+        issue_number: int,
+        stage: str,
+        payload: HumanApproval,
+        issue_url: str = "",
+    ) -> EventResult:
+        context = self._context(issue_number, f"Issue #{issue_number}", "", issue_url, [])
+        self._write_note(
+            context,
+            "approvals",
+            f"{stage}-approval.md",
+            [
+                f"# {stage} Approval",
+                "",
+                f"- approved_by: {payload.approved_by}",
+                f"- notes: {payload.notes or '기록 없음'}",
+                f"- at: {self._now()}",
+            ],
         )
-        self._comment_on_github_issue(
-            task,
-            running_run.id if running_run else None,
-            issue_number,
-            self._build_cancel_comment(task, previous, reason, bool(running_run)),
-            "github.cancel_commented",
-            "github.cancel_comment_failed",
+        return self._event(context, f"{stage} Approved", f"{stage} 승인을 파일 artifact로 기록했습니다.")
+
+    def record_manual_completion_for_github_issue(
+        self,
+        issue_number: int,
+        stage: str,
+        completed_by: str,
+        notes: str = "",
+        issue_url: str = "",
+    ) -> EventResult:
+        context = self._context(issue_number, f"Issue #{issue_number}", "", issue_url, [])
+        self._write_note(
+            context,
+            stage,
+            "manual-completion.md",
+            [
+                f"# Manual {stage.upper()} Completion",
+                "",
+                f"- completed_by: {completed_by}",
+                f"- at: {self._now()}",
+                "",
+                "## Notes",
+                notes or "기록 없음",
+            ],
         )
-        self.db.commit()
-        return {"status": "ok", "message": "작업을 중지했습니다.", "task_id": task.id}
+        return self._event(context, f"Manual {stage} Completed", f"{stage} 수동 완료를 파일 artifact로 기록했습니다.")
 
     def comment_command_failure(
         self,
@@ -1284,2002 +303,261 @@ class OrchestrationService:
         command: str | None,
         error: str,
     ) -> dict[str, str]:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            task = self.upsert_github_issue_task(
-                issue_number=issue_number,
-                title=title,
-                body=self._append_issue_metadata(body, issue_labels or [], issue_number),
-                issue_url=issue_url,
-            )
-        else:
-            task.title = title
-            task.body = self._append_issue_metadata(body, issue_labels or [], issue_number)
-            task.github_issue_url = issue_url
-
-        latest_run = self._latest_run(task.id)
-        self._audit(
-            task.id,
-            latest_run.id if latest_run else None,
-            "command.failed",
-            {"issue_number": issue_number, "command": command, "error": error},
+        context = self._context(issue_number, title, body, issue_url, issue_labels)
+        self._write_note(
+            context,
+            "errors",
+            f"{self._timestamp()}-command-failure.md",
+            ["# Command Failure", "", f"- command: `{command or 'unknown'}`", f"- error: {error}"],
         )
-        self._comment_on_github_issue(
-            task,
-            latest_run.id if latest_run else None,
-            issue_number,
-            self._build_command_failure_comment(task, command, error),
-            "github.command_failure_commented",
-            "github.command_failure_comment_failed",
+        self._comment_on_github_issue_best_effort(
+            context.issue_number,
+            "\n".join([AI_HARNESS_GENERATED_MARKER, "", f"# ⚠️ Harness command failure: {context.title}", "", f"- command: `{command or 'unknown'}`", f"- error: `{error}`"]),
         )
-        self.db.commit()
-        return {"status": "failed", "reason": error, "task_id": task.id}
+        return {"status": "failed", "reason": error, "task_id": context.task_id}
 
-    def handle_manual_event(self, payload: ManualEvent) -> EventResult:
-        task = self.get_task(payload.task_id)
-        if task is None:
-            raise ValueError("작업을 찾을 수 없습니다.")
-
-        previous = task.state
-        decision = self.state_machine.decide(task.state, payload.event)
-
-        if decision.increments_retry:
-            if task.retry_count >= task.retry_limit:
-                raise ValueError("재시도 한도를 초과했습니다.")
-            task.retry_count += 1
-
-        if decision.requires_human_approval:
-            raise ValueError("Done 상태 전이는 Human approval endpoint를 사용해야 합니다.")
-
-        run_id: str | None = None
-        if decision.requires_agent:
-            run_id = self._run_agent(task, decision.requires_agent)
-
-        task.state = decision.to_state.value
-        self._record_transition(
-            task.id, previous, task.state, payload.reason or payload.event, "system"
-        )
-        self._audit(
-            task.id,
-            run_id,
-            "task.transitioned",
-            {"from": previous, "to": task.state, "event": payload.event},
-        )
-        self.db.commit()
-
-        return EventResult(
-            task_id=task.id,
-            previous_state=previous,
-            current_state=task.state,
-            message=f"이벤트 {payload.event}로 상태가 전이되었습니다.",
-        )
-
-    def approve_human_qa(self, task_id: str, payload: HumanApproval) -> EventResult:
-        task = self.get_task(task_id)
-        if task is None:
-            raise ValueError("작업을 찾을 수 없습니다.")
-
-        return self.approve_task_stage(task, "deploy", payload)
-
-    # GitHub issue number를 기준으로 특정 approval gate를 승인한다.
-    def approve_stage_for_github_issue(
+    def status_for_github_issue(
         self,
         issue_number: int,
-        stage: str,
-        payload: HumanApproval,
+        title: str = "",
+        body: str = "",
         issue_url: str = "",
-    ) -> EventResult:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
-        return self.approve_task_stage(task, stage, payload)
+    ) -> dict[str, str | list[str]]:
+        context = self._context(issue_number, title or f"Issue #{issue_number}", body, issue_url, [])
+        task_dir = self._task_dir(context)
+        artifacts = sorted(str(path.relative_to(task_dir)) for path in task_dir.rglob("*") if path.is_file()) if task_dir.exists() else []
+        return {
+            "status": "ok" if task_dir.exists() else "not_found",
+            "task_id": context.task_id,
+            "issue": str(context.issue_number),
+            "title": context.title,
+            "artifact_root": str(task_dir),
+            "artifacts": artifacts[-20:],
+            "next": "Codex가 GitHub issue와 artifacts를 읽고 다음 작업을 직접 수행합니다.",
+        }
 
-    # Codex나 사람이 수동으로 끝낸 구현/QA를 공식 run과 상태 전이로 기록한다.
-    def record_manual_completion_for_github_issue(
+    def sync_github_issue(self, issue: dict) -> dict[str, str]:
+        context = self._context(
+            int(issue["number"]),
+            issue.get("title") or "",
+            issue.get("body") or "",
+            issue.get("html_url") or "",
+            [item.get("name") for item in issue.get("labels", []) if item.get("name")],
+        )
+        path = self._write_note(
+            context,
+            "sync",
+            "issue-context.md",
+            [
+                f"# GitHub Issue Context #{context.issue_number}",
+                "",
+                f"- title: {context.title}",
+                f"- url: {context.issue_url or 'N/A'}",
+                f"- labels: {', '.join(context.issue_labels) or 'none'}",
+                f"- synced_at: {self._now()}",
+                "",
+                "## Body",
+                context.body or "기록 없음",
+            ],
+        )
+        return {"status": "ok", "task_id": context.task_id, "artifact": str(path)}
+
+    def _run_qa_like(
         self,
         issue_number: int,
-        stage: str,
-        completed_by: str,
-        notes: str = "",
-        issue_url: str = "",
+        title: str,
+        body: str,
+        issue_url: str,
+        issue_labels: list[str] | None,
+        qa_request: str | None,
+        rerun: bool,
     ) -> EventResult:
-        task = self._find_github_issue_task(issue_number, issue_url)
-        if task is None:
-            raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
-        return self.record_manual_completion(task, stage, completed_by, notes)
-
-    # 자동 runner 밖에서 완료된 작업도 하네스 감사 로그와 산출물로 흡수한다.
-    def record_manual_completion(
-        self,
-        task: Task,
-        stage: str,
-        completed_by: str,
-        notes: str = "",
-    ) -> EventResult:
-        previous = task.state
-        target_state = self._manual_completion_target_state(stage)
-        allowed_states = self._manual_completion_allowed_states(stage)
-        if previous not in allowed_states:
-            raise ValueError(
-                f"{stage} 수동 완료는 {', '.join(sorted(allowed_states))} 상태에서만 기록할 수 있습니다. "
-                f"현재 상태: {previous}"
-            )
-
-        now = now_kst()
-        run = Run(
-            task_id=task.id,
-            agent_name=f"manual_{stage}",
-            status=AgentStatus.SUCCESS.value,
-            started_at=now,
-            finished_at=now,
-            timeout_seconds=0,
-            summary=f"{stage} 단계가 {completed_by}에 의해 수동 완료로 기록되었습니다.",
-            error=None,
+        context = self._context(issue_number, title, body, issue_url, issue_labels)
+        agent_body = self._append_issue_metadata(context.body, context.issue_labels, context.issue_number)
+        if qa_request:
+            agent_body = self._append_named_section(agent_body, "Human QA Request", qa_request)
+        result = self._run_agent(context, "qa", agent_body, "Codex QA Requested")
+        label = "Codex QA Re-Handoff" if rerun else "Codex QA Handoff"
+        self._comment_on_github_issue_best_effort(
+            context.issue_number,
+            self._agent_comment(label, context, result, "qa"),
         )
-        self.db.add(run)
-        self.db.flush()
+        return self._event(context, "Codex QA Handoff Ready", "Codex가 직접 검증할 QA handoff artifact를 생성했습니다.")
 
-        artifact = self._write_manual_completion_artifact(task, run, stage, completed_by, notes)
-        self.artifact_store.persist_agent_artifacts(task.id, run.id, [artifact])
-
-        if task.state != target_state:
-            task.state = target_state
-            self._record_transition(
-                task.id,
-                previous,
-                task.state,
-                f"{stage} manually completed by {completed_by}",
-                "human",
-            )
-
-        self._audit(
-            task.id,
-            run.id,
-            f"manual.{stage}_completed",
-            {"completed_by": completed_by, "notes": notes, "previous_state": previous},
-        )
-        self._move_github_project_status_best_effort(task, run.id)
-
-        if task.github_issue_number:
-            self._comment_on_github_issue(
-                task,
-                run.id,
-                int(task.github_issue_number),
-                self._build_manual_completion_comment(task, stage, completed_by, notes, run),
-                f"github.manual_{stage}_completed_commented",
-                f"github.manual_{stage}_completed_comment_failed",
-            )
-
-        self.db.commit()
-        return EventResult(
-            task_id=task.id,
-            previous_state=previous,
-            current_state=task.state,
-            message=f"{stage} 수동 완료를 공식 run으로 기록했고 작업 상태를 {task.state}로 변경했습니다.",
-        )
-
-    # 수동 완료 stage별 목표 상태를 반환한다.
-    def _manual_completion_target_state(self, stage: str) -> str:
-        mapping = {
-            "dev": KanbanState.DEV_REVIEW.value,
-            "qa": KanbanState.QA_REVIEW.value,
-        }
-        try:
-            return mapping[stage]
-        except KeyError as exc:
-            raise ValueError(f"지원하지 않는 수동 완료 stage입니다: {stage}") from exc
-
-    # 수동 완료 stage별 허용 시작 상태를 반환한다.
-    def _manual_completion_allowed_states(self, stage: str) -> set[str]:
-        mapping = {
-            "dev": {KanbanState.DEV_READY.value, KanbanState.DEV_REVIEW.value},
-            "qa": {KanbanState.QA_READY.value, KanbanState.QA_REVIEW.value},
-        }
-        try:
-            return mapping[stage]
-        except KeyError as exc:
-            raise ValueError(f"지원하지 않는 수동 완료 stage입니다: {stage}") from exc
-
-    # task의 현재 상태와 승인 stage가 맞는지 검증하고 다음 gate로 전환한다.
-    def approve_task_stage(self, task: Task, stage: str, payload: HumanApproval) -> EventResult:
-        previous = task.state
-        event = self._approval_event_for_stage(stage)
-        decision = self.state_machine.decide(task.state, event.value)
-        if stage == "deploy":
-            task.human_approved_at = now_kst()
-        task.state = decision.to_state.value
-
-        self._record_transition(
-            task.id,
-            previous,
-            task.state,
-            f"{stage} approved by {payload.approved_by}",
-            "human",
-        )
-        self._audit(
-            task.id,
-            None,
-            f"human.approved_{stage}",
-            {"approved_by": payload.approved_by, "notes": payload.notes, "stage": stage},
-        )
-        self._move_github_project_status_best_effort(task, None)
-        self.db.commit()
-
-        suffix = (
-            " 필요하면 Documentation Agent 또는 Domain Knowledge Agent를 수동으로 호출하세요."
-            if stage == "qa"
-            else ""
-        )
-        return EventResult(
-            task_id=task.id,
-            previous_state=previous,
-            current_state=task.state,
-            message=f"{stage} 승인 기록을 남겼고 작업 상태를 {task.state}로 변경했습니다.{suffix}",
-        )
-
-    # approval stage 문자열을 상태 머신 이벤트로 변환한다.
-    def _approval_event_for_stage(self, stage: str) -> WorkflowEvent:
-        mapping = {
-            "plan": WorkflowEvent.APPROVE_PLAN,
-            "dev": WorkflowEvent.APPROVE_DEV,
-            "qa": WorkflowEvent.APPROVE_QA,
-            "deploy": WorkflowEvent.APPROVE_DEPLOY,
-        }
-        try:
-            return mapping[stage]
-        except KeyError as exc:
-            raise ValueError(f"지원하지 않는 승인 stage입니다: {stage}") from exc
-
-    # GitHub Project 칸반 상태를 하네스 task 상태와 맞춘다.
-    def _move_github_project_status_best_effort(self, task: Task, run_id: str | None) -> bool:
-        issue_number = task.github_issue_number
-        if not issue_number or not settings.github_project_number:
-            self._audit(
-                task.id,
-                run_id,
-                "github.project_status_skipped",
-                {
-                    "reason": "missing_issue_number_or_project_number",
-                    "issue_number": issue_number,
-                    "project_number": settings.github_project_number,
-                    "target_state": task.state,
-                },
-            )
-            return False
-
-        try:
-            GitHubAdapter(settings.github_token, use_gh_cli=settings.github_use_gh_cli).move_issue_project_status(
-                settings.github_owner,
-                settings.github_repo,
-                int(issue_number),
-                int(settings.github_project_number),
-                self._github_project_status_name(task.state),
-            )
-            self._audit(
-                task.id,
-                run_id,
-                "github.project_status_moved",
-                {
-                    "issue_number": issue_number,
-                    "project_number": settings.github_project_number,
-                    "target_state": task.state,
-                },
-            )
-            return True
-        except Exception as exc:  # noqa: BLE001 - GitHub Project 이동 실패는 승인 자체를 막지 않는다.
-            self._audit(
-                task.id,
-                run_id,
-                "github.project_status_move_failed",
-                {
-                    "issue_number": issue_number,
-                    "project_number": settings.github_project_number,
-                    "target_state": task.state,
-                    "error": str(exc),
-                },
-            )
-            return False
-
-    # 하네스 내부 상태명을 GitHub Project의 실제 칸반 컬럼명으로 변환한다.
-    def _github_project_status_name(self, state: str) -> str:
-        mapping = {
-            KanbanState.BACKLOG.value: "Backlog",
-            KanbanState.PLAN_REVIEW.value: "Todo",
-            KanbanState.DEV_READY.value: "In progress",
-            KanbanState.DEV_REVIEW.value: "In progress",
-            KanbanState.QA_READY.value: "AI QA",
-            KanbanState.QA_REVIEW.value: "Human QA",
-            KanbanState.READY_TO_DEPLOY.value: "Stage",
-            KanbanState.DONE.value: "Done",
-            KanbanState.CANCELLED.value: "Done",
-        }
-        return mapping.get(state, state)
-
-    def _run_agent(self, task: Task, agent_name: str) -> str:
+    def _run_agent(self, context: IssueContext, agent_name: str, body: str, state: str) -> AgentResult:
         agent = self.agent_registry.get(agent_name)
-        run = Run(
-            task_id=task.id,
-            agent_name=agent_name,
-            status="running",
-            timeout_seconds=settings.agent_timeout_seconds,
-        )
-        self.db.add(run)
-        self.db.flush()
-
-        logger.info(
-            "agent run started",
-            extra={"task_id": task.id, "run_id": run.id, "agent_name": agent_name},
-        )
-
-        try:
-            result = agent.run(
-                AgentInput(
-                    task_id=task.id,
-                    title=task.title,
-                    body=task.body,
-                    state=task.state,
-                    artifacts_root=settings.artifact_root,
-                    timeout_seconds=settings.agent_timeout_seconds,
-                    retry_count=task.retry_count,
-                    retry_limit=task.retry_limit,
-                )
-            )
-            run.status = result.status.value
-            run.summary = result.summary
-            run.error = result.error
-            run.finished_at = now_kst()
-            self.artifact_store.persist_agent_artifacts(task.id, run.id, result.artifacts)
-            if result.status != AgentStatus.SUCCESS:
-                raise ValueError(f"Agent 실행 실패: {agent_name}: {result.error or result.summary}")
-            return run.id
-        except Exception as exc:
-            if run.status == "running":
-                run.status = AgentStatus.FAILED.value
-            if not run.error:
-                run.error = str(exc)
-            run.finished_at = now_kst()
-            if not run.summary:
-                run.summary = f"{agent_name}가 완료 전에 실패했습니다."
-            raise
-        finally:
-            logger.info(
-                "agent run finished",
-                extra={"task_id": task.id, "run_id": run.id, "agent_name": agent_name},
-            )
-
-    def _record_transition(
-        self, task_id: str, from_state: str | None, to_state: str, reason: str, actor: str
-    ) -> None:
-        self.db.add(
-            StateTransition(
-                task_id=task_id,
-                from_state=from_state,
-                to_state=to_state,
-                reason=reason,
-                actor=actor,
+        result = agent.run(
+            AgentInput(
+                task_id=context.task_id,
+                title=context.title,
+                body=body,
+                state=state,
+                artifacts_root=settings.artifact_root,
+                timeout_seconds=settings.agent_timeout_seconds,
+                retry_count=0,
+                retry_limit=0,
             )
         )
+        self._write_run_summary(context, agent_name, result)
+        if result.status != AgentStatus.SUCCESS:
+            raise ValueError(result.error or result.summary)
+        return result
 
-    def _audit(
-        self, task_id: str | None, run_id: str | None, event_type: str, payload: dict
-    ) -> None:
-        self.db.add(AuditLog(task_id=task_id, run_id=run_id, event_type=event_type, payload=payload))
-
-    def _latest_run(self, task_id: str) -> Run | None:
-        return self.db.scalar(
-            select(Run).where(Run.task_id == task_id).order_by(Run.started_at.desc()).limit(1)
+    def _write_run_summary(self, context: IssueContext, agent_name: str, result: AgentResult) -> Path:
+        artifact_lines = [f"- {artifact.kind}: `{artifact.path}`" for artifact in result.artifacts]
+        return self._write_note(
+            context,
+            "_runs",
+            f"{self._timestamp()}-{agent_name}.md",
+            [
+                f"# {agent_name} Run",
+                "",
+                f"- status: `{result.status.value}`",
+                f"- summary: {result.summary}",
+                f"- error: {result.error or 'none'}",
+                "",
+                "## Artifacts",
+                *(artifact_lines or ["- 기록 없음"]),
+            ],
         )
 
-    # 지정한 agent 중 가장 최근 성공 run을 조회한다.
-    def _latest_successful_run(self, task_id: str, agent_names: set[str]) -> Run | None:
-        return self.db.scalar(
-            select(Run)
-            .where(Run.task_id == task_id)
-            .where(Run.agent_name.in_(agent_names))
-            .where(Run.status == AgentStatus.SUCCESS.value)
-            .order_by(Run.started_at.desc())
-            .limit(1)
-        )
-
-    def _latest_running_run(self, task_id: str) -> Run | None:
-        return self.db.scalar(
-            select(Run)
-            .where(Run.task_id == task_id)
-            .where(Run.status == "running")
-            .where(Run.finished_at.is_(None))
-            .order_by(Run.started_at.desc())
-            .limit(1)
-        )
-
-    # 가장 최근 실패한 Dev run을 찾아 fix-develop의 입력 기준으로 사용한다.
-    def _latest_failed_dev_run(self, task_id: str) -> Run | None:
-        return self.db.scalar(
-            select(Run)
-            .where(Run.task_id == task_id)
-            .where(Run.agent_name == "dev")
-            .where(Run.status == AgentStatus.FAILED.value)
-            .order_by(Run.started_at.desc())
-            .limit(1)
-        )
-
-    def _latest_transition(self, task_id: str) -> StateTransition | None:
-        return self.db.scalar(
-            select(StateTransition)
-            .where(StateTransition.task_id == task_id)
-            .order_by(StateTransition.created_at.desc())
-            .limit(1)
-        )
-
-    def _format_dt(self, value: datetime | None) -> str:
-        if value is None:
-            return "not finished"
-        if value.tzinfo is None:
-            return value.strftime("%Y.%m.%d %H:%M:%S")
-        return value.astimezone(KST).strftime("%Y.%m.%d %H:%M:%S")
-
-    def _extract_section(self, markdown: str, heading: str) -> list[str]:
-        lines = markdown.splitlines()
-        collected: list[str] = []
-        in_section = False
-        section_level: int | None = None
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                level = len(stripped) - len(stripped.lstrip("#"))
-                title = stripped[level:].strip()
-                if in_section and section_level is not None and level <= section_level:
-                    break
-                if level in {2, 3} and title == heading:
-                    in_section = True
-                    section_level = level
-                    continue
-            if in_section and stripped:
-                collected.append(stripped)
-        return collected
-
-    def _extract_bullets(self, markdown: str, heading: str) -> list[str]:
-        return [
-            line.removeprefix("-").strip()
-            for line in self._extract_section(markdown, heading)
-            if line.startswith("-")
-        ]
-
-    def _comment_bullets(self, items: list[str], fallback: list[str]) -> list[str]:
-        return [f"- {item}" for item in (items or fallback)]
-
-    def _append_replan_request(self, body: str, replan_request: str) -> str:
+    def _agent_comment(self, heading: str, context: IssueContext, result: AgentResult, stage: str) -> str:
+        artifact_lines = [f"- `{artifact.path}`" for artifact in result.artifacts]
         return "\n".join(
             [
-                body,
+                AI_HARNESS_GENERATED_MARKER,
                 "",
-                "## Human Replan Request",
-                replan_request.strip(),
+                f"# {heading}: {context.title}",
+                "",
+                f"Task ID: `{context.task_id}`",
+                "",
+                "## 결과",
+                f"- status: `{result.status.value}`",
+                f"- summary: {result.summary}",
+                "",
+                "## Artifact",
+                *(artifact_lines or ["- 기록 없음"]),
+                "",
+                "## 다음 행동",
+                f"- Codex가 `artifacts/{context.task_id}/{stage}`와 `agents/specs`, `agents/playbooks`를 읽고 직접 진행합니다.",
             ]
         )
 
-    def _append_refactor_request(self, body: str, refactor_request: str) -> str:
+    def _status_comment(self, context: IssueContext, status: dict[str, str | list[str]]) -> str:
+        artifacts = status.get("artifacts", [])
+        artifact_lines = [f"- `{item}`" for item in artifacts] if isinstance(artifacts, list) else []
         return "\n".join(
             [
-                body,
+                AI_HARNESS_GENERATED_MARKER,
                 "",
-                "## Human Refactor Request",
-                refactor_request.strip(),
+                f"# Harness Status: {context.title}",
+                "",
+                f"- task_id: `{context.task_id}`",
+                f"- artifact_root: `{status.get('artifact_root', '')}`",
+                "",
+                "## 최근 Artifact",
+                *(artifact_lines or ["- 기록 없음"]),
+                "",
+                "## 다음 행동",
+                "- Codex가 GitHub issue와 artifact를 읽고 직접 판단합니다.",
             ]
         )
 
-    def _append_qa_request(self, body: str, qa_request: str | None) -> str:
-        if not qa_request:
-            return body
-        return "\n".join(
-            [
-                body,
-                "",
-                "## Human QA Request",
-                qa_request.strip(),
-            ]
-        )
-
-    # 이슈 타입별 GitHub issue template의 필수 섹션이 채워졌는지 검증한다.
-    def _validate_issue_template(self, body: str, title: str = "") -> list[str]:
-        issue_type = self._extract_issue_type(body, title)
-        if issue_type == "unspecified":
-            return ["이슈 타입을 확인할 수 없습니다. 제목 prefix 또는 `type: ...` 라벨을 확인하세요."]
-        if not body.strip():
-            return ["이슈 본문이 비어 있습니다."]
-        user_body = body.split("## Harness Metadata", 1)[0]
-        if "##" in user_body and not (self._extract_section(user_body, "목표") or self._extract_section(user_body, "목적")):
-            return ["`## 목표` 또는 `## 목적` 섹션이 없거나 비어 있습니다."]
-        return []
-
-    def _append_issue_metadata(
-        self, body: str, issue_labels: list[str], issue_number: int | None = None
-    ) -> str:
-        if not issue_labels and issue_number is None:
-            return body
-        labels = ", ".join(sorted(set(issue_labels))) if issue_labels else "none"
-        issue_number_value = str(issue_number) if issue_number is not None else "unknown"
-        return "\n".join(
-            [
-                body.rstrip(),
-                "",
-                "## Harness Metadata",
-                f"- issue_number: {issue_number_value}",
-                f"- labels: {labels}",
-            ]
-        )
-
-    def _next_command_for_state(self, state: str) -> str:
-        return {
-            KanbanState.BACKLOG.value: settings.design_command,
-            KanbanState.PLAN_REVIEW.value: "harness approve --stage plan",
-            KanbanState.DEV_READY.value: settings.develop_command,
-            KanbanState.DEV_REVIEW.value: "harness approve --stage dev",
-            KanbanState.QA_READY.value: settings.qa_command,
-            KanbanState.QA_REVIEW.value: "harness approve --stage qa",
-            KanbanState.READY_TO_DEPLOY.value: "harness approve --stage deploy",
-            "Done": "완료됨",
-            "Cancelled": "중지됨. 다시 시작하려면 replan 또는 plan부터 판단",
-        }.get(state, settings.status_command)
-
-    def _build_status_comment(self, task: Task) -> str:
-        latest_run = self._latest_run(task.id)
-        running_run = self._latest_running_run(task.id)
-        latest_transition = self._latest_transition(task.id)
-        branch_name = self._branch_name_for_task(task)
-
-        run_lines = [
-            "- 아직 실행된 Agent run이 없습니다.",
-        ]
-        if latest_run:
-            run_lines = [
-                f"- agent: `{latest_run.agent_name}`",
-                f"- status: `{latest_run.status}`",
-                f"- started_at: `{self._format_dt(latest_run.started_at)}`",
-                f"- finished_at: `{self._format_dt(latest_run.finished_at)}`",
-                f"- summary: {latest_run.summary or '기록 없음'}",
-            ]
-            if latest_run.error:
-                run_lines.append(f"- error: `{latest_run.error}`")
-
-        transition_lines = ["- 아직 상태 전이 기록이 없습니다."]
-        if latest_transition:
-            transition_lines = [
-                f"- from: `{latest_transition.from_state or '없음'}`",
-                f"- to: `{latest_transition.to_state}`",
-                f"- reason: {latest_transition.reason}",
-                f"- at: `{self._format_dt(latest_transition.created_at)}`",
-            ]
-
-        running_text = (
-            f"`{running_run.agent_name}` 실행 중"
-            if running_run
-            else "현재 실행 중인 Agent 없음"
-        )
-        recommended_command = (
-            settings.fix_develop_command
-            if latest_run and latest_run.agent_name == "dev" and latest_run.status == AgentStatus.FAILED.value
-            else self._next_command_for_state(task.state)
-        )
-
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# 📍 AI Harness Status: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                "### 현재 상태",
-                f"- state: `{task.state}`",
-                f"- branch: `{branch_name}`",
-                f"- running: {running_text}",
-                f"- retry: `{task.retry_count}/{task.retry_limit}`",
-                "",
-                "### 마지막 Agent 실행",
-                *run_lines,
-                "",
-                "### 마지막 상태 전이",
-                *transition_lines,
-                "",
-                "### 다음 행동",
-                f"- 권장 명령: `{recommended_command}`",
-                "",
-                "### 중지",
-                "```markdown",
-                settings.cancel_command,
-                "```",
-            ]
-        )
-
-    def _build_cancel_comment(
-        self, task: Task, previous_state: str, reason: str, had_running_run: bool
-    ) -> str:
-        interrupt_note = (
-            "실행 중인 Agent run이 감지되었습니다. 현재 구조에서는 이미 시작된 동기 작업을 강제 kill하지 않고, 이후 단계 진행을 중지합니다."
-            if had_running_run
-            else "현재 실행 중인 Agent는 없었고, 이후 단계 진행을 중지했습니다."
-        )
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# 🛑 AI Harness 작업 중지: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                "### 상태",
-                f"- previous: `{previous_state}`",
-                f"- current: `{task.state}`",
-                "",
-                "### 사유",
-                f"- {reason}",
-                "",
-                "### 참고",
-                f"- {interrupt_note}",
-                "",
-                "상태를 다시 확인하려면 아래 명령을 사용하세요.",
-                "",
-                "```markdown",
-                settings.status_command,
-                "```",
-            ]
-        )
-
-    def _build_command_failure_comment(
-        self, task: Task, command: str | None, error: str
-    ) -> str:
-        latest_run = self._latest_run(task.id)
-        run_lines = ["- Agent run 기록을 찾지 못했습니다."]
-        if latest_run:
-            run_lines = [
-                f"- agent: `{latest_run.agent_name}`",
-                f"- status: `{latest_run.status}`",
-                f"- started_at: `{self._format_dt(latest_run.started_at)}`",
-                f"- finished_at: `{self._format_dt(latest_run.finished_at)}`",
-                f"- summary: {latest_run.summary or '기록 없음'}",
-            ]
-            if latest_run.error:
-                run_lines.append(f"- error: `{latest_run.error}`")
-
-        artifact_lines = self._failure_artifact_open_lines(
-            task,
-            command,
-            latest_run.agent_name if latest_run else None,
-        )
-        next_command = (
-            settings.fix_develop_command
-            if latest_run
-            and latest_run.agent_name == "dev"
-            and latest_run.status == AgentStatus.FAILED.value
-            else settings.status_command
-        )
-        next_heading = "### 다음 추천 명령" if next_command == settings.fix_develop_command else "### 다음 확인 명령"
-
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# ⚠️ AI Harness 명령 실패: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                "### 명령",
-                f"- `{command or '알 수 없음'}`",
-                "",
-                "### 실패 이유",
-                f"- {error}",
-                "",
-                "### 현재 상태",
-                f"- state: `{task.state}`",
-                "",
-                "### 마지막 Agent 실행",
-                *run_lines,
-                "",
-                *artifact_lines,
-                "",
-                next_heading,
-                "```markdown",
-                next_command,
-                "```",
-            ]
-        )
-
-    def _failure_artifact_open_lines(
-        self,
-        task: Task,
-        command: str | None,
-        agent_name: str | None,
-    ) -> list[str]:
-        artifact_path: Path | None = None
-        if agent_name == "qa" or command in {settings.qa_command, settings.reqa_command}:
-            artifact_path = settings.artifact_root / task.id / "qa" / "qa-report.md"
-        elif agent_name == "dev" or command in {
-            settings.develop_command,
-            settings.refactor_command,
-        }:
-            artifact_path = settings.artifact_root / task.id / "dev" / "dev-status.md"
-        elif agent_name == "fix_develop" or command == settings.fix_develop_command:
-            artifact_path = settings.artifact_root / task.id / "dev" / "fix-develop-report.md"
-        elif agent_name in {"plan", "design"} or command in {
-            settings.design_command,
-            settings.redesign_command,
-            settings.plan_command,
-            settings.replan_command,
-        }:
-            artifact_path = settings.artifact_root / task.id / "plans" / "architecture.md"
-
-        if artifact_path is None:
-            return []
-
-        absolute_path = artifact_path.expanduser().resolve()
-        return [
-            "### 상세 리포트 바로 열기",
-            f"- artifact: `{absolute_path}`",
-            "",
-            "IntelliJ에서 바로 열려면 아래 명령을 실행하세요.",
-            "",
-            "```bash",
-            f"open -a \"IntelliJ IDEA\" {absolute_path}",
-            "```",
-        ]
-
-    def _skip_develop_command(
-        self, issue_number: int, reason: str, task_id: str | None = None
-    ) -> dict[str, str]:
-        self._comment_on_github_issue_best_effort(
-            issue_number,
-            self._build_develop_not_ready_comment(reason, task_id),
-        )
-        self.db.commit()
-        return {"status": "ignored", "reason": reason}
-
-    def _skip_refactor_command(
-        self, issue_number: int, reason: str, task_id: str | None = None
-    ) -> dict[str, str]:
-        self._comment_on_github_issue_best_effort(
-            issue_number,
-            self._build_refactor_not_ready_comment(reason, task_id),
-        )
-        self.db.commit()
-        return {"status": "ignored", "reason": reason}
-
-    def _skip_qa_command(
+    def _context(
         self,
         issue_number: int,
-        reason: str,
-        task_id: str | None = None,
-        next_command: str | None = None,
-    ) -> dict[str, str]:
-        self._comment_on_github_issue_best_effort(
-            issue_number,
-            self._build_qa_not_ready_comment(
-                reason,
-                task_id,
-                next_command or settings.develop_command,
-            ),
-        )
-        self.db.commit()
-        return {"status": "ignored", "reason": reason}
-
-    # Design Agent 결과를 사람이 검토할 수 있는 GitHub 댓글 본문으로 만든다.
-    # Design Agent V2가 만든 코드베이스 기반 설계 섹션을 댓글용으로 변환한다.
-    def _design_v2_comment_sections(self, task: Task) -> list[str]:
-        architecture = settings.artifact_root / task.id / "plans" / "architecture.md"
-        if not architecture.exists():
-            return []
-        markdown = architecture.read_text(encoding="utf-8")
-        mapping = [
-            ("Current App Structure", "현재 앱 구조 확인"),
-            ("Concrete Change Targets", "변경 대상 특정"),
-            ("UI State Design", "UI 상태 설계"),
-            ("Commit Plan", "구현 단위 설계"),
-            ("QA Design", "QA 설계"),
-        ]
-        sections: list[str] = []
-        for source_heading, comment_heading in mapping:
-            lines = self._extract_section(markdown, source_heading)
-            if not lines:
-                continue
-            sections.extend([f"### {comment_heading}", *lines, ""])
-        return sections
-
-    def _build_plan_comment(self, task: Task) -> str:
-        goal = self._extract_section(task.body, "목표")
-        scope = self._extract_bullets(task.body, "작업 범위")
-        acceptance = self._extract_bullets(task.body, "완료 기준")
-        replan_request = self._extract_section(task.body, "Human Replan Request")
-        issue_type = self._extract_issue_type(task.body, task.title)
-        profile = _profile_for_issue_type(issue_type)
-        implementation_steps = list(profile["steps"])
-        expected_files = list(profile["expected_files"])
-        open_questions = list(profile["open_questions"])
-        open_questions = _decision_questions(issue_type, task.title, task.body, open_questions)
-        sql_blocks = _extract_sql_blocks(task.body)
-        if _is_login_api_plan(task.title, task.body):
-            open_questions = [
-                question
-                for question in open_questions
-                if question not in {"DDL/migration 필요 여부", "외부 시스템 연동 여부"}
-            ]
-        summary_fallback = [str(profile["summary_fallback"])]
-        scope_fallback = list(profile["scope_fallback"])
-        acceptance_fallback = list(profile["acceptance_fallback"])
-        flow_title = str(profile["flow_title"])
-        include_diagrams = _should_include_usecase_diagrams(issue_type)
-        sequence_diagram = _sequence_diagram_for_issue_type(issue_type, task.title, task.body) if include_diagrams else []
-        flow_chart = _flow_chart_for_issue_type(issue_type, task.title, task.body) if include_diagrams else []
-        work_units = render_work_units(issue_type)
-        task_id = task.id
-        design_v2_sections = self._design_v2_comment_sections(task)
-
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# {self._plan_title(task)}",
-                "",
-                f"Task ID: `{task_id}`",
-                "",
-                "### 이슈 타입",
-                issue_type,
-                "",
-                "### 구현 요약",
-                *(goal or summary_fallback),
-                "",
-                *(
-                    [
-                        "### 반영된 결정/수정 요청",
-                        *replan_request,
-                        "",
-                    ]
-                    if replan_request
-                    else []
-                ),
-                "### 변경 대상",
-                *self._comment_bullets(expected_files, []),
-                "",
-                "### 작업 범위",
-                *self._comment_bullets(
-                    scope,
-                    scope_fallback,
-                ),
-                "",
-                *design_v2_sections,
-                *(
-                    [
-                        "### DDL",
-                        *[
-                            "\n".join(["```sql", sql_block, "```"])
-                            for sql_block in sql_blocks
-                        ],
-                        "",
-                    ]
-                    if sql_blocks
-                    else []
-                ),
-                *(
-                    [
-                        "### 시퀀스 다이어그램",
-                        "```mermaid",
-                        *sequence_diagram,
-                        "```",
-                        "",
-                        f"### 플로우 차트 ({flow_title}, 사용자/도메인 관점)",
-                        "```mermaid",
-                        *flow_chart,
-                        "```",
-                        "",
-                    ]
-                    if include_diagrams
-                    else []
-                ),
-                "### 구현 순서",
-                *[f"{index}. {step}" for index, step in enumerate(implementation_steps, start=1)],
-                "",
-                "### 책임 기반 Work Units",
-                *work_units,
-                "",
-                "### 검증 기준",
-                *self._comment_bullets(
-                    acceptance,
-                    acceptance_fallback,
-                ),
-                "",
-                "### 결정 필요 질문",
-                *self._comment_bullets(open_questions, []),
-                "",
-                "### 상세 Artifacts",
-                f"- `artifacts/{task_id}/plans/architecture.md`",
-                *(
-                    [
-                        f"- `artifacts/{task_id}/plans/sequence-diagram.md`",
-                        f"- `artifacts/{task_id}/plans/flow.md`",
-                        f"- `artifacts/{task_id}/plans/flow-chart.md`",
-                    ]
-                    if include_diagrams
-                    else []
-                ),
-                f"- `artifacts/{task_id}/plans/work-units.md`",
-                f"- `artifacts/{task_id}/plans/ai-organization.md`",
-                f"- `artifacts/{task_id}/plans/edge-case-checklist.md`",
-                "",
-                "### 다음 추천 명령어",
-                f"- 위 질문에 답을 보강하려면 `{settings.redesign_command}`",
-                f"- 계획이 충분하면 `{self._approval_command(task, 'plan')}`",
-                f"- 계획을 수정하고 싶으면 `{settings.redesign_command}` 아래에 수정 요청을 적어 다시 논의하세요.",
-            ]
+        title: str,
+        body: str,
+        issue_url: str,
+        issue_labels: list[str] | tuple[str, ...] | None,
+    ) -> IssueContext:
+        return IssueContext(
+            issue_number=issue_number,
+            title=title,
+            body=body,
+            issue_url=issue_url,
+            issue_labels=tuple(label for label in (issue_labels or []) if label),
         )
 
-    def _extract_issue_type(self, markdown: str, title: str = "") -> str:
-        metadata = self._extract_section(markdown, "Harness Metadata")
-        for line in metadata:
-            if not line.startswith("- labels:"):
-                continue
-            labels = [item.strip() for item in line.removeprefix("- labels:").split(",")]
-            for label in labels:
-                if label.startswith("type: "):
-                    return label.removeprefix("type: ").strip()
-        normalized = title.lower()
-        if "[fe]" in normalized:
-            return "feFeature"
-        if "[be]" in normalized:
-            return "beFeature"
-        if "[fs]" in normalized:
-            return "fullstackFeature"
-        if "[api]" in normalized:
-            return "apiConnect"
-        if "[config]" in normalized:
-            return "config"
-        if "[infra]" in normalized:
-            return "infra"
-        if "[docs]" in normalized:
-            return "docs"
-        if "[bugfix]" in normalized:
-            return "bugfix"
-        if "[hotfix]" in normalized:
-            return "hotfix"
-        return "unspecified"
+    def _task_dir(self, context: IssueContext) -> Path:
+        return settings.artifact_root / context.task_id
 
-    # GitHub 댓글과 알림에 표시할 이슈 타입명을 사람이 읽기 좋게 변환한다.
-    def _issue_type_label(self, issue_type: str) -> str:
-        return {
-            "beFeature": "BE feature",
-            "feFeature": "FE feature",
-            "fullstackFeature": "Full Stack feature",
-            "apiConnect": "API connect",
-            "bugfix": "bugfix",
-            "hotfix": "hotfix",
-            "infra": "infra",
-            "config": "config",
-            "docs": "docs",
-        }.get(issue_type, issue_type or "unspecified")
+    def _write_note(self, context: IssueContext, stage: str, filename: str, lines: list[str]) -> Path:
+        path = self._task_dir(context) / stage / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
 
-    def _extract_issue_number(self, markdown: str) -> str:
-        metadata = self._extract_section(markdown, "Harness Metadata")
-        for line in metadata:
-            if line.startswith("- issue_number:"):
-                return line.removeprefix("- issue_number:").strip()
-        return "unknown"
-
-    # 작업의 이슈 타입과 번호를 기준으로 표준 브랜치명을 만든다.
-    def _branch_name_for_task(self, task: Task) -> str:
-        issue_type = self._extract_issue_type(task.body, task.title)
-        issue_number = self._extract_issue_number(task.body)
-        prefix = {
-            "beFeature": "feature(BE)",
-            "feFeature": "feature(FE)",
-            "fullstackFeature": "feature(FS)",
-            "apiConnect": "api-connect",
-            "bugfix": "bugfix",
-            "hotfix": "hotfix",
-            "infra": "infra",
-            "config": "config",
-            "docs": "docs",
-        }.get(issue_type, "task")
-        number = issue_number if issue_number and issue_number != "unknown" else "no-issue"
-        return f"{prefix}-{number}"
-
-    # 사용자가 터미널에 그대로 복사할 수 있는 하네스 CLI 명령 prefix를 만든다.
-    def _harness_cli_command(self, command: str, task: Task) -> str:
-        issue_number = task.github_issue_number or self._extract_issue_number(task.body)
-        issue_option = f" --issue {issue_number}" if issue_number and str(issue_number) != "unknown" else ""
-        return "\n".join(
-            [
-                f"cd {Path(__file__).resolve().parents[2]}",
-                f".venv/bin/python -m ai_harness.cli {command}{issue_option}",
-            ]
+    def _event(self, context: IssueContext, state: str, message: str) -> EventResult:
+        return EventResult(
+            task_id=context.task_id,
+            previous_state="stateless",
+            current_state=state,
+            message=message,
         )
 
-    # 사용자가 터미널에 그대로 복사할 수 있는 승인 CLI 명령을 만든다.
-    def _approval_cli_command(self, task: Task, stage: str) -> str:
-        issue_number = task.github_issue_number or self._extract_issue_number(task.body)
-        issue_option = f" --issue {issue_number}" if issue_number and str(issue_number) != "unknown" else ""
-        approver = settings.github_owner or "<name>"
-        return "\n".join(
+    def _append_issue_metadata(self, body: str, issue_labels: tuple[str, ...], issue_number: int) -> str:
+        metadata = "\n".join(
             [
-                f"cd {Path(__file__).resolve().parents[2]}",
-                f".venv/bin/python -m ai_harness.cli approve{issue_option} --stage {stage} --approved-by {approver}",
+                "## Harness Metadata",
+                f"- issue_number: {issue_number}",
+                f"- labels: {', '.join(issue_labels)}",
             ]
         )
+        if "## Harness Metadata" in body:
+            return body
+        return "\n\n".join(part for part in [body.strip(), metadata] if part)
 
-    # task의 GitHub 이슈 번호를 포함한 짧은 승인 CLI 명령을 만든다.
-    def _approval_command(self, task: Task, stage: str) -> str:
-        issue_number = task.github_issue_number or self._extract_issue_number(task.body)
-        issue_option = f" --issue {issue_number}" if issue_number and str(issue_number) != "unknown" else ""
-        return f"harness approve{issue_option} --stage {stage} --approved-by <name>"
+    def _append_named_section(self, body: str, heading: str, content: str) -> str:
+        return "\n\n".join(part for part in [body.strip(), f"## {heading}\n{content.strip()}"] if part)
 
-    def _build_duplicate_plan_comment(self, task: Task) -> str:
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# 🏗️ AI Design이 이미 존재합니다: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                "이미 Design Agent가 성공한 기록이 있습니다.",
-                "",
-                "기존 설계를 수정하고 싶다면 아래 명령을 새 댓글로 작성하세요.",
-                "",
-                "```markdown",
-                f"{settings.redesign_command}",
-                "",
-                "- 수정하고 싶은 설계 방향을 적습니다.",
-                "```",
-            ]
-        )
+    def _comment_on_github_issue_best_effort(self, issue_number: int, body: str) -> bool:
+        if settings.github_token:
+            try:
+                GitHubAdapter(settings.github_token, use_gh_cli=settings.github_use_gh_cli).create_issue_comment(
+                    settings.github_owner,
+                    settings.github_repo,
+                    issue_number,
+                    body,
+                )
+                return True
+            except Exception:
+                pass
+        return self._comment_on_github_issue_with_gh(issue_number, body)[0]
 
-    def _build_develop_comment(self, task: Task, previous_state: str = "Todo") -> str:
-        branch_name = self._branch_name_for_task(task)
-        latest_run = self._latest_run(task.id)
-        run_status = latest_run.status if latest_run else "unknown"
-        run_summary = latest_run.summary if latest_run else "Dev Agent 실행 기록을 찾지 못했습니다."
-        run_error = latest_run.error if latest_run and latest_run.error else None
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# 🛠️ 개발 완료: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                "사람의 명령으로 Plan이 승인되었고 Dev Agent 실행이 끝났습니다.",
-                "",
-                "### 상태",
-                f"- previous: `{previous_state}`",
-                f"- current: `{task.state}`",
-                f"- dev status: `{run_status}`",
-                "",
-                "### 브랜치",
-                f"- `{branch_name}`",
-                "",
-                "### 실행 결과",
-                f"- {run_summary}",
-                *(["", "### 실패 이유", f"- {run_error}"] if run_error else []),
-                "",
-                "### 커밋 규칙",
-                "- 구현 단계 하나가 끝날 때마다 커밋한다.",
-                "- 커밋 메시지 형식: `[구현 기능(이슈 제목)] : 내용`",
-                "- 각 구현 단위에는 테스트 코드를 포함한다.",
-                "",
-                "### Dev 산출물",
-                f"- `artifacts/{task.id}/dev/commit-plan.md`",
-                f"- `artifacts/{task.id}/dev/dev-status.md`",
-                f"- `artifacts/{task.id}/dev/implementation.patch`",
-                f"- `artifacts/{task.id}/dev/test-report.md`",
-                "",
-                "### 확인 방법",
-                "- 이 GitHub 댓글에서 브랜치와 artifact 경로를 확인한다.",
-                "- `dev-status.md`에서 현재 단계와 체크리스트를 확인한다.",
-                "- `commit-plan.md`에서 실제 커밋 해시와 커밋 단위를 확인한다.",
-                "- `test-report.md`에서 자동 검증 결과를 확인한다.",
-                "",
-                "### 다음 단계",
-                "개발 결과를 사람이 확인한 뒤 Dev 승인을 기록하세요.",
-                "",
-                "```markdown",
-            self._approval_command(task, "dev"),
-            "```",
-        ]
-    )
-
-    # Dev Agent가 구현 전 중단되었을 때도 공식 기록 댓글을 남긴다.
-    def _build_develop_failed_comment(self, task: Task, previous_state: str, error: str) -> str:
-        latest_run = self._latest_run(task.id)
-        run_status = latest_run.status if latest_run else AgentStatus.FAILED.value
-        run_summary = latest_run.summary if latest_run and latest_run.summary else "Dev Agent 실행이 완료되지 않았습니다."
-        run_error = latest_run.error if latest_run and latest_run.error else error
-        branch_name = self._branch_name_for_task(task)
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# ⚠️ Dev Agent 확인 필요: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                "Dev Agent를 호출했지만 자동 구현을 완료하지 못했습니다.",
-                "capability 부족 또는 runner 처리 불가도 공식 실행 결과로 기록합니다.",
-                "",
-                "### 상태",
-                f"- previous: `{previous_state}`",
-                f"- current: `{task.state}`",
-                f"- dev status: `{run_status}`",
-                "",
-                "### 브랜치",
-                f"- `{branch_name}`",
-                "",
-                "### 실행 결과",
-                f"- {run_summary}",
-                "",
-                "### 실패/확인 필요 사유",
-                f"- `{run_error}`",
-                "",
-                "### Dev 산출물",
-                f"- `artifacts/{task.id}/dev/commit-plan.md`",
-                f"- `artifacts/{task.id}/dev/dev-status.md`",
-                f"- `artifacts/{task.id}/dev/implementation.patch`",
-                f"- `artifacts/{task.id}/dev/test-report.md`",
-                "",
-                "### 다음 단계",
-                "- Dev Runner capability를 보강하거나 Codex 대화형 구현으로 이어가세요.",
-                "- 상태는 재시도 가능한 `Dev Ready`에 유지됩니다.",
-                "",
-                "다시 Dev Agent를 호출하려면 아래 명령을 사용하세요.",
-                "",
-                "```markdown",
-                settings.develop_command,
-                "```",
-            ]
-        )
-
-    # Human QA 전에 남길 표준 구현 보고서 댓글을 만든다.
-    def _build_issue_dev_report_comment(self, task: Task) -> str:
-        branch_name = self._branch_name_for_task(task)
-        run = self._latest_successful_run(task.id, {"dev", "manual_dev"})
-        run_summary = run.summary if run and run.summary else "구현 완료 run 요약을 찾지 못했습니다."
-        run_id = run.id if run else "unknown"
-        commit_lines = self._read_commit_plan_summary(task.id)
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# 🛠️ 구현 보고서: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                "## 구현 요약",
-                run_summary,
-                "",
-                "## 브랜치 / Run",
-                f"- 브랜치: `{branch_name}`",
-                f"- run: `{run_id}`",
-                "",
-                "## 커밋 / 구현 단위",
-                *commit_lines,
-                "",
-                "## 주요 산출물",
-                f"- `artifacts/{task.id}/dev/commit-plan.md`",
-                f"- `artifacts/{task.id}/dev/dev-status.md`",
-                f"- `artifacts/{task.id}/dev/implementation.patch`",
-                f"- `artifacts/{task.id}/dev/test-report.md`",
-                "",
-                "## 다음 단계",
-                "- System QA 결과와 Human QA 체크리스트를 확인합니다.",
-            ]
-        )
-
-    # commit-plan.md에서 사람이 읽을 만한 커밋 요약을 추출한다.
-    def _read_commit_plan_summary(self, task_id: str) -> list[str]:
-        commit_plan_path = settings.artifact_root / task_id / "dev" / "commit-plan.md"
-        if not commit_plan_path.exists():
-            return ["- 커밋 계획 파일을 찾지 못했습니다. 구현 run 또는 수동 완료 기록을 확인하세요."]
-        lines = [
-            line.strip()
-            for line in commit_plan_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        commit_lines = [
-            line for line in lines if line.startswith("- ") or line[:2].isdigit() or line.startswith("1.")
-        ][:12]
-        return commit_lines or ["- 커밋 상세는 `commit-plan.md`를 확인하세요."]
-
-    # 수동 완료 기록을 Markdown artifact로 저장한다.
-    def _write_manual_completion_artifact(
-        self,
-        task: Task,
-        run: Run,
-        stage: str,
-        completed_by: str,
-        notes: str,
-    ) -> ArtifactSpec:
-        stage_dir = settings.artifact_root / task.id / stage
-        stage_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = stage_dir / "manual-completion.md"
-        artifact_path.write_text(
-            "\n".join(
+    def _comment_on_github_issue_with_gh(self, issue_number: int, body: str) -> tuple[bool, str]:
+        if not settings.github_use_gh_cli:
+            return False, "github cli disabled"
+        body_path = settings.artifact_root / f"comment-{issue_number}-{self._timestamp()}.md"
+        body_path.parent.mkdir(parents=True, exist_ok=True)
+        body_path.write_text(body, encoding="utf-8")
+        try:
+            completed = subprocess.run(
                 [
-                    f"# Manual {stage.upper()} Completion",
-                    "",
-                    f"- task_id: `{task.id}`",
-                    f"- issue: `#{task.github_issue_number or 'unknown'}`",
-                    f"- title: {task.title}",
-                    f"- completed_by: {completed_by}",
-                    f"- recorded_at: {self._format_dt(run.finished_at)}",
-                    f"- state: `{task.state}`",
-                    "",
-                    "## Notes",
-                    notes.strip() or "수동 완료 메모가 없습니다.",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
-        return ArtifactSpec(kind=f"manual_{stage}_completion", path=artifact_path)
-
-    # 수동 완료 결과를 GitHub 이슈 댓글용 Markdown으로 만든다.
-    def _build_manual_completion_comment(
-        self,
-        task: Task,
-        stage: str,
-        completed_by: str,
-        notes: str,
-        run: Run,
-    ) -> str:
-        icon = "🛠️" if stage == "dev" else "🔎"
-        title = "수동 Dev 완료 기록" if stage == "dev" else "수동 QA 완료 기록"
-        artifact_path = f"artifacts/{task.id}/{stage}/manual-completion.md"
-        next_command = self._approval_command(task, stage)
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# {icon} {title}: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                "자동 Runner 밖에서 Codex 또는 사람이 완료한 작업을 하네스의 공식 실행 기록으로 반영했습니다.",
-                "",
-                "### 상태",
-                f"- current: `{task.state}`",
-                f"- run: `{run.id}`",
-                f"- status: `{run.status}`",
-                "",
-                "### 기록자",
-                f"- {completed_by}",
-                "",
-                "### 완료 메모",
-                notes.strip() or "- 수동 완료 메모가 없습니다.",
-                "",
-                "### 산출물",
-                f"- `{artifact_path}`",
-                "",
-                "### 다음 단계",
-                "결과를 확인했다면 아래 승인 명령을 실행하세요.",
-                "",
-                "```bash",
-                "cd /Users/rsy/Desktop/myPlayGround/harness",
-                f".venv/bin/python -m ai_harness.cli approve --issue {task.github_issue_number or '<issue>'} --stage {stage} --approved-by <name>",
-                "```",
-                "",
-                "짧은 표기:",
-                "",
-                "```bash",
-                next_command,
-                "```",
-            ]
-        )
-
-    # Review Agent 결과를 QA 전 품질 게이트 댓글 본문으로 만든다.
-    def _build_review_comment(self, task: Task, review_error: str | None = None) -> str:
-        result_line = (
-            "Review Agent가 QA 전 차단 또는 확인 필요 이슈를 발견했습니다."
-            if review_error
-            else "Review Agent가 QA 전 코드 품질 검토를 통과했습니다."
-        )
-        next_step = (
-            "- review-report.md를 확인하고 수정한 뒤 다시 develop 또는 Codex 수정을 진행하세요."
-            if review_error
-            else "- Review가 통과했으므로 Dev 승인을 계속 진행할 수 있습니다."
-        )
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# 🧭 Review {'확인 필요' if review_error else '완료'}: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                result_line,
-                *(["", f"- 오류: `{review_error}`"] if review_error else []),
-                "",
-                "### 검토 항목",
-                "- DDD/Hexagonal 경계 위반 가능성",
-                "- 컨트롤러 내부 DTO/data class 존재 여부",
-                "- 테스트명 한국어 표현 여부",
-                "- 사용자 메시지, 예외 메시지, 로깅 규칙",
-                "- 불필요한 scaffold/TODO/하네스 잔재",
-                "",
-                "### 상세 Artifacts",
-                f"- `artifacts/{task.id}/review/review-report.md`",
-                "",
-                "### 다음 단계",
-                next_step,
-            ]
-        )
-
-    # fix-develop 결과와 다음 QA 명령을 GitHub 댓글로 요약한다.
-    def _build_fix_develop_comment(
-        self, task: Task, previous_state: str, failed_run_id: str
-    ) -> str:
-        branch_name = self._branch_name_for_task(task)
-        latest_run = self._latest_run(task.id)
-        run_summary = latest_run.summary if latest_run else "Fix Develop Agent 실행 기록을 찾지 못했습니다."
-        run_error = latest_run.error if latest_run and latest_run.error else None
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# 🛠️ Dev 실패 수정 완료: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                "최근 실패한 Dev 실행을 분석했고 자동 수리 가능한 문제를 수정했습니다.",
-                "",
-                "### 상태",
-                f"- previous: `{previous_state}`",
-                f"- current: `{task.state}`",
-                f"- failed_dev_run: `{failed_run_id}`",
-                "",
-                "### 브랜치",
-                f"- `{branch_name}`",
-                "",
-                "### 실행 결과",
-                f"- {run_summary}",
-                *(["", "### 남은 문제", f"- {run_error}"] if run_error else []),
-                "",
-                "### Fix 산출물",
-                f"- `artifacts/{task.id}/dev/fix-develop-report.md`",
-                f"- `artifacts/{task.id}/dev/test-report.md`",
-                f"- `artifacts/{task.id}/dev/dev-status.md`",
-                "",
-                "### 다음 단계",
-                "수정된 개발 결과를 사람이 확인한 뒤 Dev 승인을 기록하세요.",
-                "",
-                "```markdown",
-                self._approval_command(task, "dev"),
-                "```",
-            ]
-        )
-
-    # Deprecated된 fix-develop 명령 대신 사용할 복구 흐름을 GitHub 댓글로 안내한다.
-    def _build_fix_develop_deprecated_comment(self, task: Task, reason: str) -> str:
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# 🛠️ fix-develop은 deprecated되었습니다: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                "### 안내",
-                f"- {reason}",
-                "",
-                "### 권장 흐름",
-                "- Codex에게 최근 실패 로그와 산출물을 기준으로 수정 요청을 합니다.",
-                "- 수정이 끝나면 필요한 검증을 다시 실행합니다.",
-                "- 하네스에는 Dev/QA 결과를 다시 기록합니다.",
-                "",
-                "### 참고 산출물",
-                f"- `artifacts/{task.id}/dev/dev-status.md`",
-                f"- `artifacts/{task.id}/dev/test-report.md`",
-                "",
-                "### 다음 명령",
-                "```markdown",
-                settings.status_command,
-                "```",
-            ]
-        )
-
-    def _build_refactor_comment(self, task: Task, previous_state: str) -> str:
-        branch_name = self._branch_name_for_task(task)
-        refactor_request = self._extract_section(task.body, "Human Refactor Request")
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# 🛠️ 리팩터링 완료: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                "사람이 요청한 리팩터링 내용을 Dev Agent가 반영했습니다.",
-                "",
-                "### 상태",
-                f"- previous: `{previous_state}`",
-                f"- current: `{task.state}`",
-                "",
-                "### 브랜치",
-                f"- `{branch_name}`",
-                "",
-                "### 반영 요청",
-                *(self._comment_bullets(refactor_request, ["추가 상세 내용 없이 리팩터링이 요청되었습니다."])),
-                "",
-                "### Dev 산출물",
-                f"- `artifacts/{task.id}/dev/commit-plan.md`",
-                f"- `artifacts/{task.id}/dev/dev-status.md`",
-                f"- `artifacts/{task.id}/dev/backend-style-checklist.md`",
-                f"- `artifacts/{task.id}/dev/implementation.patch`",
-                f"- `artifacts/{task.id}/dev/test-report.md`",
-                "",
-                "### 다음 단계",
-                "리팩터링 결과를 사람이 확인한 뒤 Dev 승인을 기록하세요.",
-                "",
-                "```markdown",
-                self._approval_command(task, "dev"),
-                "```",
-            ]
-        )
-
-    def _build_develop_not_ready_comment(self, reason: str, task_id: str | None) -> str:
-        lines = [
-            "<!-- ai-harness-generated -->",
-            "",
-            "# 🛠️ 개발을 시작하지 못했습니다",
-            "",
-        ]
-        if task_id:
-            lines.extend([f"Task ID: `{task_id}`", ""])
-        lines.extend(
-            [
-                "아직 개발을 시작할 수 없습니다.",
-                "",
-                "### 사유",
-                f"- {reason}",
-                "",
-                "### 다음 명령",
-                "```markdown",
-                settings.design_command,
-                "```",
-            ]
-        )
-        return "\n".join(lines)
-
-    def _build_refactor_not_ready_comment(self, reason: str, task_id: str | None) -> str:
-        lines = [
-            "<!-- ai-harness-generated -->",
-            "",
-            "# 🛠️ 리팩터링을 시작하지 못했습니다",
-            "",
-        ]
-        if task_id:
-            lines.extend([f"Task ID: `{task_id}`", ""])
-        lines.extend(
-            [
-                "아직 리팩터링을 시작할 수 없습니다.",
-                "",
-                "### 사유",
-                f"- {reason}",
-                "",
-                "### 다음 명령",
-                "```markdown",
-                settings.develop_command,
-                "```",
-            ]
-        )
-        return "\n".join(lines)
-
-    def _build_qa_comment(self, task: Task, previous_state: str, rerun: bool = False) -> str:
-        qa_summary = self._build_qa_summary_lines(task.id)
-        title = "♻️ 🔎 System QA 재검증 통과" if rerun else "🔎 System QA 통과"
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                f"# {title}: {task.title}",
-                "",
-                f"Task ID: `{task.id}`",
-                "",
-                "### 상태",
-                f"- previous: `{previous_state}`",
-                f"- current: `{task.state}`",
-                "",
-                *qa_summary,
-                "",
-                "### QA 산출물",
-                f"- `artifacts/{task.id}/qa/qa-report.md`",
-                f"- `artifacts/{task.id}/qa/qa-checklist.md`",
-                "",
-                "### 다음 단계",
-                "- 바로 다음 Human QA 요청 댓글의 체크리스트를 기준으로 사람이 직접 검증하세요.",
-            ]
-        )
-
-    def _build_qa_summary_lines(self, task_id: str) -> list[str]:
-        report_path = settings.artifact_root / task_id / "qa" / "qa-report.md"
-        if not report_path.exists():
-            return [
-                "### QA 결과",
-                "- QA report 파일을 찾지 못했습니다. 아래 artifact 경로를 확인하세요.",
-            ]
-
-        report_lines = report_path.read_text(encoding="utf-8").splitlines()
-        metadata: dict[str, str] = {}
-        checklist: list[str] = []
-        api_smoke_lines: list[str] = []
-        command = "기록 없음"
-        output = "기록 없음"
-        in_stdout = False
-        in_checklist = False
-        in_api_smoke = False
-
-        for line in report_lines:
-            stripped = line.strip()
-            if stripped == "## API Smoke Test 결과":
-                in_api_smoke = True
-                in_checklist = False
-                continue
-            if in_api_smoke and stripped.startswith("## "):
-                in_api_smoke = False
-            if in_api_smoke:
-                api_smoke_lines.append(line)
-                continue
-            if stripped == "## 검증 체크리스트":
-                in_checklist = True
-                continue
-            if stripped.startswith("## Command:"):
-                command = stripped.removeprefix("## Command:").strip()
-                in_checklist = False
-                continue
-            if in_checklist and stripped.startswith("## "):
-                in_checklist = False
-                continue
-            if in_checklist and stripped.startswith("- ["):
-                checklist.append(stripped)
-                continue
-            if stripped.startswith("- ") and ": `" in stripped and stripped.endswith("`"):
-                key, value = stripped.removeprefix("- ").split(": `", 1)
-                metadata[key] = value.removesuffix("`")
-                continue
-            if stripped.startswith("- ") and ": " in stripped:
-                key, value = stripped.removeprefix("- ").split(": ", 1)
-                metadata[key] = value
-                continue
-            if stripped == "### stdout":
-                in_stdout = True
-                continue
-            if stripped.startswith("### ") and stripped != "### stdout":
-                in_stdout = False
-                continue
-            if in_stdout and stripped and stripped != "```text" and stripped != "```":
-                output = stripped
-
-        summary = [
-            "### QA 결과",
-            f"- result: `{metadata.get('result', '알 수 없음')}`",
-            f"- branch: `{metadata.get('branch', '알 수 없음')}`",
-            f"- command: `{command}`",
-            f"- output: `{output}`",
-            "",
-            "### 검증 항목",
-        ]
-        summary.extend(checklist[:20] or ["- 기록된 체크리스트 항목이 없습니다."])
-        if len(checklist) > 20:
-            summary.append(f"- `qa-report.md`에 추가 검증 항목 {len(checklist) - 20}개가 더 있습니다.")
-        if api_smoke_lines:
-            summary.extend(["", "### API Smoke Test 결과", *api_smoke_lines])
-        return summary
-
-    def _build_human_qa_lines(self, task_id: str) -> list[str]:
-        report_path = settings.artifact_root / task_id / "qa" / "qa-report.md"
-        if not report_path.exists():
-            return [
-                "### Human QA 권장 체크",
-                "- QA report 파일을 찾지 못했습니다. 아래 artifact 경로를 확인하세요.",
-            ]
-
-        report_lines = report_path.read_text(encoding="utf-8").splitlines()
-        checklist: list[str] = []
-        in_section = False
-        for line in report_lines:
-            stripped = line.strip()
-            if stripped == "## Human QA 체크리스트":
-                in_section = True
-                continue
-            if in_section and stripped.startswith("## "):
-                break
-            if in_section and stripped.startswith("- ["):
-                checklist.append(stripped)
-
-        return [
-            "### Human QA 권장 체크",
-            *(checklist[:10] or ["- 사람이 화면과 동작을 직접 확인하세요."]),
-        ]
-
-    def _extract_human_qa_items(self, task_id: str) -> list[str]:
-        lines = self._build_human_qa_lines(task_id)
-        items: list[str] = []
-        for line in lines:
-            if line.startswith("- [ ] "):
-                items.append(line.removeprefix("- [ ] "))
-        return items
-
-    def _plan_title(self, task: Task) -> str:
-        if self._extract_section(task.body, "Human Replan Request"):
-            return f"♻️ 🏗️ AI Re-Design: {task.title}"
-        return f"🏗️ AI Design: {task.title}"
-
-    def _qa_requested_at(self) -> str:
-        return now_kst().strftime("%Y.%m.%d %H:%M:%S")
-
-    def _build_human_qa_comment(self, task: Task, rerun: bool) -> str:
-        return "\n".join(
-            [
-                "<!-- ai-harness-generated -->",
-                "",
-                self._build_human_qa_message(task, rerun, github_comment=True),
-            ]
-        )
-
-    # Human QA 담당자가 확인할 수 있는 댓글과 외부 알림 메시지를 만든다.
-    def _build_human_qa_message(self, task: Task, rerun: bool, github_comment: bool) -> str:
-        title_prefix = "♻️ 🧑‍💻 Human QA Re-QA 요청" if rerun else "🧑‍💻 Human QA 요청"
-        title = f"{title_prefix}: {task.title}"
-        title_line = f"# {title}" if github_comment else title
-        issue_type = self._extract_issue_type(task.body, task.title)
-        branch_name = self._branch_name_for_task(task)
-        human_qa_items = self._extract_human_qa_items(task.id)
-        numbered_items = [
-            f"{index}. {item}" for index, item in enumerate(human_qa_items[:7], start=1)
-        ]
-        if issue_type in {"apiConnect", "fullstackFeature"}:
-            check_target_lines = [
-                "화면 확인 URL:",
-                settings.frontend_base_url,
-                "",
-                "Swagger 주소:",
-                settings.target_swagger_url,
-                "",
-                "API 확인 URL:",
-                settings.target_api_base_url,
-            ]
-        elif issue_type == "infra":
-            check_target_lines = self._infra_human_qa_target_lines(task)
-        elif issue_type in {"beFeature", "config"}:
-            check_target_lines = [
-                "Swagger 주소:",
-                settings.target_swagger_url,
-                "",
-                "API 확인 URL:",
-                settings.target_api_base_url,
-            ]
-        else:
-            check_target_lines = [
-                "화면 확인 URL:",
-                settings.frontend_base_url,
-            ]
-        return "\n".join(
-            [
-                title_line,
-                "",
-                f"* 작업 내용: {task.title}",
-                f"* 작업 타입: {self._issue_type_label(issue_type)}",
-                f"* 브랜치 명: {branch_name}",
-                f"* QA 요청 시각: {self._qa_requested_at()}",
-                "",
-                "System QA는 통과했습니다.",
-                "이제 아래 항목을 직접 확인해주세요.",
-                "",
-                *(numbered_items or ["1. 화면과 주요 동작을 직접 확인해주세요."]),
-                "",
-                *check_target_lines,
-                "",
-                "GitHub Issue:",
-                task.github_issue_url or "",
-                "",
-                "사람 QA 승인 명령:",
-                "```bash",
-                self._approval_cli_command(task, "qa"),
-                "```",
-                "",
-                "정리 Agent를 호출할까요?",
-                "",
-                "Notion 작업 기록이 필요하면 아래 명령을 실행하세요.",
-                "```bash",
-                self._harness_cli_command("document", task),
-                "```",
-                "",
-                "Obsidian 서비스 지식 정리가 필요하면 아래 명령을 실행하세요.",
-                "```bash",
-                self._harness_cli_command("domain-knowledge", task),
-                "```",
-            ]
-        )
-
-    def _infra_human_qa_target_lines(self, task: Task) -> list[str]:
-        haystack = f"{task.title}\n{task.body}".lower()
-        if (
-            "grafana" in haystack
-            and ("dashboard" in haystack or "대시보드" in haystack)
-            and ("alert" in haystack or "알림" in haystack)
-        ):
-            return [
-                "Infra 확인 대상:",
-                "Grafana: http://localhost:3002",
-                "Dashboard: myMentalCare Observability / myMentalCare 에러 로그 모니터링",
-                "",
-                "모니터링 compose:",
-                "apps/server/docker-compose.monitoring.yml",
-                "",
-                "Alerting provisioning:",
-                "apps/server/monitoring/grafana/provisioning/alerting",
-            ]
-        if "loki" in haystack and "grafana" in haystack and "alloy" in haystack:
-            return [
-                "Infra 확인 대상:",
-                "Grafana: http://localhost:3002",
-                "Loki API: http://localhost:3100",
-                "Alloy UI: http://localhost:12345",
-                "",
-                "모니터링 compose:",
-                "apps/server/docker-compose.monitoring.yml",
-            ]
-        if ("로그" in haystack or "logging" in haystack or "logback" in haystack) and (
-            "민감정보" in haystack
-            or "request-id" in haystack
-            or "request id" in haystack
-            or "traceid" in haystack
-        ):
-            return [
-                "Infra 확인 대상:",
-                "백엔드 로그 파일:",
-                "apps/server/logs/mymentalcare-api.log",
-                "",
-                "운영/관찰성 문서:",
-                "docs/observability",
-                "",
-                "API 확인 URL:",
-                settings.target_api_base_url,
-            ]
-        return [
-            "Infra 확인 대상:",
-            "대상 저장소:",
-            str(settings.target_repo_path),
-            "",
-            "관련 infra 파일:",
-            "docker-compose*, monitoring/, docs/observability",
-        ]
-
-    def _build_qa_notification_message(self, task: Task, rerun: bool) -> str:
-        return self._build_human_qa_message(task, rerun, github_comment=False)
-
-    # Design 완료 후 Discord에 전달할 짧은 사람용 메시지를 만든다.
-    def _build_plan_notification_message(self, task: Task, force: bool) -> str:
-        title = f"♻️ 🏗️ Re-Design 완료: {task.title}" if force else f"🏗️ Design 완료: {task.title}"
-        return "\n".join(
-            [
-                title,
-                "",
-                f"작업 타입: {self._issue_type_label(self._extract_issue_type(task.body, task.title))}",
-                f"현재 상태: {task.state}",
-                "",
-                "엔지니어링 설계 산출물이 생성되었습니다.",
-                "내용을 검토한 뒤 충분하면 Design 승인을 기록하세요.",
-                "",
-                "다음 명령:",
-                self._approval_command(task, "plan"),
-                "",
-                "GitHub Issue:",
-                task.github_issue_url or "",
-            ]
-        )
-
-    # Dev 완료 후 Discord에 전달할 짧은 사람용 메시지를 만든다.
-    def _build_dev_notification_message(self, task: Task) -> str:
-        latest_run = self._latest_run(task.id)
-        run_summary = latest_run.summary if latest_run and latest_run.summary else "Dev Agent 실행이 완료되었습니다."
-        return "\n".join(
-            [
-                f"🛠️ 개발 완료: {task.title}",
-                "",
-                f"작업 타입: {self._issue_type_label(self._extract_issue_type(task.body, task.title))}",
-                f"브랜치 명: {self._branch_name_for_task(task)}",
-                f"현재 상태: {task.state}",
-                "",
-                "실행 결과:",
-                run_summary,
-                "",
-                "개발 결과를 확인한 뒤 Dev 승인을 기록하세요.",
-                "",
-                "다음 명령:",
-                self._approval_command(task, "dev"),
-                "",
-                "GitHub Issue:",
-                task.github_issue_url or "",
-            ]
-        )
-
-    # Discord 채널 노이즈를 줄이기 위해 Design 완료는 알림 없이 audit만 남긴다.
-    def _notify_after_plan(self, task: Task, run_id: str | None, force: bool) -> None:
-        self._audit(
-            task.id,
-            run_id,
-            "discord.design_notification_skipped",
-            {"reason": "Discord 알림은 QA 완료 시점에만 전송합니다.", "force": force},
-        )
-
-    # Discord 채널 노이즈를 줄이기 위해 Dev 완료는 알림 없이 audit만 남긴다.
-    def _notify_after_dev(self, task: Task, run_id: str | None) -> None:
-        self._audit(
-            task.id,
-            run_id,
-            "discord.dev_notification_skipped",
-            {"reason": "Discord 알림은 QA 완료 시점에만 전송합니다."},
-        )
-
-    # 특정 단계 완료 메시지를 Discord로 보내고 실패해도 workflow를 중단하지 않는다.
-    def _notify_discord_for_stage(self, task: Task, run_id: str | None, stage: str, message: str) -> None:
-        notifier = DiscordNotifier(settings.discord_webhook_url)
-        if not notifier.is_configured():
-            self._audit(
-                task.id,
-                run_id,
-                f"discord.{stage}_notification_skipped",
-                {"reason": "DISCORD_WEBHOOK_URL이 설정되어 있지 않습니다."},
+                    "gh",
+                    "issue",
+                    "comment",
+                    str(issue_number),
+                    "--repo",
+                    f"{settings.github_owner}/{settings.github_repo}",
+                    "--body-file",
+                    str(body_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
             )
-            return
+            if completed.returncode == 0:
+                return True, completed.stdout.strip()
+            return False, (completed.stderr or completed.stdout).strip()
+        except Exception as exc:
+            return False, str(exc)
+        finally:
+            body_path.unlink(missing_ok=True)
 
-        try:
-            notifier.send_text(message)
-        except Exception as exc:  # noqa: BLE001 - notification failure must not fail workflow
-            logger.warning(
-                "Discord 단계 완료 알림 전송 실패",
-                extra={"task_id": task.id, "run_id": run_id, "stage": stage, "error": str(exc)},
-            )
-            self._audit(
-                task.id,
-                run_id,
-                f"discord.{stage}_notification_failed",
-                {"error": str(exc)},
-            )
-            return
+    def _now(self) -> str:
+        return datetime.now(KST).strftime("%Y.%m.%d %H:%M:%S")
 
-        self._audit(task.id, run_id, f"discord.{stage}_notified", {})
-
-    def _notify_after_qa(self, task: Task, run_id: str | None, rerun: bool) -> None:
-        if not settings.allow_external_notifications:
-            self._audit(
-                task.id,
-                run_id,
-                "external_notifications.skipped",
-                {"reason": "ALLOW_EXTERNAL_NOTIFICATIONS가 false입니다.", "rerun": rerun},
-            )
-            return
-
-        message = self._build_qa_notification_message(task, rerun)
-        self._notify_google_chat_after_qa(task, run_id, rerun, message)
-        self._notify_discord_after_qa(task, run_id, rerun, message)
-
-    def _notify_google_chat_after_qa(
-        self, task: Task, run_id: str | None, rerun: bool, message: str
-    ) -> None:
-        notifier = GoogleChatNotifier(settings.google_chat_webhook_url)
-        if not notifier.is_configured():
-            self._audit(
-                task.id,
-                run_id,
-                "google_chat.qa_notification_skipped",
-                {"reason": "GOOGLE_CHAT_WEBHOOK_URL이 설정되어 있지 않습니다."},
-            )
-            return
-
-        try:
-            notifier.send_text(message)
-        except Exception as exc:  # noqa: BLE001 - notification failure must not fail QA
-            logger.warning(
-                "Google Chat QA 알림 전송 실패",
-                extra={"task_id": task.id, "run_id": run_id, "error": str(exc)},
-            )
-            self._audit(
-                task.id,
-                run_id,
-                "google_chat.qa_notification_failed",
-                {"error": str(exc)},
-            )
-            return
-
-        self._audit(
-            task.id,
-            run_id,
-            "google_chat.qa_notified",
-            {"rerun": rerun},
-        )
-
-    def _notify_discord_after_qa(
-        self, task: Task, run_id: str | None, rerun: bool, message: str
-    ) -> None:
-        notifier = DiscordNotifier(settings.discord_webhook_url)
-        if not notifier.is_configured():
-            self._audit(
-                task.id,
-                run_id,
-                "discord.qa_notification_skipped",
-                {"reason": "DISCORD_WEBHOOK_URL이 설정되어 있지 않습니다."},
-            )
-            return
-
-        try:
-            pdf_path = build_qa_pdf_report(task)
-        except Exception as exc:  # noqa: BLE001 - PDF 생성 실패는 텍스트 알림을 막지 않는다.
-            logger.warning(
-                "Discord QA PDF 보고서 생성 실패",
-                extra={"task_id": task.id, "run_id": run_id, "error": str(exc)},
-            )
-            self._audit(
-                task.id,
-                run_id,
-                "discord.qa_pdf_failed",
-                {"error": str(exc)},
-            )
-            pdf_path = None
-
-        try:
-            if pdf_path:
-                pdf_message = "\n".join(
-                    [
-                        message,
-                        "",
-                        "QA PDF 보고서를 첨부했습니다.",
-                    ]
-                )
-                notifier.send_text_with_file(
-                    pdf_message,
-                    pdf_path,
-                    filename=f"qa-report-issue-{task.github_issue_number or 'unknown'}.pdf",
-                )
-            else:
-                notifier.send_text(message)
-        except Exception as exc:  # noqa: BLE001 - notification failure must not fail QA
-            logger.warning(
-                "Discord QA 알림 전송 실패",
-                extra={"task_id": task.id, "run_id": run_id, "error": str(exc)},
-            )
-            self._audit(
-                task.id,
-                run_id,
-                "discord.qa_notification_failed",
-                {"error": str(exc)},
-            )
-            return
-
-        self._audit(
-            task.id,
-            run_id,
-            "discord.qa_notified",
-            {"rerun": rerun},
-        )
-
-    def _build_qa_not_ready_comment(
-        self, reason: str, task_id: str | None, next_command: str
-    ) -> str:
-        lines = [
-            "<!-- ai-harness-generated -->",
-            "",
-            "# 🔎 System QA를 시작하지 못했습니다",
-            "",
-        ]
-        if task_id:
-            lines.extend([f"Task ID: `{task_id}`", ""])
-        lines.extend(
-            [
-                "아직 QA를 실행할 수 없습니다.",
-                "",
-                "### 사유",
-                f"- {reason}",
-                "",
-                "### 다음 명령",
-                "```markdown",
-                next_command,
-                "```",
-            ]
-        )
-        return "\n".join(lines)
+    def _timestamp(self) -> str:
+        return datetime.now(KST).strftime("%Y%m%d-%H%M%S")

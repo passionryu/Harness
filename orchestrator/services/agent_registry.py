@@ -1,4 +1,4 @@
-from agents.base import AgentRunner
+from agents.base import AgentProtocol
 from agents.dev_agent import DevAgent
 from agents.domain_knowledge_agent import DomainKnowledgeAgent
 from agents.documentation_agent import DocumentationAgent
@@ -10,7 +10,7 @@ from agents.review_agent import ReviewAgent
 
 class AgentRegistry:
     def __init__(self) -> None:
-        self._agents: dict[str, AgentRunner] = {
+        self._agents: dict[str, AgentProtocol] = {
             "plan": PlanAgent(),
             "dev": DevAgent(),
             "review": ReviewAgent(),
@@ -21,7 +21,7 @@ class AgentRegistry:
             "design": PlanAgent(),
         }
 
-    def get(self, name: str) -> AgentRunner:
+    def get(self, name: str) -> AgentProtocol:
         agent = self._agents.get(name)
         if agent is None:
             raise ValueError(f"알 수 없는 Agent입니다: {name}")

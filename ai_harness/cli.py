@@ -6,8 +6,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
-
 from agents.agent_spec import DEFAULT_PLAYBOOK_DIR, DEFAULT_SPEC_DIR, list_markdown_specs, load_agent_spec
 from agents.base import AgentInput, AgentStatus
 from agents.documentation_agent import publish_harness_history_record
@@ -15,16 +13,12 @@ from agents.planning_assistant_agent import PlanningAssistantAgent
 from orchestrator.api.schemas import EventResult, HumanApproval
 from orchestrator.core.logging import configure_logging
 from orchestrator.core.settings import settings
-from orchestrator.db.models import Run, StateTransition, Task
-from orchestrator.db.session import SessionLocal, create_db
 from orchestrator.services.discord import DiscordNotifier
 from orchestrator.services.github_adapter import GitHubAdapter
 from orchestrator.services.orchestration import OrchestrationService
 from orchestrator.services.ui_evidence import publish_ui_evidence_to_stage
-from workflows.state_machine import KanbanState
 
 
-# 테스트 fake adapter와 실제 gh CLI adapter 생성 방식을 함께 지원한다.
 def _github_adapter() -> GitHubAdapter:
     try:
         return GitHubAdapter(settings.github_token, settings.github_use_gh_cli)
@@ -32,40 +26,24 @@ def _github_adapter() -> GitHubAdapter:
         return GitHubAdapter(settings.github_token)
 
 
-# CLI 명령 실행 결과를 표현하기 쉬운 dict로 정규화한다.
 def _normalize_result(result: EventResult | dict[str, Any]) -> dict[str, Any]:
     if isinstance(result, EventResult):
         return result.model_dump()
     return dict(result)
 
 
-# 사람이 읽기 쉬운 CLI 결과 문자열을 만든다.
-def _render_text_result(result: dict[str, Any]) -> str:
-    lines: list[str] = []
-    for key, value in result.items():
-        lines.append(f"{key}: {value}")
-    return "\n".join(lines)
-
-
-# CLI 결과를 JSON 또는 텍스트로 출력한다.
 def _print_result(result: EventResult | dict[str, Any], as_json: bool) -> None:
     normalized = _normalize_result(result)
     if as_json:
         print(json.dumps(normalized, ensure_ascii=False, indent=2, default=str))
         return
-    print(_render_text_result(normalized))
+    print("\n".join(f"{key}: {value}" for key, value in normalized.items()))
 
 
-# GitHub 이슈 본문과 라벨을 하네스 실행 입력으로 변환한다.
 def _fetch_issue_context(issue_number: int) -> dict[str, Any]:
     if not settings.github_token and not settings.github_use_gh_cli:
-        raise ValueError("GitHub 이슈를 읽으려면 GITHUB_TOKEN이 필요합니다.")
-
-    issue = _github_adapter().get_issue(
-        settings.github_owner,
-        settings.github_repo,
-        issue_number,
-    )
+        raise ValueError("GitHub 이슈를 읽으려면 GITHUB_TOKEN 또는 gh CLI가 필요합니다.")
+    issue = _github_adapter().get_issue(settings.github_owner, settings.github_repo, issue_number)
     return {
         "issue_number": int(issue["number"]),
         "title": issue.get("title") or "",
@@ -75,19 +53,31 @@ def _fetch_issue_context(issue_number: int) -> dict[str, Any]:
     }
 
 
-# GitHub 라벨이 없을 때 이슈 제목 prefix로 하네스 타입 라벨을 보강한다.
+def _optional_issue_context(issue_number: int) -> dict[str, Any]:
+    try:
+        return _fetch_issue_context(issue_number)
+    except Exception:
+        return {
+            "issue_number": issue_number,
+            "title": f"Issue #{issue_number}",
+            "body": "",
+            "issue_url": "",
+            "issue_labels": [],
+        }
+
+
 def _labels_from_issue_or_title(issue: dict[str, Any]) -> list[str]:
-    labels = _labels_from_issue(issue)
+    labels = sorted(
+        item.get("name")
+        for item in issue.get("labels", [])
+        if isinstance(item, dict) and item.get("name")
+    )
     if any(label.startswith("type: ") for label in labels):
         return labels
-
     inferred_label = _infer_type_label_from_title(issue.get("title") or "")
-    if inferred_label:
-        return sorted([*labels, inferred_label])
-    return labels
+    return sorted([*labels, inferred_label]) if inferred_label else labels
 
 
-# 이슈 제목의 작업 타입 prefix를 하네스 내부 type 라벨로 변환한다.
 def _infer_type_label_from_title(title: str) -> str:
     normalized = title.strip().lower()
     prefix_map = {
@@ -107,7 +97,6 @@ def _infer_type_label_from_title(title: str) -> str:
     return ""
 
 
-# 하네스 내부 구현 타입을 GitHub 이슈 제목 prefix로 변환한다.
 def _title_prefix_for_type(issue_type: str) -> str:
     return {
         "feFeature": "[FE]",
@@ -122,7 +111,6 @@ def _title_prefix_for_type(issue_type: str) -> str:
     }.get(issue_type, "")
 
 
-# 제목에 구현 타입 prefix가 없으면 지정한 타입 prefix를 붙인다.
 def _normalize_issue_title(title: str, issue_type: str) -> str:
     prefix = _title_prefix_for_type(issue_type)
     if not prefix:
@@ -130,16 +118,6 @@ def _normalize_issue_title(title: str, issue_type: str) -> str:
     return title if title.strip().lower().startswith(prefix.lower()) else f"{prefix} {title}"
 
 
-# GitHub 이슈 payload에서 label 이름만 추출한다.
-def _labels_from_issue(issue: dict[str, Any]) -> list[str]:
-    return sorted(
-        item.get("name")
-        for item in issue.get("labels", [])
-        if isinstance(item, dict) and item.get("name")
-    )
-
-
-# CLI note 옵션과 note 파일 옵션을 하나의 요청 메모로 합친다.
 def _resolve_note(args: argparse.Namespace, fallback: str) -> str:
     note_parts: list[str] = []
     if getattr(args, "note", None):
@@ -149,210 +127,102 @@ def _resolve_note(args: argparse.Namespace, fallback: str) -> str:
     return "\n\n".join(part for part in note_parts if part).strip() or fallback
 
 
-# GitHub 이슈 기반 명령을 OrchestrationService에 위임한다.
 def _run_issue_command(args: argparse.Namespace) -> EventResult | dict[str, Any]:
     context = _fetch_issue_context(args.issue)
-    with SessionLocal() as db:
-        service = OrchestrationService(db)
-        if args.command in {"design", "plan"}:
-            result = service.run_plan_for_github_issue(force=args.force, **context)
-            if args.command == "plan":
-                normalized = _normalize_result(result)
-                normalized["warning"] = "@ai-harness plan 명령은 deprecated입니다. 동일 동작은 @ai-harness design로 실행하세요."
-                return normalized
-            return result
-        if args.command in {"redesign", "replan"}:
-            return service.run_replan_for_github_issue(
-                replan_request=_resolve_note(args, "CLI에서 재설계가 요청되었습니다."),
-                **context,
-            )
-        if args.command == "develop":
-            return service.run_develop_for_github_issue(**context)
-        if args.command == "fix-develop":
-            return service.run_fix_develop_for_github_issue(**context)
-        if args.command == "refactor":
-            return service.run_refactor_for_github_issue(
-                refactor_request=_resolve_note(args, "CLI에서 리팩터링이 요청되었습니다."),
-                **context,
-            )
-        if args.command == "qa":
-            return service.run_qa_for_github_issue(
-                qa_request=_resolve_note(args, "CLI에서 QA가 요청되었습니다."),
-                **context,
-            )
-        if args.command == "re-qa":
-            return service.rerun_qa_for_github_issue(
-                qa_request=_resolve_note(args, "CLI에서 QA 재검증이 요청되었습니다."),
-                **context,
-            )
-        if args.command == "document":
-            return service.run_documentation_for_github_issue(**context)
-        if args.command == "domain-knowledge":
-            return service.run_domain_knowledge_for_github_issue(**context)
-        if args.command == "cancel":
-            return service.cancel_github_issue_task(
-                reason=_resolve_note(args, "CLI에서 작업 중지가 요청되었습니다."),
-                **context,
-            )
+    service = OrchestrationService()
+    if args.command in {"design", "plan"}:
+        result = service.run_plan_for_github_issue(force=getattr(args, "force", False), **context)
+        if args.command == "plan":
+            payload = _normalize_result(result)
+            payload["warning"] = "plan 명령은 deprecated입니다. design 명령을 사용하세요."
+            return payload
+        return result
+    if args.command in {"redesign", "replan"}:
+        return service.run_replan_for_github_issue(
+            replan_request=_resolve_note(args, "CLI에서 재설계가 요청되었습니다."),
+            **context,
+        )
+    if args.command == "develop":
+        return service.run_develop_for_github_issue(**context)
+    if args.command == "fix-develop":
+        return service.run_fix_develop_for_github_issue(**context)
+    if args.command == "refactor":
+        return service.run_refactor_for_github_issue(
+            refactor_request=_resolve_note(args, "CLI에서 리팩터링이 요청되었습니다."),
+            **context,
+        )
+    if args.command == "qa":
+        return service.run_qa_for_github_issue(
+            qa_request=_resolve_note(args, "CLI에서 QA가 요청되었습니다."),
+            **context,
+        )
+    if args.command == "re-qa":
+        return service.rerun_qa_for_github_issue(
+            qa_request=_resolve_note(args, "CLI에서 QA 재검증이 요청되었습니다."),
+            **context,
+        )
+    if args.command == "document":
+        return service.run_documentation_for_github_issue(**context)
+    if args.command == "domain-knowledge":
+        return service.run_domain_knowledge_for_github_issue(**context)
+    if args.command == "cancel":
+        return service.cancel_github_issue_task(
+            reason=_resolve_note(args, "CLI에서 작업 중지가 요청되었습니다."),
+            **context,
+        )
     raise ValueError(f"지원하지 않는 CLI 명령입니다: {args.command}")
 
 
-# 여러 issue 입력 형식을 정수 목록으로 정리한다.
-def _resolve_auto_run_issues(args: argparse.Namespace) -> list[int]:
-    if getattr(args, "issue", None) is not None:
-        return [int(args.issue)]
-    return [
-        int(item.strip())
-        for item in str(args.issues).split(",")
-        if item.strip()
-    ]
-
-
-# 자동 진행 중 agent 실행 결과가 실패/중단 상태인지 검증한다.
-def _ensure_auto_step_succeeded(step_name: str, result: EventResult | dict[str, Any]) -> None:
-    normalized = _normalize_result(result)
-    status = str(normalized.get("status", "success"))
-    if status in {"failed", "needs_human", "deprecated"}:
-        raise ValueError(f"{step_name} 단계가 완료되지 않았습니다: {normalized}")
-
-
-# 현재 task 상태를 기준으로 필요한 approval gate만 자동 승인한다.
-def _approve_if_waiting(
-    service: OrchestrationService,
-    issue_number: int,
-    stage: str,
-    expected_state: KanbanState,
-    approved_by: str,
-    note: str,
-    issue_url: str,
-) -> dict[str, Any]:
-    task = service._find_github_issue_task(issue_number, issue_url)
-    if task is None:
-        raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
-    if task.state != expected_state.value:
-        return {"status": "skipped", "stage": stage, "reason": f"current_state={task.state}"}
-    result = service.approve_stage_for_github_issue(
-        issue_number,
-        stage,
-        HumanApproval(approved_by=approved_by, notes=note),
-        issue_url=issue_url,
-    )
-    return _normalize_result(result)
-
-
-# 공식 Plan/Dev/QA Agent 흐름을 승인 로그와 함께 Human QA 직전까지 실행한다.
-def _auto_run_single_issue(
-    service: OrchestrationService,
-    issue_number: int,
-    args: argparse.Namespace,
-) -> dict[str, Any]:
-    context = _fetch_issue_context(issue_number)
-    steps: list[dict[str, Any]] = []
-
-    plan_result = service.run_plan_for_github_issue(force=args.force_plan, **context)
-    _ensure_auto_step_succeeded("plan", plan_result)
-    steps.append({"step": "plan", "result": _normalize_result(plan_result)})
-
-    plan_approval = _approve_if_waiting(
-        service,
-        issue_number,
-        "plan",
-        KanbanState.PLAN_REVIEW,
-        args.approved_by,
-        _resolve_note(args, "auto-run이 Plan 승인을 자동 기록했습니다."),
-        context["issue_url"],
-    )
-    steps.append({"step": "approve_plan", "result": plan_approval})
-
-    task = service._find_github_issue_task(issue_number, context["issue_url"])
-    if task is None:
-        raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
-    if task.state in {KanbanState.DEV_READY.value, KanbanState.DEV_REVIEW.value}:
-        dev_result = service.run_develop_for_github_issue(**context)
-        _ensure_auto_step_succeeded("develop", dev_result)
-        steps.append({"step": "develop", "result": _normalize_result(dev_result)})
-    else:
-        steps.append({"step": "develop", "result": {"status": "skipped", "reason": f"current_state={task.state}"}})
-
-    dev_approval = _approve_if_waiting(
-        service,
-        issue_number,
-        "dev",
-        KanbanState.DEV_REVIEW,
-        args.approved_by,
-        _resolve_note(args, "auto-run이 Dev 승인을 자동 기록했습니다."),
-        context["issue_url"],
-    )
-    steps.append({"step": "approve_dev", "result": dev_approval})
-
-    task = service._find_github_issue_task(issue_number, context["issue_url"])
-    if task is None:
-        raise ValueError(f"GitHub issue #{issue_number} 작업을 찾을 수 없습니다.")
-    if args.until == "qa" and task.state == KanbanState.QA_READY.value:
-        qa_result = service.run_qa_for_github_issue(
-            qa_request=_resolve_note(args, "auto-run이 QA를 요청했습니다."),
-            **context,
-        )
-        _ensure_auto_step_succeeded("qa", qa_result)
-        steps.append({"step": "qa", "result": _normalize_result(qa_result)})
-    else:
-        steps.append({"step": "qa", "result": {"status": "skipped", "reason": f"current_state={task.state}"}})
-
-    task = service._find_github_issue_task(issue_number, context["issue_url"])
-    return {
-        "issue": issue_number,
-        "task_id": task.id if task else "",
-        "title": context["title"],
-        "state": task.state if task else "unknown",
-        "steps": steps,
-        "next": "사람이 Human QA를 직접 검증한 뒤 approve --stage qa를 실행하세요.",
-    }
-
-
-# 여러 이슈를 순서대로 자동 진행하고 중간 실패 시 해당 이슈에서 멈춘다.
 def _auto_run(args: argparse.Namespace) -> dict[str, Any]:
-    issues = _resolve_auto_run_issues(args)
+    service = OrchestrationService()
+    issues = [int(args.issue)] if args.issue is not None else [int(item.strip()) for item in args.issues.split(",") if item.strip()]
     results: list[dict[str, Any]] = []
-    with SessionLocal() as db:
-        service = OrchestrationService(db)
-        for issue_number in issues:
-            results.append(_auto_run_single_issue(service, issue_number, args))
-    return {"status": "ok", "mode": "auto-run", "until": args.until, "results": results}
+    for issue_number in issues:
+        context = _fetch_issue_context(issue_number)
+        steps = [
+            {"step": "design", "result": _normalize_result(service.run_plan_for_github_issue(force=args.force_plan, **context))},
+            {"step": "develop", "result": _normalize_result(service.run_develop_for_github_issue(**context))},
+        ]
+        if args.until == "qa":
+            steps.append(
+                {
+                    "step": "qa",
+                    "result": _normalize_result(
+                        service.run_qa_for_github_issue(
+                            qa_request=_resolve_note(args, "auto-run이 QA를 요청했습니다."),
+                            **context,
+                        )
+                    ),
+                }
+            )
+        results.append({"issue": issue_number, "task_id": f"issue-{issue_number}", "steps": steps})
+    return {"status": "ok", "mode": "stateless-auto-run", "results": results}
 
 
-# GitHub 이슈를 생성하고 하네스 DB에 동기화한 뒤 Discord 알림을 보낸다.
 def _create_issue(args: argparse.Namespace) -> dict[str, Any]:
     if not settings.github_token and not settings.github_use_gh_cli:
-        raise ValueError("GitHub 이슈 생성에는 GITHUB_TOKEN이 필요합니다.")
+        raise ValueError("GitHub 이슈 생성에는 GITHUB_TOKEN 또는 gh CLI가 필요합니다.")
     body = Path(args.body_file).expanduser().read_text(encoding="utf-8")
     title = _normalize_issue_title(args.title, args.type)
-    issue = _github_adapter().create_issue(
-        settings.github_owner,
-        settings.github_repo,
-        title,
-        body,
-    )
-    with SessionLocal() as db:
-        service = OrchestrationService(db)
-        task = _sync_issue_task(service, issue)
-        task_id = task.id
-        db.commit()
-
-    project_status = _move_created_issue_to_backlog(int(issue["number"]))
-    notification = _notify_issue_created(issue, task_id)
+    issue = _github_adapter().create_issue(settings.github_owner, settings.github_repo, title, body)
+    service = OrchestrationService()
+    sync_result = service.sync_github_issue(issue)
+    issue_number = int(issue["number"])
+    project_status = _move_created_issue_to_backlog(issue_number)
+    notification = _notify_issue_created(issue, sync_result["task_id"])
     return {
         "status": "created",
-        "issue_number": int(issue["number"]),
+        "issue_number": issue_number,
         "title": issue.get("title") or title,
         "url": issue.get("html_url") or "",
-        "task_id": task_id,
+        "task_id": sync_result["task_id"],
+        "artifact": sync_result["artifact"],
         "project_status": project_status,
         "notification": notification,
-        "next": f"harness design --issue {int(issue['number'])}",
+        "next": f"harness design --issue {issue_number}",
     }
 
 
-# 새 이슈는 Design Agent 실행 전 상태이므로 GitHub Project에서도 Backlog로 고정한다.
 def _move_created_issue_to_backlog(issue_number: int) -> str:
     if not settings.github_project_number:
         return "skipped: GITHUB_PROJECT_NUMBER is not configured"
@@ -369,7 +239,6 @@ def _move_created_issue_to_backlog(issue_number: int) -> str:
         return f"failed: {exc}"
 
 
-# 이슈 생성 완료 사실을 Discord에 알린다.
 def _notify_issue_created(issue: dict[str, Any], task_id: str) -> str:
     if not settings.allow_external_notifications:
         return "skipped: ALLOW_EXTERNAL_NOTIFICATIONS=false"
@@ -377,13 +246,12 @@ def _notify_issue_created(issue: dict[str, Any], task_id: str) -> str:
     if not notifier.is_configured():
         return "skipped: DISCORD_WEBHOOK_URL is not configured"
     issue_number = int(issue["number"])
-    issue_url = issue.get("html_url") or ""
     message = "\n".join(
         [
             f"[{settings.github_repo} 이슈 생성 완료]",
             "",
             f"작업: {issue.get('title') or ''}",
-            f"GitHub Issue: {issue_url}",
+            f"GitHub Issue: {issue.get('html_url') or ''}",
             f"Task ID: {task_id}",
             "",
             "다음 단계:",
@@ -394,147 +262,54 @@ def _notify_issue_created(issue: dict[str, Any], task_id: str) -> str:
     return "sent"
 
 
-# GitHub 이슈를 하네스 DB task로 동기화한다.
 def _sync_issues(args: argparse.Namespace) -> dict[str, Any]:
     if not settings.github_token and not settings.github_use_gh_cli:
-        raise ValueError("GitHub 이슈 동기화에는 GITHUB_TOKEN이 필요합니다.")
-
+        raise ValueError("GitHub 이슈 동기화에는 GITHUB_TOKEN 또는 gh CLI가 필요합니다.")
     adapter = _github_adapter()
-    issues = (
-        [adapter.get_issue(settings.github_owner, settings.github_repo, args.issue)]
-        if args.issue
-        else adapter.list_issues(settings.github_owner, settings.github_repo)
-    )
-    with SessionLocal() as db:
-        service = OrchestrationService(db)
-        synced: list[int] = []
-        for issue in issues:
-            task = _sync_issue_task(service, issue)
-            synced.append(task.github_issue_number or int(issue["number"]))
-        db.commit()
-    return {"status": "ok", "synced_count": len(synced), "issues": synced}
+    issues = [adapter.get_issue(settings.github_owner, settings.github_repo, args.issue)] if args.issue else adapter.list_issues(settings.github_owner, settings.github_repo)
+    service = OrchestrationService()
+    synced = [service.sync_github_issue(issue) for issue in issues]
+    return {"status": "ok", "synced_count": len(synced), "issues": [item["task_id"] for item in synced]}
 
 
-# UI/UX 이슈 첨부용 이미지를 target repo에 커밋하고 stage 브랜치에 병합한다.
 def _publish_ui_evidence(args: argparse.Namespace) -> dict[str, Any]:
-    result = publish_ui_evidence_to_stage(
+    return publish_ui_evidence_to_stage(
         source_paths=[Path(path) for path in args.image],
         repo_path=settings.target_repo_path,
         target_branch=args.target_branch or settings.development_base_branch,
         slug=args.slug,
         issue_number=args.issue,
         push=not args.no_push,
-    )
-    return result.to_dict()
+    ).to_dict()
 
 
-# GitHub 이슈 하나를 상태 전이 없이 로컬 task로 동기화한다.
-def _sync_issue_task(service: OrchestrationService, issue: dict[str, Any]) -> Task:
-    issue_number = int(issue["number"])
-    issue_url = issue.get("html_url") or ""
-    task = service._find_github_issue_task(issue_number, issue_url)
-    body = service._append_issue_metadata(
-        issue.get("body") or "",
-        _labels_from_issue_or_title(issue),
-        issue_number,
-    )
-    if task is None:
-        task = Task(
-            title=issue.get("title") or "",
-            body=body,
-            github_issue_url=issue_url,
-            github_issue_number=issue_number,
-            state="Backlog",
-            retry_limit=settings.agent_retry_limit,
-        )
-        service.db.add(task)
-        service.db.flush()
-        service._record_transition(task.id, None, task.state, "GitHub issue synced", "system")
-        service._audit(
-            task.id,
-            None,
-            "task.synced_from_github",
-            {"issue_number": issue_number, "issue_url": task.github_issue_url},
-        )
-        return task
-
-    task.title = issue.get("title") or task.title
-    task.body = body
-    task.github_issue_url = issue_url or task.github_issue_url
-    service._audit(
-        task.id,
-        None,
-        "task.refreshed_from_github",
-        {"issue_number": issue_number, "issue_url": task.github_issue_url},
-    )
-    return task
-
-
-# 로컬 DB에 저장된 task와 최근 실행 상태를 조회한다.
 def _status(args: argparse.Namespace) -> dict[str, Any]:
     context = _optional_issue_context(args.issue)
-    with SessionLocal() as db:
-        service = OrchestrationService(db)
-        task = service._find_github_issue_task(args.issue, context["issue_url"])
-        if task is None:
-            return {"status": "not_found", "reason": f"GitHub issue #{args.issue} task가 없습니다."}
-
-        latest_run = db.scalar(
-            select(Run).where(Run.task_id == task.id).order_by(Run.started_at.desc()).limit(1)
-        )
-        latest_transition = db.scalar(
-            select(StateTransition)
-            .where(StateTransition.task_id == task.id)
-            .order_by(StateTransition.created_at.desc())
-            .limit(1)
-        )
-        return {
-            "status": "ok",
-            "task_id": task.id,
-            "issue": task.github_issue_number,
-            "title": task.title,
-            "state": task.state,
-            "next": service._next_command_for_state(task.state),
-            "latest_run": _run_payload(service, latest_run),
-            "latest_transition": _transition_payload(service, latest_transition),
-        }
+    return OrchestrationService().status_for_github_issue(
+        issue_number=context["issue_number"],
+        title=context["title"],
+        body=context["body"],
+        issue_url=context["issue_url"],
+    )
 
 
-# 단계별 Human Approval Gate 통과를 로컬 DB에 기록한다.
 def _approve(args: argparse.Namespace) -> EventResult:
-    payload = HumanApproval(approved_by=args.approved_by, notes=args.notes or "")
-    with SessionLocal() as db:
-        service = OrchestrationService(db)
-        if args.issue is not None:
-            context = _optional_issue_context(args.issue)
-            return service.approve_stage_for_github_issue(
-                args.issue,
-                args.stage,
-                payload,
-                issue_url=context["issue_url"],
-            )
-        if args.task_id is not None:
-            if args.stage != "deploy":
-                raise ValueError("--task-id 승인은 deploy stage에서만 지원합니다. plan/dev/qa는 --issue를 사용하세요.")
-            return service.approve_human_qa(args.task_id, payload)
-    raise ValueError("--issue 또는 --task-id 중 하나가 필요합니다.")
+    return OrchestrationService().approve_stage_for_github_issue(
+        issue_number=args.issue,
+        stage=args.stage,
+        payload=HumanApproval(approved_by=args.approved_by, notes=args.notes or ""),
+    )
 
 
-# Codex/사람이 자동 runner 밖에서 완료한 Dev/QA 결과를 공식 run으로 기록한다.
 def _manual_complete(args: argparse.Namespace) -> EventResult:
-    context = _optional_issue_context(args.issue)
-    with SessionLocal() as db:
-        service = OrchestrationService(db)
-        return service.record_manual_completion_for_github_issue(
-            issue_number=args.issue,
-            stage=args.stage,
-            completed_by=args.completed_by,
-            notes=args.notes or "",
-            issue_url=context["issue_url"],
-        )
+    return OrchestrationService().record_manual_completion_for_github_issue(
+        issue_number=args.issue,
+        stage=args.stage,
+        completed_by=args.completed_by,
+        notes=args.notes or "",
+    )
 
 
-# 하네스 세팅 변경 이력을 Notion History 표에 기록한다.
 def _document_harness(args: argparse.Namespace) -> dict[str, Any]:
     result = publish_harness_history_record(
         title=args.title,
@@ -552,18 +327,10 @@ def _document_harness(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-# Obsidian 기반 Planning Assistant Agent를 이슈 생성 전 단계에서 실행한다.
 def _planning_assist(args: argparse.Namespace) -> dict[str, Any]:
     task_id = f"planning-assistant-{datetime.now().strftime('%Y%m%d%H%M%S')}"
     note = _resolve_note(args, "")
-    body = "\n".join(
-        [
-            f"topic: {args.topic or ''}",
-            "",
-            "## 요청 메모",
-            note or "기획 후보와 질문을 정리한다.",
-        ]
-    )
+    body = "\n".join([f"topic: {args.topic or ''}", "", "## 요청 메모", note or "기획 후보와 질문을 정리한다."])
     result = PlanningAssistantAgent().run(
         AgentInput(
             task_id=task_id,
@@ -573,68 +340,19 @@ def _planning_assist(args: argparse.Namespace) -> dict[str, Any]:
             artifacts_root=settings.artifact_root,
             timeout_seconds=settings.agent_timeout_seconds,
             retry_count=0,
-            retry_limit=settings.agent_retry_limit,
+            retry_limit=0,
         )
     )
     if result.status != AgentStatus.SUCCESS:
         raise ValueError(result.error or result.summary)
-    return {
-        "status": result.status.value,
-        "summary": result.summary,
-        "artifacts": [str(artifact.path) for artifact in result.artifacts],
-    }
+    return {"status": result.status.value, "summary": result.summary, "artifacts": [str(artifact.path) for artifact in result.artifacts]}
 
 
-# GitHub 조회가 불가능한 환경에서는 로컬 DB 조회용 빈 issue_url을 반환한다.
-def _optional_issue_context(issue_number: int) -> dict[str, Any]:
-    try:
-        return _fetch_issue_context(issue_number)
-    except Exception:
-        return {
-            "issue_number": issue_number,
-            "title": "",
-            "body": "",
-            "issue_url": "",
-            "issue_labels": [],
-        }
-
-
-# 최근 run 정보를 CLI 출력용 payload로 변환한다.
-def _run_payload(service: OrchestrationService, run: Run | None) -> dict[str, Any] | None:
-    if run is None:
-        return None
-    return {
-        "agent": run.agent_name,
-        "status": run.status,
-        "started_at": service._format_dt(run.started_at),
-        "finished_at": service._format_dt(run.finished_at),
-        "summary": run.summary,
-        "error": run.error,
-    }
-
-
-# 최근 상태 전이 정보를 CLI 출력용 payload로 변환한다.
-def _transition_payload(
-    service: OrchestrationService,
-    transition: StateTransition | None,
-) -> dict[str, Any] | None:
-    if transition is None:
-        return None
-    return {
-        "from": transition.from_state,
-        "to": transition.to_state,
-        "reason": transition.reason,
-        "at": service._format_dt(transition.created_at),
-    }
-
-
-# note를 받는 명령에 공통 옵션을 추가한다.
 def _add_note_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--note", default="", help="Agent에 전달할 사람의 요청 메모")
     parser.add_argument("--note-file", default="", help="Agent에 전달할 요청 메모 파일 경로")
 
 
-# issue 번호 기반 명령에 공통 옵션을 추가한다.
 def _add_issue_option(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number")
 
@@ -655,17 +373,13 @@ def _agent_specs(args: argparse.Namespace) -> dict[str, Any]:
             "decision_rules": spec.section("Decision Rules"),
             "hard_rules": spec.section("Hard Rules"),
         }
-
-    specs = [
-        {
-            "name": spec.name,
-            "version": spec.version,
-            "summary": spec.summary,
-            "path": str(spec.path),
-        }
-        for spec in list_markdown_specs(DEFAULT_SPEC_DIR)
-    ]
-    return {"status": "ok", "specs": specs}
+    return {
+        "status": "ok",
+        "specs": [
+            {"name": spec.name, "version": spec.version, "summary": spec.summary, "path": str(spec.path)}
+            for spec in list_markdown_specs(DEFAULT_SPEC_DIR)
+        ],
+    }
 
 
 def _playbooks(args: argparse.Namespace) -> dict[str, Any]:
@@ -685,179 +399,117 @@ def _playbooks(args: argparse.Namespace) -> dict[str, Any]:
             "decision_rules": spec.section("Decision Rules"),
             "hard_rules": spec.section("Hard Rules"),
         }
-
-    playbooks = [
-        {
-            "name": spec.name,
-            "version": spec.version,
-            "summary": spec.summary,
-            "path": str(spec.path),
-        }
-        for spec in list_markdown_specs(DEFAULT_PLAYBOOK_DIR)
-    ]
-    return {"status": "ok", "playbooks": playbooks}
+    return {
+        "status": "ok",
+        "playbooks": [
+            {"name": spec.name, "version": spec.version, "summary": spec.summary, "path": str(spec.path)}
+            for spec in list_markdown_specs(DEFAULT_PLAYBOOK_DIR)
+        ],
+    }
 
 
-# CLI 하위 명령과 handler를 등록한다.
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="harness",
-        description="Codex가 호출하는 로컬 AI 개발 하네스 CLI",
-    )
+    parser = argparse.ArgumentParser(prog="harness", description="Codex용 stateless AI 개발 하네스 CLI")
     parser.add_argument("--json", action="store_true", help="결과를 JSON으로 출력")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     agent_specs = subparsers.add_parser("agent-specs", help="Markdown Agent spec 목록 또는 상세 조회")
-    agent_specs.add_argument("--name", default="", help="상세 조회할 Agent spec 이름. 예: qa")
+    agent_specs.add_argument("--name", default="", help="상세 조회할 Agent spec 이름")
     agent_specs.set_defaults(handler=_agent_specs)
 
     playbooks = subparsers.add_parser("playbooks", help="Codex Markdown playbook 목록 또는 상세 조회")
-    playbooks.add_argument("--name", default="", help="상세 조회할 playbook 이름. 예: frontend-implementation")
+    playbooks.add_argument("--name", default="", help="상세 조회할 playbook 이름")
     playbooks.set_defaults(handler=_playbooks)
 
-    for command, help_text in [
-        ("design", "GitHub issue를 기반으로 Design Agent를 실행"),
-        ("plan", "Deprecated alias: design 명령을 사용"),
-    ]:
-        design_parser = subparsers.add_parser(command, help=help_text)
-        _add_issue_option(design_parser)
-        design_parser.add_argument("--force", action="store_true", help="성공한 design이 있어도 다시 실행")
-        design_parser.set_defaults(handler=_run_issue_command)
-
-    create_issue = subparsers.add_parser("create-issue", help="GitHub issue 생성 후 하네스 DB 동기화와 Discord 알림 전송")
-    create_issue.add_argument("--title", required=True, help="생성할 GitHub issue 제목")
-    create_issue.add_argument("--body-file", required=True, help="생성할 GitHub issue 본문 Markdown 파일")
-    create_issue.add_argument(
-        "--type",
-        default="",
-        choices=[
-            "",
-            "feFeature",
-            "beFeature",
-            "fullstackFeature",
-            "apiConnect",
-            "config",
-            "infra",
-            "docs",
-            "bugfix",
-            "hotfix",
-        ],
-        help="제목 prefix 보강에 사용할 구현 타입",
-    )
-    create_issue.set_defaults(handler=_create_issue)
-
-    publish_ui_evidence = subparsers.add_parser(
-        "publish-ui-evidence",
-        help="UI/UX 이슈 첨부용 화면 이미지를 커밋하고 stage 브랜치에 병합",
-    )
-    publish_ui_evidence.add_argument(
-        "--image",
-        action="append",
-        required=True,
-        help="첨부할 화면 이미지 경로. 여러 번 지정 가능",
-    )
-    publish_ui_evidence.add_argument("--issue", type=int, help="이미지 증거가 연결될 GitHub issue 번호")
-    publish_ui_evidence.add_argument("--slug", help="docs/qa-screenshots 하위 디렉토리명")
-    publish_ui_evidence.add_argument(
-        "--target-branch",
-        default="",
-        help="이미지를 병합할 브랜치. 기본값은 DEVELOPMENT_BASE_BRANCH(stage)",
-    )
-    publish_ui_evidence.add_argument(
-        "--no-push",
-        action="store_true",
-        help="로컬 stage 병합까지만 수행하고 원격 push는 생략",
-    )
-    publish_ui_evidence.set_defaults(handler=_publish_ui_evidence)
-
-    for command, help_text in [
-        ("develop", "Design 승인 후 Dev Agent 실행"),
-        ("fix-develop", "Deprecated: Dev Agent 내부 복구 또는 Codex 대화형 수정 흐름을 사용"),
-    ]:
+    for command, help_text in [("design", "GitHub issue 기반 Design artifact 생성"), ("plan", "Deprecated alias: design")]:
         command_parser = subparsers.add_parser(command, help=help_text)
         _add_issue_option(command_parser)
+        command_parser.add_argument("--force", action="store_true", help="stateless 모드에서는 재실행 기록만 남김")
         command_parser.set_defaults(handler=_run_issue_command)
 
     for command, help_text in [
-        ("redesign", "요청 메모를 반영해 Design Agent 재실행"),
-        ("replan", "Deprecated alias: redesign 명령을 사용"),
-        ("refactor", "요청 메모 기준으로 구현 결과 리팩터링"),
-        ("qa", "System QA Agent 실행"),
-        ("re-qa", "System QA Agent 재실행"),
-        ("document", "Documentation Agent로 Notion 입력용 작업 기록 생성"),
-        ("domain-knowledge", "Domain Knowledge Agent로 Obsidian 서비스 지식 정리"),
-        ("cancel", "작업을 중지 상태로 전환"),
+        ("redesign", "요청 메모를 반영해 Design artifact 재생성"),
+        ("replan", "Deprecated alias: redesign"),
+        ("develop", "Codex Dev handoff artifact 생성"),
+        ("fix-develop", "Deprecated: Codex 직접 수정 안내"),
+        ("refactor", "Codex Refactor handoff artifact 생성"),
+        ("qa", "Codex QA handoff artifact 생성"),
+        ("re-qa", "Codex QA handoff artifact 재생성"),
+        ("document", "Documentation Agent 실행"),
+        ("domain-knowledge", "Domain Knowledge Agent 실행"),
+        ("cancel", "작업 중지 artifact 생성"),
     ]:
         command_parser = subparsers.add_parser(command, help=help_text)
         _add_issue_option(command_parser)
         _add_note_options(command_parser)
         command_parser.set_defaults(handler=_run_issue_command)
 
-    sync = subparsers.add_parser("sync", help="GitHub issue를 하네스 DB에 동기화")
+    create_issue = subparsers.add_parser("create-issue", help="GitHub issue 생성 후 context artifact와 Discord 알림 전송")
+    create_issue.add_argument("--title", required=True)
+    create_issue.add_argument("--body-file", required=True)
+    create_issue.add_argument("--type", default="", choices=["", "feFeature", "beFeature", "fullstackFeature", "apiConnect", "config", "infra", "docs", "bugfix", "hotfix"])
+    create_issue.set_defaults(handler=_create_issue)
+
+    sync = subparsers.add_parser("sync", help="GitHub issue context를 artifact로 저장")
     sync_group = sync.add_mutually_exclusive_group(required=True)
-    sync_group.add_argument("--issue", type=int, help="동기화할 GitHub issue number")
-    sync_group.add_argument("--all", action="store_true", help="open issue 전체 동기화")
+    sync_group.add_argument("--issue", type=int)
+    sync_group.add_argument("--all", action="store_true")
     sync.set_defaults(handler=_sync_issues)
 
-    status = subparsers.add_parser("status", help="로컬 DB 기준 작업 상태 조회")
+    status = subparsers.add_parser("status", help="artifact 기준 작업 상태 조회")
     _add_issue_option(status)
     status.set_defaults(handler=_status)
 
-    auto_run = subparsers.add_parser("auto-run", help="Plan/Dev/QA Agent를 공식 흐름으로 Human QA 직전까지 자동 실행")
+    auto_run = subparsers.add_parser("auto-run", help="design/develop/qa artifact를 순차 생성")
     auto_run_target = auto_run.add_mutually_exclusive_group(required=True)
-    auto_run_target.add_argument("--issue", type=int, help="자동 진행할 GitHub issue number")
-    auto_run_target.add_argument("--issues", help="자동 진행할 GitHub issue number 목록. 예: 5,6,7")
-    auto_run.add_argument("--until", default="qa", choices=["qa"], help="자동 진행 종료 단계")
-    auto_run.add_argument("--approved-by", required=True, help="자동 approval gate 기록에 사용할 승인자 이름")
-    auto_run.add_argument("--force-plan", action="store_true", help="성공한 plan이 있어도 다시 설계")
+    auto_run_target.add_argument("--issue", type=int)
+    auto_run_target.add_argument("--issues")
+    auto_run.add_argument("--until", default="qa", choices=["qa"])
+    auto_run.add_argument("--approved-by", default="", help="호환 옵션. stateless 모드에서는 사용하지 않음")
+    auto_run.add_argument("--force-plan", action="store_true")
     _add_note_options(auto_run)
     auto_run.set_defaults(handler=_auto_run)
 
-    document_harness = subparsers.add_parser("document-harness", help="하네스 세팅 변경 이력을 Notion History 표에 기록")
-    document_harness.add_argument("--title", required=True, help="하네스 변경 이력 제목")
-    document_harness.add_argument(
-        "--category",
-        required=True,
-        choices=["스킬 생성", "에이전트 생성", "에이전트 보강", "하네스 강화", "스킬 강화", "기획 변경"],
-        help="Notion History 표의 다중 선택 값",
-    )
-    document_harness.add_argument("--feature", required=True, help="유비쿼터스 언어로 정리한 기능 설명")
-    document_harness.add_argument("--usage", required=True, help="사용 방법 또는 호출 방식")
+    approve = subparsers.add_parser("approve", help="승인 내용을 artifact로 기록")
+    _add_issue_option(approve)
+    approve.add_argument("--stage", required=True, choices=["plan", "dev", "qa", "deploy"])
+    approve.add_argument("--approved-by", required=True)
+    approve.add_argument("--notes", default="")
+    approve.set_defaults(handler=_approve)
+
+    manual_complete = subparsers.add_parser("manual-complete", help="수동 완료 내용을 artifact로 기록")
+    _add_issue_option(manual_complete)
+    manual_complete.add_argument("--stage", required=True, choices=["dev", "qa"])
+    manual_complete.add_argument("--completed-by", required=True)
+    manual_complete.add_argument("--notes", default="")
+    manual_complete.set_defaults(handler=_manual_complete)
+
+    publish_ui_evidence = subparsers.add_parser("publish-ui-evidence", help="UI/UX 증거 이미지를 target repo에 반영")
+    publish_ui_evidence.add_argument("--image", action="append", required=True)
+    publish_ui_evidence.add_argument("--issue", type=int)
+    publish_ui_evidence.add_argument("--slug")
+    publish_ui_evidence.add_argument("--target-branch", default="")
+    publish_ui_evidence.add_argument("--no-push", action="store_true")
+    publish_ui_evidence.set_defaults(handler=_publish_ui_evidence)
+
+    document_harness = subparsers.add_parser("document-harness", help="하네스 세팅 변경 이력을 Notion에 기록")
+    document_harness.add_argument("--title", required=True)
+    document_harness.add_argument("--category", required=True, choices=["스킬 생성", "에이전트 생성", "에이전트 보강", "하네스 강화", "스킬 강화", "기획 변경"])
+    document_harness.add_argument("--feature", required=True)
+    document_harness.add_argument("--usage", required=True)
     document_harness.set_defaults(handler=_document_harness)
 
     planning_assist = subparsers.add_parser("planning-assist", help="Obsidian 기반 기획 지원 Agent 실행")
-    planning_assist.add_argument("--topic", default="", help="기획 보조를 받을 주제")
+    planning_assist.add_argument("--topic", default="")
     _add_note_options(planning_assist)
     planning_assist.set_defaults(handler=_planning_assist)
-
-    approve = subparsers.add_parser("approve", help="Plan/Dev/QA/Deploy 승인 gate를 기록")
-    approve_target = approve.add_mutually_exclusive_group(required=True)
-    approve_target.add_argument("--issue", type=int, help="승인할 GitHub issue number")
-    approve_target.add_argument("--task-id", help="승인할 task id. deploy stage 호환용")
-    approve.add_argument("--stage", required=True, choices=["plan", "dev", "qa", "deploy"], help="승인할 단계")
-    approve.add_argument("--approved-by", required=True, help="승인자 이름")
-    approve.add_argument("--notes", default="", help="승인 메모")
-    approve.set_defaults(handler=_approve)
-
-    manual_complete = subparsers.add_parser(
-        "manual-complete",
-        help="Codex/사람이 수동 완료한 Dev/QA를 공식 run과 상태 전이로 기록",
-    )
-    _add_issue_option(manual_complete)
-    manual_complete.add_argument("--stage", required=True, choices=["dev", "qa"], help="수동 완료를 기록할 단계")
-    manual_complete.add_argument("--completed-by", required=True, help="완료 기록자 이름")
-    manual_complete.add_argument("--notes", default="", help="수동 완료 메모")
-    manual_complete.set_defaults(handler=_manual_complete)
-
     return parser
 
 
-# CLI 프로세스의 전체 실행 흐름을 제어한다.
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     configure_logging(settings.log_level, stream=sys.stderr)
-    create_db()
     handler: Callable[[argparse.Namespace], EventResult | dict[str, Any]] = args.handler
     try:
         result = handler(args)
@@ -872,6 +524,5 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
-# python -m 실행 시 CLI를 시작한다.
 if __name__ == "__main__":
     raise SystemExit(main())

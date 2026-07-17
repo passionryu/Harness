@@ -17,7 +17,7 @@ outputs:
 ---
 # Mission
 환경 변수, 빌드 설정, 배포 설정, 보안 설정 변경을 최소 범위로 구현한다.
-기능 구현 runner가 아니라 설정 변경 playbook으로 처리해 FE/BE 구현 러너 오라우팅을 막는다.
+기능 구현과 분리된 설정 변경 playbook으로 처리해 FE/BE 구현 작업 오분류를 막는다.
 
 # Call Conditions
 - 작업이 Gradle, package script, Docker, Railway, GitHub Actions, env, security config에 해당할 때 사용한다.
@@ -50,7 +50,7 @@ outputs:
 - 빠른 검증보다 재현 가능한 검증 명령을 우선한다.
 
 # Hard Rules
-- infra/config 작업을 DDD Modeling Runner로 보내지 않는다.
+- infra/config 작업을 DDD 구현 작업으로 오분류하지 않는다.
 - 실제 secret 값을 커밋하지 않는다.
 - 배포 미검증 항목을 자동 PASS로 표시하지 않는다.
 - 설정 변경 이유 없이 의존성을 올리지 않는다.

@@ -37,9 +37,8 @@ class AgentResult:
     error: str | None = None
 
 
-class AgentRunner(Protocol):
+class AgentProtocol(Protocol):
     name: str
 
     def run(self, input_data: AgentInput) -> AgentResult:
         """Run an agent and return a structured, auditable result."""
-

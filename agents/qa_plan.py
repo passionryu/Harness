@@ -10,7 +10,7 @@ class QaPlanItem:
     text: str
     source: str
     verification: str
-    runner_hint: str
+    codex_hint: str
 
 
 @dataclass(frozen=True)
@@ -87,7 +87,7 @@ def build_qa_plan(title: str, body: str, fallback_items: list[str]) -> QaPlan:
             text=text,
             source=source,
             verification=_classify_verification(text),
-            runner_hint=_classify_runner_hint(title, text),
+            codex_hint=_classify_codex_hint(title, text),
         )
         for index, (text, source) in enumerate(limited_items, start=1)
     ]
@@ -111,14 +111,14 @@ def render_qa_plan_markdown(plan: QaPlan) -> list[str]:
     for item in plan.items:
         lines.append(
             f"- `{item.item_id}` [{item.verification}] {item.text} "
-            f"(source={item.source}, runner={item.runner_hint})"
+            f"(source={item.source}, codex={item.codex_hint})"
         )
     lines.append("")
     lines.extend(
         [
             "### 자동화 커버리지 원칙",
-            "- `auto-candidate`는 자동 Runner가 직접 검증해야 하는 후보입니다.",
-            "- 자동 Runner가 직접 검증하지 못한 항목은 통과로 표시하지 않고 Human QA에 남깁니다.",
+            "- `auto-candidate`는 Codex가 실제 도구로 검증할 후보입니다.",
+            "- Codex가 직접 검증하지 못한 항목은 통과로 표시하지 않고 Human QA에 남깁니다.",
             "- `human-required`는 시각 품질, 정책 판단, 운영 확인처럼 사람이 최종 승인해야 하는 항목입니다.",
             "",
         ]
@@ -134,10 +134,10 @@ def qa_plan_coverage_lines(plan: QaPlan) -> list[str]:
         if item.verification == "human-required":
             status = "Human QA 필요"
         elif item.verification == "auto-candidate":
-            status = "자동 Runner 후보"
+            status = "Codex 도구 검증 후보"
         else:
             status = "자동화 미지원"
-        lines.append(f"- {item.item_id}: {status} - {item.text} ({item.runner_hint})")
+        lines.append(f"- {item.item_id}: {status} - {item.text} ({item.codex_hint})")
     return lines
 
 
@@ -220,12 +220,12 @@ def _classify_verification(text: str) -> str:
     return "human-required"
 
 
-def _classify_runner_hint(title: str, text: str) -> str:
+def _classify_codex_hint(title: str, text: str) -> str:
     haystack = f"{title}\n{text}"
     if any(keyword in haystack for keyword in SECURITY_KEYWORDS):
-        return "Security Boundary Validator"
+        return "security/log/manual boundary check"
     if any(keyword in haystack for keyword in API_KEYWORDS):
-        return "Integration/API Scenario Runner"
+        return "API scenario verification"
     if any(keyword in haystack for keyword in BROWSER_KEYWORDS):
-        return "Browser Scenario Runner"
-    return "Human Checklist Writer"
+        return "browser scenario verification"
+    return "human checklist"

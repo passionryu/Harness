@@ -1,2 +1,1 @@
-"""Agent runners."""
-
+"""Markdown-defined agent adapters."""

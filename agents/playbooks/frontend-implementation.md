@@ -21,7 +21,7 @@ Codex가 실제 레포지토리를 읽고 필요한 컴포넌트, 상태, 스타
 
 # Call Conditions
 - 작업 범위가 화면, 폼, 라우팅, 상태, 사용자 메시지, 반응형 레이아웃에 걸쳐 있을 때 사용한다.
-- FE bugfix는 백엔드 DDD runner로 라우팅하지 않고 이 playbook을 우선한다.
+- FE bugfix는 백엔드 작업으로 오분류하지 않고 이 playbook을 우선한다.
 - API contract 구현이 필요한 경우 `api-connect` 성격의 작업인지 먼저 확인한다.
 
 # Codex Execution Steps
@@ -53,7 +53,7 @@ Codex가 실제 레포지토리를 읽고 필요한 컴포넌트, 상태, 스타
 - 새 라이브러리는 기존 의존성으로 해결할 수 없을 때만 추가한다.
 
 # Hard Rules
-- FE 작업을 DDD Modeling Runner로 보내지 않는다.
+- FE 작업을 백엔드 DDD 작업으로 오분류하지 않는다.
 - 마케팅형 랜딩 화면을 임의로 만들지 않는다.
 - 관련 없는 색상/레이아웃 리디자인을 섞지 않는다.
 - 테스트나 build를 실행하지 못했으면 이유를 기록한다.

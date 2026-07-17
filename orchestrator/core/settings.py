@@ -10,7 +10,6 @@ class Settings(BaseSettings):
     app_name: str = "ai-harness"
     app_env: str = "local"
     log_level: str = "INFO"
-    database_url: str = "sqlite:///./ai_harness.db"
     artifact_root: Path = Path("artifacts")
     target_repo_path: Path = Path("../target-app")
     agent_timeout_seconds: int = 900
