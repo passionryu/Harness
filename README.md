@@ -13,6 +13,7 @@ DB, 장기 상태 머신, Python 구현 실행기는 제거되었습니다.
 - 실제 구현, 검증, 문서화 절차: `agents/playbooks/*.md`
 - Issue별 산출물: `artifacts/issue-{number}/...`
 - 실제 코드 수정, 테스트, 커밋, 푸시: Codex가 직접 수행
+- GitHub Project Status: DB 없이 각 단계 명령/승인 시점에 best-effort로 이동
 
 Python 코드는 GitHub/Notion/Discord 호출, artifact 생성, CLI/webhook adapter처럼 반복 가능한 도구 호출만 담당합니다.
 
@@ -112,6 +113,7 @@ Configure `.env` with:
 GITHUB_OWNER=passionryu
 GITHUB_REPO=myMentalCare
 GITHUB_TOKEN=
+GITHUB_PROJECT_NUMBER=
 GITHUB_WEBHOOK_SECRET=
 ENABLE_GITHUB_COMMENT_COMMANDS=false
 ALLOW_EXTERNAL_NOTIFICATIONS=false
@@ -146,6 +148,22 @@ type: hotfix
 ```
 
 The Design and Dev agents use the `type:*` label plus issue content to choose the right Markdown playbook.
+
+## GitHub Project Status Sync
+
+`GITHUB_PROJECT_NUMBER`와 GitHub 인증이 설정되어 있으면 하네스는 DB 없이 GitHub Project Status를 직접 이동합니다.
+Project 이동 실패는 artifact 생성 자체를 실패시키지 않고 `artifacts/issue-{number}/project-status/`에 결과를 남깁니다.
+
+| Harness event | Project Status |
+| --- | --- |
+| `harness create-issue` | `Backlog` |
+| `harness design` 또는 design label webhook | `Plan Review` |
+| `harness approve --stage plan` | `Dev Ready` |
+| `harness develop` 또는 `harness manual-complete --stage dev` | `Dev Review` |
+| `harness approve --stage dev` | `QA Ready` |
+| `harness qa` 또는 `harness manual-complete --stage qa` | `QA Review` |
+| `harness approve --stage qa` | `Ready To Deploy` |
+| `harness approve --stage deploy` | `Done` |
 
 ## Branch And Commit Rule
 

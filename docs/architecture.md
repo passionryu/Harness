@@ -11,6 +11,7 @@ flowchart LR
     AG --> SPEC["agents/specs/*.md"]
     AG --> PB["agents/playbooks/*.md"]
     AG --> AR["Artifact Store"]
+    OR --> GP["GitHub Project Status"]
     CODEX["Codex"] --> AR
     CODEX --> TARGET["Target Repository"]
     HUMAN["Human Reviewer"] --> CODEX
@@ -70,6 +71,7 @@ CLI and GitHub webhook handlers are intentionally thin.
 - optionally leave generated GitHub comments
 
 They do not perform autonomous app implementation.
+When GitHub Project configuration exists, they move only the Project Status field for the current issue.
 
 ## 6. Codex Responsibilities
 
@@ -101,3 +103,4 @@ The main observability surface is the artifact tree.
 `harness status --issue <number>` summarizes the issue context, generated stages, approvals, and next likely action.
 
 Logs remain useful for command failures, but human-readable decisions belong in artifacts.
+Project Status sync results are written under `artifacts/issue-{number}/project-status/`.

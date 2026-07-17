@@ -15,6 +15,16 @@ from orchestrator.services.github_adapter import GitHubAdapter
 
 KST = ZoneInfo("Asia/Seoul")
 AI_HARNESS_GENERATED_MARKER = "<!-- ai-harness-generated -->"
+APPROVAL_PROJECT_STATUS = {
+    "plan": "Dev Ready",
+    "dev": "QA Ready",
+    "qa": "Ready To Deploy",
+    "deploy": "Done",
+}
+MANUAL_COMPLETION_PROJECT_STATUS = {
+    "dev": "Dev Review",
+    "qa": "QA Review",
+}
 
 
 @dataclass(frozen=True)
@@ -62,7 +72,13 @@ class OrchestrationService:
             self._agent_comment("Design Agent", context, result, "design"),
         )
         suffix = " 재설계 요청이 반영되었습니다." if replan_request or force else ""
-        return self._event(context, "Design Artifact Ready", f"Design artifact를 생성했습니다.{suffix}")
+        project_status = self._move_project_status_best_effort(context, "Plan Review")
+        return self._event(
+            context,
+            "Design Artifact Ready",
+            f"Design artifact를 생성했습니다.{suffix}",
+            project_status,
+        )
 
     def run_replan_for_github_issue(
         self,
@@ -98,7 +114,13 @@ class OrchestrationService:
             context.issue_number,
             self._agent_comment("Codex Dev Handoff", context, result, "dev"),
         )
-        return self._event(context, "Codex Dev Handoff Ready", "Codex가 직접 구현할 dev handoff artifact를 생성했습니다.")
+        project_status = self._move_project_status_best_effort(context, "Dev Review")
+        return self._event(
+            context,
+            "Codex Dev Handoff Ready",
+            "Codex가 직접 구현할 dev handoff artifact를 생성했습니다.",
+            project_status,
+        )
 
     def run_fix_develop_for_github_issue(
         self,
@@ -134,7 +156,13 @@ class OrchestrationService:
             context.issue_number,
             self._agent_comment("Codex Refactor Handoff", context, result, "dev"),
         )
-        return self._event(context, "Codex Refactor Handoff Ready", "Codex가 직접 리팩터링할 handoff artifact를 생성했습니다.")
+        project_status = self._move_project_status_best_effort(context, "Dev Review")
+        return self._event(
+            context,
+            "Codex Refactor Handoff Ready",
+            "Codex가 직접 리팩터링할 handoff artifact를 생성했습니다.",
+            project_status,
+        )
 
     def run_qa_for_github_issue(
         self,
@@ -266,7 +294,18 @@ class OrchestrationService:
                 f"- at: {self._now()}",
             ],
         )
-        return self._event(context, f"{stage} Approved", f"{stage} 승인을 파일 artifact로 기록했습니다.")
+        project_status = None
+        if stage in APPROVAL_PROJECT_STATUS:
+            project_status = self._move_project_status_best_effort(
+                context,
+                APPROVAL_PROJECT_STATUS[stage],
+            )
+        return self._event(
+            context,
+            f"{stage} Approved",
+            f"{stage} 승인을 파일 artifact로 기록했습니다.",
+            project_status,
+        )
 
     def record_manual_completion_for_github_issue(
         self,
@@ -291,7 +330,18 @@ class OrchestrationService:
                 notes or "기록 없음",
             ],
         )
-        return self._event(context, f"Manual {stage} Completed", f"{stage} 수동 완료를 파일 artifact로 기록했습니다.")
+        project_status = None
+        if stage in MANUAL_COMPLETION_PROJECT_STATUS:
+            project_status = self._move_project_status_best_effort(
+                context,
+                MANUAL_COMPLETION_PROJECT_STATUS[stage],
+            )
+        return self._event(
+            context,
+            f"Manual {stage} Completed",
+            f"{stage} 수동 완료를 파일 artifact로 기록했습니다.",
+            project_status,
+        )
 
     def comment_command_failure(
         self,
@@ -382,7 +432,13 @@ class OrchestrationService:
             context.issue_number,
             self._agent_comment(label, context, result, "qa"),
         )
-        return self._event(context, "Codex QA Handoff Ready", "Codex가 직접 검증할 QA handoff artifact를 생성했습니다.")
+        project_status = self._move_project_status_best_effort(context, "QA Review")
+        return self._event(
+            context,
+            "Codex QA Handoff Ready",
+            "Codex가 직접 검증할 QA handoff artifact를 생성했습니다.",
+            project_status,
+        )
 
     def _run_agent(self, context: IssueContext, agent_name: str, body: str, state: str) -> AgentResult:
         agent = self.agent_registry.get(agent_name)
@@ -488,12 +544,58 @@ class OrchestrationService:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
-    def _event(self, context: IssueContext, state: str, message: str) -> EventResult:
+    def _event(
+        self,
+        context: IssueContext,
+        state: str,
+        message: str,
+        project_status_result: str | None = None,
+    ) -> EventResult:
+        if project_status_result:
+            message = f"{message} Project Status: {project_status_result}"
         return EventResult(
             task_id=context.task_id,
             previous_state="stateless",
             current_state=state,
             message=message,
+        )
+
+    def _move_project_status_best_effort(self, context: IssueContext, status_name: str) -> str:
+        if not settings.github_project_number:
+            result = "skipped: GITHUB_PROJECT_NUMBER is not configured"
+            self._write_project_status_note(context, status_name, result)
+            return result
+        if not settings.github_token and not settings.github_use_gh_cli:
+            result = "skipped: GitHub auth is not configured"
+            self._write_project_status_note(context, status_name, result)
+            return result
+        try:
+            GitHubAdapter(settings.github_token, use_gh_cli=settings.github_use_gh_cli).move_issue_project_status(
+                settings.github_owner,
+                settings.github_repo,
+                context.issue_number,
+                int(settings.github_project_number),
+                status_name,
+            )
+            result = f"moved to {status_name}"
+        except Exception as exc:
+            result = f"failed: {exc}"
+        self._write_project_status_note(context, status_name, result)
+        return result
+
+    def _write_project_status_note(self, context: IssueContext, status_name: str, result: str) -> Path:
+        slug = status_name.lower().replace(" ", "-")
+        return self._write_note(
+            context,
+            "project-status",
+            f"{self._timestamp()}-{slug}.md",
+            [
+                "# GitHub Project Status Sync",
+                "",
+                f"- target_status: {status_name}",
+                f"- result: {result}",
+                f"- at: {self._now()}",
+            ],
         )
 
     def _append_issue_metadata(self, body: str, issue_labels: tuple[str, ...], issue_number: int) -> str:

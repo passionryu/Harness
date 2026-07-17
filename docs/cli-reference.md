@@ -58,6 +58,7 @@ harness manual-complete --issue 13 --stage dev --completed-by rsy
 ```
 
 승인과 수동 완료 기록을 artifact로 남긴다.
+`GITHUB_PROJECT_NUMBER`가 설정되어 있으면 승인 stage에 맞춰 GitHub Project Status도 이동한다.
 
 ## Documentation
 
@@ -81,3 +82,16 @@ harness auto-run --issue 13 --until qa
 
 design/develop/qa artifact를 순차 생성한다.
 실제 구현과 검증은 Codex가 수행한다.
+
+## Project Status Mapping
+
+| Command | Project Status |
+| --- | --- |
+| `create-issue` | `Backlog` |
+| `design` | `Plan Review` |
+| `approve --stage plan` | `Dev Ready` |
+| `develop` | `Dev Review` |
+| `approve --stage dev` | `QA Ready` |
+| `qa` | `QA Review` |
+| `approve --stage qa` | `Ready To Deploy` |
+| `approve --stage deploy` | `Done` |

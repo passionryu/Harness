@@ -52,6 +52,24 @@ DISCORD_WEBHOOK_URL=...
 
 QA messages should be sent only after QA work is complete and must include the human QA approval command.
 
+## GitHub Project Status
+
+Set `GITHUB_PROJECT_NUMBER` with `GITHUB_TOKEN` or `GITHUB_USE_GH_CLI=true` to enable Project Status sync.
+The harness does not store board state in a database.
+It moves the GitHub Project Status field directly when a stage command or approval command succeeds.
+
+Project Status mapping:
+
+- `design`: `Plan Review`
+- `approve --stage plan`: `Dev Ready`
+- `develop`: `Dev Review`
+- `approve --stage dev`: `QA Ready`
+- `qa`: `QA Review`
+- `approve --stage qa`: `Ready To Deploy`
+- `approve --stage deploy`: `Done`
+
+If Project sync fails, the command still returns its artifact result and writes the sync failure under `project-status/`.
+
 ## Observability
 
 The final answer to a user should cite:

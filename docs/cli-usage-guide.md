@@ -16,6 +16,7 @@ pytest
 ```
 
 `.env`에는 GitHub, Notion, Discord, target repo 경로처럼 실제 도구 호출에 필요한 값만 둔다.
+GitHub Project Status 자동 이동이 필요하면 `GITHUB_PROJECT_NUMBER`와 GitHub 인증을 설정한다.
 
 ## 자주 쓰는 명령
 
@@ -41,6 +42,9 @@ harness status --issue 13
 6. Codex가 실제 검증을 수행하고 결과를 보고서에 반영한다.
 7. 사람이 확인한 뒤 `approve`로 승인 기록 artifact를 남긴다.
 8. 필요하면 `document` 또는 `domain-knowledge`를 실행한다.
+
+각 단계 명령과 승인 명령은 설정이 있을 때 GitHub Project Status를 직접 이동한다.
+DB에 상태를 저장하지 않으며, 이동 결과는 `artifacts/issue-{number}/project-status/`에 기록된다.
 
 ## Deprecated Alias
 
