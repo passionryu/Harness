@@ -943,7 +943,7 @@ class PlanAgent:
                 [
                     "# Work Units",
                     "",
-                    "이 계획은 Development Agent가 책임 기반 runner로 처리해야 할 작업 단위입니다.",
+                    "이 계획은 Codex가 Markdown playbook을 기준으로 직접 처리해야 할 작업 단위입니다.",
                     "",
                     *work_units,
                 ]

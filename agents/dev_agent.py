@@ -150,7 +150,7 @@ class DevAgent:
                     f"- recommended_branch: `{branch_name}`",
                     f"- base_branch: `{settings.development_base_branch}`",
                     f"- codex_playbooks: {', '.join(f'`agents/playbooks/{name}.md`' for name in playbooks)}",
-                    "- runner: removed",
+                    "- python_implementation_layer: removed",
                     "",
                     "## 커밋 단위",
                     *[
@@ -176,7 +176,7 @@ class DevAgent:
                     f"- issue_number: `{issue_number}`",
                     f"- recommended_branch: `{branch_name}`",
                     "- source: GitHub issue + Markdown playbook",
-                    "- python_runner: removed",
+                    "- python_implementation_layer: removed",
                     "",
                     "## Required Playbooks",
                     *[f"- `agents/playbooks/{name}.md`" for name in playbooks],
@@ -210,7 +210,7 @@ class DevAgent:
                     "# Dev 상태",
                     "",
                     "- mode: stateless Codex handoff",
-                    "- runner: removed",
+                    "- python_implementation_layer: removed",
                     f"- recommended_branch: `{branch_name}`",
                     f"- handoff: `{handoff}`",
                     "",
@@ -228,7 +228,7 @@ class DevAgent:
                 [
                     "# Dev 검증 계획",
                     "",
-                    "- 자동 테스트 runner는 제거되었습니다.",
+                    "- 자동 테스트 Python 계층은 제거되었습니다.",
                     "- Codex가 변경 범위에 맞는 테스트 명령을 직접 선택하고 실행합니다.",
                     "",
                     "## 최소 기대",
@@ -242,7 +242,7 @@ class DevAgent:
 
         return AgentResult(
             status=AgentStatus.SUCCESS,
-            summary=f"Runner 없이 Codex가 직접 구현할 dev handoff를 생성했습니다: {branch_name}",
+            summary=f"Python 구현 계층 없이 Codex가 직접 구현할 dev handoff를 생성했습니다: {branch_name}",
             artifacts=[
                 ArtifactSpec("commit-plan", Path(commit_plan)),
                 ArtifactSpec("dev-status", Path(status)),

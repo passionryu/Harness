@@ -120,7 +120,7 @@ class QAAgent:
                     "",
                     f"- issue_type: `{issue_type}`",
                     f"- issue_number: `{issue_number}`",
-                    "- python_runner: removed",
+                    "- python_implementation_layer: removed",
                     "- playbook: `agents/playbooks/qa-verification.md`",
                     "",
                     "## Codex Execution",
@@ -164,7 +164,7 @@ class QAAgent:
                     f"- issue_type: `{issue_type}`",
                     f"- issue_number: `{issue_number}`",
                     "- result: `handoff`",
-                    "- python_runner: removed",
+                    "- python_implementation_layer: removed",
                     "- actual_verifier: Codex",
                     f"- frontend_url: `{settings.frontend_base_url}`",
                     f"- api_url: `{settings.target_api_base_url}`",
@@ -188,7 +188,7 @@ class QAAgent:
 
         return AgentResult(
             status=AgentStatus.SUCCESS,
-            summary="Runner 없이 Codex가 직접 검증할 QA handoff를 생성했습니다.",
+            summary="Python 검증 계층 없이 Codex가 직접 검증할 QA handoff를 생성했습니다.",
             artifacts=[
                 ArtifactSpec("qa-plan", Path(codex_handoff)),
                 ArtifactSpec("qa-report", Path(report)),

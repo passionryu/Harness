@@ -33,8 +33,8 @@ class IssueContext:
 class OrchestrationService:
     """Stateless GitHub issue -> Markdown artifact orchestrator.
 
-    The harness no longer owns a database, state machine, or runner capability
-    layer. Each command creates a deterministic artifact packet under
+    The harness no longer owns a database, state machine, or implementation layer.
+    Each command creates a deterministic artifact packet under
     `artifacts/issue-{number}/...` and optionally comments on GitHub.
     """
 

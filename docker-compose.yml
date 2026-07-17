@@ -1,28 +1,8 @@
 services:
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: ai_harness
-      POSTGRES_USER: ai_harness
-      POSTGRES_PASSWORD: ai_harness
-    ports:
-      - "54329:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ai_harness -d ai_harness"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
   api:
     build: .
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       APP_ENV: docker
-      DATABASE_URL: postgresql+psycopg://ai_harness:ai_harness@postgres:5432/ai_harness
       ARTIFACT_ROOT: /app/artifacts
       LOG_LEVEL: INFO
     ports:
@@ -30,6 +10,3 @@ services:
     volumes:
       - ./artifacts:/app/artifacts
       - ./logs:/app/logs
-
-volumes:
-  postgres-data:
