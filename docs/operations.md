@@ -1,46 +1,63 @@
 # Operations Guide
 
-## Deterministic Operation
+## Operating Model
 
-- All workflow state changes go through `workflows/state_machine.py`.
-- Agents suggest outcomes; the orchestrator applies valid transitions.
-- Artifact files are versioned by task and run id.
-- Human approval is represented by a persisted timestamp and audit event.
+This harness is stateless.
+Each command reads current inputs, creates or updates artifacts, and exits.
+The artifact tree is the source of operational truth.
 
-## Retry Safety
+## Standard Flow
 
-- Every retry creates a new run.
-- Old artifacts are never overwritten.
-- QA failure loops back to `Dev Ready` only while retry limit remains.
-- Exceeding retry limit stops the workflow and requires human intervention.
+```bash
+harness sync --issue 13
+harness design --issue 13
+harness develop --issue 13
+harness qa --issue 13
+harness approve --issue 13 --stage qa --approved-by rsy
+harness document --issue 13
+harness status --issue 13
+```
 
-## Crash Recovery
+## Recovery
 
-On restart:
+There is no stored workflow state to repair.
+If a command fails:
 
-1. Load task state from DB.
-2. Inspect latest run.
-3. If a run has `started_at` but no `finished_at`, mark it failed or expired.
-4. Resume only from the last persisted state.
-5. Never infer success from missing artifacts.
+1. Read the command error.
+2. Check `artifacts/issue-{number}/...`.
+3. Fix the input, environment, or Markdown spec/playbook.
+4. Re-run the command.
+
+Old artifacts may be overwritten by the same command when the output path is deterministic.
+Important human decisions should be preserved in approval notes or commits.
 
 ## Context Management
 
 Use artifacts as context boundaries:
 
-- Plan Agent creates architecture/API/checklist artifacts.
-- Dev Agent consumes plan artifacts, not the full conversation.
-- QA Agent consumes plan, patch, and test report artifacts.
-- Summaries are stored separately from raw logs.
+- Design Agent creates architecture/API/checklist artifacts.
+- Dev Agent consumes issue/design artifacts and creates Codex implementation requests.
+- QA Agent consumes issue/design/dev artifacts and creates a QA Plan.
+- Documentation Agent summarizes completed work for Notion.
+
+## Notifications
+
+External notifications are disabled by default.
+Enable them only when needed:
+
+```env
+ALLOW_EXTERNAL_NOTIFICATIONS=true
+DISCORD_WEBHOOK_URL=...
+```
+
+QA messages should be sent only after QA work is complete and must include the human QA approval command.
 
 ## Observability
 
-Each run should emit:
+The final answer to a user should cite:
 
-- timeline event
-- structured JSON log
-- artifact index
-- status summary
-- failure reason if present
-
-The final answer to a user should cite the task id, current state, latest artifacts, and verification result.
+- issue number
+- artifact path
+- performed verification
+- commit hash and push status, if code changed
+- remaining risk, if any

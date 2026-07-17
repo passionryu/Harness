@@ -138,7 +138,7 @@ outputs:
 - 코드가 아직 spec을 읽지 않는 영역은 spec을 운영 기준으로 삼되, 실제 연결 작업을 별도 이슈로 남긴다.
 - spec 변경 후에는 `pytest tests/test_agent_spec.py`를 실행한다.
 - 실행 판단과 작업 순서는 먼저 `agents/playbooks/*.md`에 추가한다.
-- Python runner 변경은 외부 API, 테스트 실행, PDF 렌더링처럼 실제 부작용이 있는 adapter가 필요할 때만 한다.
+- Python adapter 변경은 외부 API, 테스트 실행, PDF 렌더링처럼 실제 부작용이 있는 도구 호출이 필요할 때만 한다.
 
 ## 현재 연결 상태
 

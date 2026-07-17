@@ -1,95 +1,74 @@
 # ai-harness
-하네스는 핵심 기능 로직과 분리되어, 실행·운영·검증 과정을 표준화해 주는 제어 레이어입니다.  
-개발 조직에서 하네스는 반복되는 의사결정과 수작업을 규칙 기반으로 다루는 운영 프레임워크로 정의됩니다.  
 
-저는 하네스를 GitHub 칸반 기반의 상태 머신과 8개의 AI 에이전트(Plan/Dev/QA/Document 등)로 구현해, 사람 승인 게이트를 유지하면서도 처리 흐름을 자동화하도록 적용했습니다.  
-요구사항을 이슈 티켓으로 등록하는 것 부터 구현, 리뷰, 테스트, 승인, 문서화까지를 상태 추적 가능한 하나의 파이프라인으로 묶어 일관성과 추적성을 확보하고, 실패 원인 복구를 빠르게 만드는 데 집중했다.  
+이 하네스는 GitHub Issue를 Codex 작업 단위로 바꾸고, Markdown 에이전트 정의와 실행 요청 artifact를 남기는 local-first 제어층입니다.
+DB, 장기 상태 머신, Python 구현 실행기는 제거되었습니다.
 
-목적은 “AI가 코드를 대체하는 것”이 아니라 “개인이 운영 부담을 줄이고, 품질과 책임을 동시에 보장하며, 재현 가능한 개발 프로세스로 개발한다”는 데 있다.
+목적은 Python 코드가 자동 개발자를 흉내 내는 것이 아니라, 사람이 읽고 수정하기 쉬운 Markdown 규칙을 기준으로 Codex가 직접 구현, 검증, 문서화를 수행하게 만드는 것입니다.
 
 ## How It Works
 
-하네스는 GitHub Issue를 하나의 작업 단위로 보고, GitHub Kanban의 상태 흐름에 맞춰 Agent를 호출합니다.
-Agent는 직접 최종 결정을 내리지 않고 설계안, 구현 결과, 리뷰 결과, QA 리포트 같은 evidence를 남깁니다.
-사람은 각 gate에서 결과를 검토하고 승인하거나 수정 지시를 내립니다.
+하네스는 GitHub Issue를 하나의 작업 단위로 보고, CLI 또는 GitHub webhook 요청에 따라 Agent artifact를 생성합니다.
 
--> 사람의 승인과 판단 하에 움직이는 하네스 워크 플로우 설계
-<img width="1672" height="941" alt="image" src="https://github.com/user-attachments/assets/434b84bc-a344-4403-a9cc-d0a6a1e9a8e0" />
+- Agent 역할, 호출 조건, 판단 기준: `agents/specs/*.md`
+- 실제 구현, 검증, 문서화 절차: `agents/playbooks/*.md`
+- Issue별 산출물: `artifacts/issue-{number}/...`
+- 실제 코드 수정, 테스트, 커밋, 푸시: Codex가 직접 수행
 
--> 사전에 정의된 칸반 기반의 워크 플로우
-<img width="1703" height="769" alt="image" src="https://github.com/user-attachments/assets/fff6007e-2b5a-400b-82df-4c223ebce090" />
--> 위 하네스로 개발중인 토이 프로젝트     
-* 레포지토리 : https://github.com/passionryu/myMentalCare     
-* RailWay를 통한 간단한 MVP 배포 : https://my-mental-careweb-production.up.railway.app/   
+Python 코드는 GitHub/Notion/Discord 호출, artifact 생성, CLI/webhook adapter처럼 반복 가능한 도구 호출만 담당합니다.
 
 ## Agents
 
-### 🧭 Planning Assistant Agent
+### Planning Assistant Agent
 
-기획 보조 Agent입니다.
-서비스 아이디어, 사용자 문제, 다음 기능 후보를 함께 정리합니다.
-Obsidian에 쌓인 기획 메모와 도메인 지식을 참고해 “무엇을 만들면 좋을지”를 제안합니다.
-이 Agent의 결과는 바로 구현 명령이 아니라, GitHub Issue로 만들기 전의 기획 대화 재료입니다.
+확정 전 기획 대화를 돕는 Agent입니다.
+서비스 아이디어, 사용자 문제, 다음 기능 후보를 정리하고 GitHub Issue 생성 전의 기획 재료를 만듭니다.
 
-### 🏗️ Design Agent
+### Design Agent
 
-기획안을 개발 가능한 설계로 바꾸는 Agent입니다.
-요구사항을 읽고 변경 대상, 구현 단위, API/DB/화면 흐름, QA 기준을 정리합니다.
-시퀀스 다이어그램은 개발자가 이해할 수 있게 기술적으로 작성하고, 플로우 차트는 사용자와 도메인 관점에서 작성합니다.
-미결정 사항이 있으면 바로 구현으로 넘기지 않고 사람에게 질문해야 합니다.
+GitHub Issue를 개발 가능한 설계로 바꾸는 Agent입니다.
+요구사항, 변경 대상, 구현 단위, API/DB/화면 흐름, QA 기준을 artifact로 남깁니다.
 
-### 🛠️ Dev Agent
+### UI/UX Designer Agent
 
-설계가 승인된 작업을 실제 코드 변경으로 옮기는 Agent입니다.
-브랜치를 만들고, 구현 단위를 나누고, 각 단위마다 커밋을 남깁니다.
-이제 구현 판단 기준은 `agents/playbooks/*.md`에 둔 Codex Playbook을 우선합니다.
-DDD Modeling, DB Migration, API Implementation, Frontend Implementation, API Connect runner는 앱 코드를 생성하지 않고 Codex Playbook handoff만 남깁니다.
-Test Implementation runner처럼 명령 실행과 결과 수집만 하는 runner는 도구 호출기로 유지합니다.
-handoff만으로 충분하지 않은 작업은 `needs_human`으로 멈추고, 어떤 playbook 또는 도구 호출기 capability가 부족한지 보고합니다.
+UI/UX 방향성이 확정되지 않은 작업에서 먼저 호출하는 독립형 Agent입니다.
+사용자와 대화하며 화면 방향성, 흐름, 상호작용, 검증 기준을 잡고 Design Agent로 넘길 재료를 만듭니다.
 
-### 🧐 Review Agent
+### Dev Agent
 
-Dev 완료 후 QA 전에 코드 품질을 검토하는 Agent입니다.
-DDD/hexagonal boundary, 테스트 이름, 에러 메시지, 로깅 규칙, 불필요한 scaffold, 이상한 커밋을 확인합니다.
-리뷰 결과가 수정 필요라면 Dev 단계로 되돌릴 근거를 남깁니다.
-이 Agent는 “테스트 통과 여부”보다 “코드가 장기적으로 유지보수 가능한가”를 보는 역할입니다.
+앱 코드를 직접 수정하지 않습니다.
+`codex-implementation-request.md`와 `commit-plan.md`를 만들고, Codex가 어떤 playbook을 읽어야 하는지 지정합니다.
 
-### 🔎 QA Agent
+### QA Agent
 
-시스템 검증을 담당하는 Agent입니다.
-단위/통합 테스트, curl 시나리오, 브라우저 화면 확인, DB 저장 상태, 인증/인가 경계, 회귀 여부를 확인합니다.
-자동으로 확인할 수 있는 것은 직접 검증하고, 사람이 봐야 하는 것은 Human QA 체크리스트로 넘깁니다.
-QA가 끝나면 GitHub Issue와 Discord에 사람이 확인할 URL, Swagger 주소, 검증 항목을 남깁니다.
+고정 smoke checklist를 재사용하지 않습니다.
+기획/설계 artifact와 변경 diff를 바탕으로 이슈 맞춤 QA Plan, 체크리스트, 보고서 초안을 만듭니다.
+자동 검증하지 않은 항목은 pass로 표시하지 않습니다.
 
-### 📝 Documentation Agent
+### Documentation Agent
 
-Human QA 이후 구현 이력을 Notion에 정리하는 Agent입니다.
-이슈별 설계, 개발, QA 요약을 서비스 구현 기록 표에 남깁니다.
-문서는 길게 쓰기보다 “무엇이 추가되었고, 어떻게 동작하며, 어느 이슈와 연결되는지”를 빠르게 회고할 수 있게 정리합니다.
-항상 자동 실행하지 않고, 사람이 필요하다고 판단할 때 호출합니다.
+Human QA 이후 구현 이력을 Notion에 정리합니다.
+문서는 길게 쓰기보다 무엇이 추가되었고, 어떻게 동작하며, 어느 이슈와 연결되는지 빠르게 회고할 수 있게 정리합니다.
 
-### 🧠 Domain Knowledge Agent
+### Domain Knowledge Agent
 
-서비스 지식과 도메인 결정을 Obsidian에 정리하는 Agent입니다.
-구현된 기능의 정책, 사용자 흐름, 확정된 결정사항을 기획 보조 Agent가 나중에 참고할 수 있는 형태로 남깁니다.
+서비스 정책과 도메인 결정을 Obsidian에 정리합니다.
 Notion이 작업 이력이라면, Obsidian은 서비스가 어떤 의미와 정책을 갖는지 보관하는 지식 저장소입니다.
-항상 정리할 필요는 없고, 서비스 방향에 영향을 주는 기능일 때 호출합니다.
 
 ## Repository Map
 
 ```text
 ai_harness/    CLI entrypoint used by Codex and local operators
-orchestrator/  DB models, orchestration services, CLI/API adapters
-agents/        Agent abstraction, Markdown specs/playbooks, runner adapters
-workflows/     State machine and event workflow definitions
+orchestrator/  Stateless orchestration services and API adapters
+agents/        Agent adapters, Markdown specs, Codex playbooks
+workflows/     Legacy workflow notes retained for reference
 rules/         Project and safety rules
-sandbox/       Docker sandbox execution abstraction
+sandbox/       Tool execution abstraction
 mcp/           MCP tool abstraction layer
 memory/        Task-scoped and summarized memory helpers
-artifacts/     Generated plans, patches, QA reports, timelines
+artifacts/     Generated issue context, handoff, QA, approval records
 logs/          Local structured logs
 tests/         pytest test suite
-docs/          Architecture, operations, MVP documentation
+docs/          Architecture, operations, CLI documentation
 ```
 
 ## Quick Start
@@ -106,16 +85,14 @@ Run harness commands without starting a server:
 
 ```bash
 harness sync --issue 13
+harness agent-specs
 harness playbooks
 harness design --issue 13
-harness approve --issue 13 --stage plan --approved-by rsy
 harness develop --issue 13
-harness approve --issue 13 --stage dev --approved-by rsy
 harness qa --issue 13
 harness approve --issue 13 --stage qa --approved-by rsy
 harness document --issue 13
 harness domain-knowledge --issue 13
-harness approve --issue 13 --stage deploy --approved-by rsy
 harness status --issue 13
 ```
 
@@ -134,7 +111,7 @@ Configure `.env` with:
 ```env
 GITHUB_OWNER=passionryu
 GITHUB_REPO=myMentalCare
-GITHUB_TOKEN=...
+GITHUB_TOKEN=
 GITHUB_WEBHOOK_SECRET=
 ENABLE_GITHUB_COMMENT_COMMANDS=false
 ALLOW_EXTERNAL_NOTIFICATIONS=false
@@ -143,14 +120,11 @@ NOTION_API_TOKEN=
 NOTION_FEATURE_DATA_SOURCE_ID=
 NOTION_HARNESS_HISTORY_DATA_SOURCE_ID=
 OBSIDIAN_VAULT_PATH=/Users/rsy/Documents/myMentalCare Obsidian Vault
+TARGET_REPO_PATH=/Users/rsy/Desktop/myPlayGround/myMentalCare
 ```
 
-GitHub issue comments are disabled by default as human command input:
-
-- Use Codex as the primary human input interface.
-- Use the CLI as the deterministic execution interface.
-- Use GitHub issue comments as generated progress records only.
-- Keep `ENABLE_GITHUB_COMMENT_COMMANDS=false` unless intentionally testing webhook input.
+GitHub issue comments are disabled by default as human command input.
+Use Codex as the primary human input interface and the CLI as the deterministic artifact generation interface.
 
 External notifications are blocked by default.
 Set `ALLOW_EXTERNAL_NOTIFICATIONS=true` only when you intentionally want real Discord messages to be sent.
@@ -171,8 +145,7 @@ type: bugfix
 type: hotfix
 ```
 
-The Design Agent reads the `type:*` label from the GitHub issue payload and uses it to choose a planning profile.
-Replan, refactor, QA, and cancel requests should be passed through CLI `--note` or `--note-file`.
+The Design and Dev agents use the `type:*` label plus issue content to choose the right Markdown playbook.
 
 ## Branch And Commit Rule
 
@@ -190,18 +163,10 @@ type: docs             -> docs-8
 type: hotfix           -> hotfix-9
 ```
 
-Dev Agent creates a commit plan before implementation.
-Each implementation unit should be committed separately with this message format:
+Commit messages use:
 
 ```text
 [구현 기능(이슈 제목)] : 내용
-```
-
-Example:
-
-```text
-[AI 마음 대화 MVP 구현] : 채팅 도메인 모델 추가
-[AI 마음 대화 MVP 구현] : 채팅 화면과 API 연동 추가
 ```
 
 ## Local Target App
@@ -233,20 +198,17 @@ Swagger:  http://localhost:3001/swagger-ui/index.html
 The current MVP provides:
 
 - CLI-first local harness entrypoint
-- deterministic Kanban state machine
-- Design, Dev, Review, QA, Documentation, Domain Knowledge agent abstractions
+- Design, Dev, QA, Documentation, Domain Knowledge agent adapters
+- Markdown specs/playbooks as the source of agent behavior
 - GitHub issue sync and generated progress comments
-- artifact store for plans, patches, reports, and documentation
-- SQLite run and state transition history
+- artifact store for issue context, handoff, reports, and approvals
 - Notion service history publishing
 - Obsidian domain knowledge capture
-- Discord notification support
-- pytest coverage for workflow rules
+- Discord notification support when explicitly enabled
+- pytest coverage for CLI/API/agent adapter behavior
 
-Legacy FastAPI server mode remains optional and is no longer the primary input interface:
+Legacy FastAPI server mode remains optional:
 
 ```bash
 uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 3002
 ```
-
-Live OpenAI, GitHub Projects mutation, server mode, and Docker execution are intentionally kept behind interfaces so they can be enabled safely after local validation.
