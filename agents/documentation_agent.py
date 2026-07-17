@@ -23,11 +23,28 @@ class DocumentationAgent:
         notion_publish = docs_dir / "notion-publish-result.md"
 
         plan_summary = _read_first_existing(input_data.artifacts_root / input_data.task_id / "plans", ["architecture.md"])
-        dev_summary = _read_first_existing(input_data.artifacts_root / input_data.task_id / "dev", ["dev-status.md", "commit-plan.md"])
+        dev_summary = _read_first_existing(
+            input_data.artifacts_root / input_data.task_id / "dev",
+            ["manual-completion.md", "dev-status.md", "commit-plan.md"],
+        )
         review_summary = _read_first_existing(input_data.artifacts_root / input_data.task_id / "review", ["review-report.md"])
-        qa_summary = _read_first_existing(input_data.artifacts_root / input_data.task_id / "qa", ["qa-report.md", "qa-checklist.md"])
+        qa_summary = _read_first_existing(
+            input_data.artifacts_root / input_data.task_id / "qa",
+            ["manual-completion.md", "qa-report.md", "qa-checklist.md"],
+        )
+        effective_state = _effective_state(input_data.state, dev_summary, qa_summary)
         issue_number = _issue_number_from_body(input_data.body)
         issue_type = _issue_type_from_body(input_data.body)
+        human_sections = build_human_sections(
+            title=input_data.title,
+            issue_number=issue_number,
+            issue_type=issue_type,
+            state=effective_state,
+            plan_summary=plan_summary,
+            dev_summary=dev_summary,
+            review_summary=review_summary,
+            qa_summary=qa_summary,
+        )
 
         now = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y.%m.%d %H:%M:%S")
         issue_summary.write_text(
@@ -36,23 +53,10 @@ class DocumentationAgent:
                     f"# 이슈 구현 요약: {input_data.title}",
                     "",
                     f"- Task ID: `{input_data.task_id}`",
-                    f"- 현재 상태: `{input_data.state}`",
+                    f"- 현재 상태: `{effective_state}`",
                     f"- 정리 시각: {now}",
                     "",
-                    "## 설계 요약",
-                    _compact(plan_summary),
-                    "",
-                    "## 개발 요약",
-                    _compact(dev_summary),
-                    "",
-                    "## 리뷰 요약",
-                    _compact(review_summary),
-                    "",
-                    "## QA 요약",
-                    _compact(qa_summary),
-                    "",
-                    "## 회고 포인트",
-                    "- 다음에 같은 유형의 작업을 더 빠르게 하기 위해 남겨야 할 결정이나 규칙을 추가한다.",
+                    *_markdown_sections(human_sections),
                 ]
             ),
             encoding="utf-8",
@@ -64,8 +68,8 @@ class DocumentationAgent:
                     f"# 작업 일지 - {now[:10]}",
                     "",
                     f"- 작업: {input_data.title}",
-                    f"- 상태: {input_data.state}",
-                    "- 요약: 설계, 개발, 리뷰, QA 산출물을 이슈 단위로 정리했다.",
+                    f"- 상태: {effective_state}",
+                    f"- 요약: {_section_text(human_sections, '한눈에 보기')}",
                     f"- 상세 문서: `{issue_summary}`",
                 ]
             ),
@@ -79,12 +83,12 @@ class DocumentationAgent:
                     "",
                     f"- 날짜: {now[:10]}",
                     f"- 작업명: {input_data.title}",
-                    f"- 상태: {input_data.state}",
+                    f"- 상태: {effective_state}",
                     f"- Task ID: {input_data.task_id}",
                     f"- 이슈 번호: {issue_number or '기록 없음'}",
                     f"- 구현 타입: {issue_type}",
                     "- 분류: 개발 기록",
-                    "- 한 줄 요약: 설계/개발/리뷰/QA 흐름을 완료 기록으로 정리",
+                    f"- 한 줄 요약: {_section_text(human_sections, '한눈에 보기')}",
                     f"- 상세: {issue_summary}",
                 ]
             ),
@@ -95,8 +99,8 @@ class DocumentationAgent:
             title=input_data.title,
             issue_number=issue_number,
             issue_type=issue_type,
-            state=input_data.state,
-            summary=_compact(issue_summary.read_text(encoding="utf-8"), limit=1200),
+            state=effective_state,
+            sections=human_sections,
         )
         notion_publish.write_text(
             "\n".join(
@@ -130,7 +134,7 @@ def publish_feature_record(
     issue_number: str,
     issue_type: str,
     state: str,
-    summary: str,
+    sections: list[tuple[str, str]] | None = None,
 ) -> dict[str, str]:
     if not settings.notion_api_token:
         return {"status": "skipped", "reason": "NOTION_API_TOKEN이 설정되지 않았습니다."}
@@ -149,14 +153,37 @@ def publish_feature_record(
             "현재 staus": _multi_select_property([_notion_state(state)]),
         },
         "children": _children_from_sections(
-            [
-                ("기능 설명", _feature_description(title, issue_type, summary)),
+            (sections or [("한눈에 보기", _feature_description(title, issue_type, ""))])
+            + [
                 ("동작 원리", _feature_operation_principle(issue_type)),
                 ("이슈 티켓", _issue_ticket(issue_number)),
             ]
         ),
     }
     return _post_notion_page(payload)
+
+
+# 사람이 Notion에서 바로 읽을 수 있는 이슈 설명 섹션을 만든다.
+def build_human_sections(
+    title: str,
+    issue_number: str,
+    issue_type: str,
+    state: str,
+    plan_summary: str,
+    dev_summary: str,
+    review_summary: str,
+    qa_summary: str,
+) -> list[tuple[str, str]]:
+    commits = _commit_evidence(dev_summary) or _commit_evidence(qa_summary)
+    follow_ups = _follow_up_points(plan_summary, qa_summary)
+    return [
+        ("한눈에 보기", _one_line_summary(title, issue_type, state)),
+        ("사용자가 체감하는 변화", _user_facing_change(title, plan_summary)),
+        ("구현 범위", _implementation_scope(title, plan_summary, dev_summary)),
+        ("검증 상태", _verification_summary(qa_summary, review_summary)),
+        ("후속 확인", follow_ups),
+        ("구현 근거", commits or "관련 커밋 근거가 산출물에 명시되어 있지 않다."),
+    ]
 
 
 # 하네스 세팅 변경을 History Notion 표에 발행한다.
@@ -191,6 +218,164 @@ def publish_harness_history_record(
         ),
     }
     return _post_notion_page(payload)
+
+
+# Markdown 섹션을 issue-summary.md에 쓸 line 목록으로 변환한다.
+def _markdown_sections(sections: list[tuple[str, str]]) -> list[str]:
+    lines: list[str] = []
+    for heading, content in sections:
+        lines.extend([f"## {heading}", content.strip() or "기록 없음", ""])
+    return lines
+
+
+def _section_text(sections: list[tuple[str, str]], heading: str) -> str:
+    for section_heading, content in sections:
+        if section_heading == heading:
+            return _single_line(content, limit=260)
+    return "기록 없음"
+
+
+def _one_line_summary(title: str, issue_type: str, state: str) -> str:
+    clean_title = _clean_title(title)
+    type_name = _notion_issue_type(issue_type)
+    if state == "Ready To Deploy":
+        return f"{clean_title} 작업은 배포 가능한 상태로 정리되었고, 작업자가 기능 목적과 검증 상태를 바로 확인할 수 있다. ({type_name})"
+    return f"{clean_title} 작업은 현재 `{state}` 상태이며, 작업자가 남은 검증/후속 판단을 확인해야 한다. ({type_name})"
+
+
+def _user_facing_change(title: str, plan_summary: str) -> str:
+    candidate = _extract_section(plan_summary, ["## 사용자 경험", "## User Experience", "## 목표", "## Goal"])
+    if candidate:
+        return _human_compact(candidate, limit=700)
+    return f"사용자는 `{_clean_title(title)}` 범위의 변경을 서비스 화면이나 API 흐름에서 체감한다."
+
+
+def _implementation_scope(title: str, plan_summary: str, dev_summary: str) -> str:
+    plan_scope = _extract_section(
+        plan_summary,
+        ["## 작업 범위", "## 구현 범위", "## Change Scope", "## 백엔드 구현", "## 프론트엔드 구현", "## API Contract"],
+    )
+    dev_notes = _notes_only(dev_summary)
+    parts = []
+    if plan_scope:
+        parts.append(_human_compact(plan_scope, limit=650))
+    if dev_notes and "Manual DEV Completion" not in dev_summary:
+        parts.append(_human_compact(dev_notes, limit=650))
+    if not parts:
+        parts.append(f"`{_clean_title(title)}` 구현 범위는 이슈 본문과 개발 산출물 기준으로 정리한다.")
+    return "\n\n".join(parts)
+
+
+def _verification_summary(qa_summary: str, review_summary: str) -> str:
+    if "Manual QA Completion" in qa_summary:
+        return "자동 QA 원문은 남아 있지 않다. stage/main 병합 이력 기준으로 구현 완료를 사후 정리했으며, 배포 전 정밀 확인이 필요하면 핵심 사용자 흐름만 별도 회귀 검증한다."
+    if "result: pass" in qa_summary or "통과" in qa_summary:
+        return _human_compact(qa_summary, limit=700)
+    if "아직 산출물이 없습니다" in qa_summary:
+        if "아직 산출물이 없습니다" not in review_summary:
+            return "별도 QA 산출물은 없지만 리뷰 산출물이 존재한다. 작업자가 배포 전 수동 회귀 검증 필요 여부를 확인한다."
+        return "QA/리뷰 산출물이 아직 없다. 이 페이지는 구현 기록이며, 배포 전 재검증 필요 여부를 확인해야 한다."
+    return _human_compact(qa_summary, limit=700)
+
+
+def _follow_up_points(plan_summary: str, qa_summary: str) -> str:
+    joined = "\n".join([plan_summary, qa_summary])
+    points: list[str] = []
+    if "정책 결정 필요" in joined or "확정 필요" in joined:
+        points.append("- 정책이 남아 있는 항목은 별도 이슈로 분리한다.")
+    if "계정" in joined and "충돌" in joined:
+        points.append("- 카카오/기존 계정 충돌 정책은 자동 병합하지 말고 명시적으로 결정한다.")
+    if "알림" in joined and ("준비중" in joined or "비활성" in joined):
+        points.append("- 알림 발송은 목적, 빈도, 시간대, 거부/재동의 정책 확정 전까지 활성화하지 않는다.")
+    if "정밀 회귀 검증" in joined or "재검증" in joined:
+        points.append("- 사후 정리된 이슈는 필요 시 핵심 사용자 흐름만 재검증한다.")
+    if not points:
+        points.append("- 현재 문서 기준으로 별도 후속 결정은 없다.")
+    return "\n".join(points)
+
+
+def _commit_evidence(text: str) -> str:
+    lines = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("- `") and "|" in stripped:
+            lines.append(stripped)
+    return "\n".join(lines[:8])
+
+
+def _notes_only(text: str) -> str:
+    if "## Notes" not in text:
+        return ""
+    return text.split("## Notes", 1)[1].strip()
+
+
+def _extract_section(text: str, headings: list[str]) -> str:
+    lines = text.splitlines()
+    for index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if stripped not in headings:
+            continue
+        collected = []
+        for next_line in lines[index + 1 :]:
+            next_stripped = next_line.strip()
+            if next_stripped.startswith("## ") and collected:
+                break
+            if next_stripped:
+                collected.append(next_line.rstrip())
+        return "\n".join(collected).strip()
+    return ""
+
+
+def _human_compact(text: str, limit: int = 700) -> str:
+    cleaned = []
+    skip_prefixes = (
+        "# Backfill",
+        "# Manual",
+        "- task_id:",
+        "- source:",
+        "- branch evidence:",
+        "- recorded_at:",
+        "- original_harness_state:",
+        "- title:",
+        "- issue:",
+    )
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if any(stripped.startswith(prefix) for prefix in skip_prefixes):
+            continue
+        if "Documentation Agent" in stripped or "Domain Knowledge Agent" in stripped:
+            continue
+        if "누락된 사후 정리" in stripped or "사후 문서화" in stripped:
+            continue
+        if stripped.startswith("```"):
+            break
+        cleaned.append(line)
+    normalized = "\n".join(cleaned).strip()
+    if not normalized:
+        return "기록 없음"
+    if len(normalized) <= limit:
+        return normalized
+    clipped = normalized[:limit].rstrip()
+    if "\n" in clipped:
+        clipped = clipped.rsplit("\n", 1)[0].rstrip()
+    return clipped
+
+
+def _single_line(text: str, limit: int = 260) -> str:
+    line = " ".join(part.strip() for part in text.splitlines() if part.strip())
+    if len(line) <= limit:
+        return line
+    return line[:limit].rstrip()
+
+
+def _clean_title(title: str) -> str:
+    cleaned = title
+    for prefix in ("[FE]", "[BE]", "[FS]", "[API]", "[Config]", "[Bugfix]", "[BUG]", "[Infra]", "[Docs]"):
+        cleaned = cleaned.replace(prefix, "")
+    return " ".join(cleaned.split()).strip() or title
 
 
 # 하네스 내부 구현 타입을 Notion 구현 타입 옵션명으로 변환한다.
@@ -375,6 +560,15 @@ def _read_first_existing(directory: Path, filenames: list[str]) -> str:
         if path.exists():
             return path.read_text(encoding="utf-8")
     return "아직 산출물이 없습니다."
+
+
+# 사후 정리된 이슈는 DB kanban 상태가 Backlog여도 문서상 구현 완료 상태로 해석한다.
+def _effective_state(state: str, dev_summary: str, qa_summary: str) -> str:
+    if "Manual QA Completion" in qa_summary:
+        return "Ready To Deploy"
+    if "Manual DEV Completion" in dev_summary and state == "Backlog":
+        return "Ready To Deploy"
+    return state
 
 
 # Notion 표에 붙이기 쉽도록 긴 문서를 앞부분 중심으로 압축한다.

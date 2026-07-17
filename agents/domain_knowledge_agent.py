@@ -27,14 +27,21 @@ class DomainKnowledgeAgent:
         now = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y.%m.%d %H:%M:%S")
 
         plan_summary = _read_first_existing(input_data.artifacts_root / input_data.task_id / "plans", ["architecture.md"])
-        dev_summary = _read_first_existing(input_data.artifacts_root / input_data.task_id / "dev", ["dev-status.md", "commit-plan.md"])
-        qa_summary = _read_first_existing(input_data.artifacts_root / input_data.task_id / "qa", ["qa-report.md", "qa-checklist.md"])
+        dev_summary = _read_first_existing(
+            input_data.artifacts_root / input_data.task_id / "dev",
+            ["manual-completion.md", "dev-status.md", "commit-plan.md"],
+        )
+        qa_summary = _read_first_existing(
+            input_data.artifacts_root / input_data.task_id / "qa",
+            ["manual-completion.md", "qa-report.md", "qa-checklist.md"],
+        )
+        effective_state = _effective_state(input_data.state, dev_summary, qa_summary)
 
         entry = _domain_entry(
             title=input_data.title,
             issue_number=issue_number,
             issue_type=issue_type,
-            state=input_data.state,
+            state=effective_state,
             recorded_at=now,
             plan_summary=plan_summary,
             dev_summary=dev_summary,
@@ -193,6 +200,15 @@ def _read_first_existing(directory: Path, filenames: list[str]) -> str:
     return "아직 산출물이 없습니다."
 
 
+# 사후 정리된 이슈는 DB kanban 상태가 Backlog여도 지식 기록상 구현 완료 상태로 해석한다.
+def _effective_state(state: str, dev_summary: str, qa_summary: str) -> str:
+    if "Manual QA Completion" in qa_summary:
+        return "Ready To Deploy"
+    if "Manual DEV Completion" in dev_summary and state == "Backlog":
+        return "Ready To Deploy"
+    return state
+
+
 # 하네스 metadata에서 GitHub issue number를 추출한다.
 def _issue_number_from_body(body: str) -> str:
     for line in _metadata_lines(body):
@@ -246,9 +262,53 @@ def _issue_link(issue_number: str) -> str:
 
 # 긴 문서를 Obsidian에 적기 좋은 길이로 압축한다.
 def _compact(text: str, limit: int = 800) -> str:
-    normalized = "\n".join(line.rstrip() for line in text.splitlines() if line.strip())
+    normalized = _notes_only(text) or _remove_noisy_sections(text)
     if not normalized:
         return "기록 없음"
     if len(normalized) <= limit:
         return normalized
-    return normalized[:limit].rstrip() + "\n...(요약 길이 제한으로 일부 생략)"
+    clipped = normalized[:limit].rstrip()
+    if "\n" in clipped:
+        clipped = clipped.rsplit("\n", 1)[0].rstrip()
+    return clipped or normalized[:limit].rstrip()
+
+
+# manual-completion 산출물은 metadata보다 Notes가 Obsidian 지식으로 더 유용하다.
+def _notes_only(text: str) -> str:
+    if "## Notes" not in text:
+        return ""
+    notes = text.split("## Notes", 1)[1]
+    return "\n".join(line.rstrip() for line in notes.splitlines() if line.strip())
+
+
+# Obsidian에는 설계/QA 산출물 원문이 아니라 판단에 필요한 앞부분만 남긴다.
+def _remove_noisy_sections(text: str) -> str:
+    stop_prefixes = (
+        "```mermaid",
+        "## Proposed ",
+        "## Current App Structure",
+        "## Expected Files",
+        "## Implementation Steps",
+        "## Work Units",
+        "## Agent Markdown Spec",
+        "## QA Plan",
+        "## QA Agent",
+        "## Human QA Support",
+        "## 검증 체크리스트",
+        "## Commands",
+        "## API Smoke Test",
+        "## Playwright",
+        "### 검증 항목",
+    )
+    kept: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if any(stripped.startswith(prefix) for prefix in stop_prefixes):
+            break
+        if stripped.startswith("- app files:"):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
